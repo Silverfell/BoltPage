@@ -31,7 +31,7 @@
         "role": "Editor"
       }
     ],
-    "category": "DeveloperTool",
+    "category": "Productivity",
     "shortDescription": "Fast Markdown viewer and editor",
     "longDescription": "MarkRust is a fast, lightweight Markdown viewer and editor built with Rust and Tauri. It supports GitHub-flavored Markdown with syntax highlighting and multiple themes.",
     "copyright": "Copyright © 2024 MarkRust Contributors",
@@ -71,8 +71,8 @@
       "frameworks": [],
       "minimumSystemVersion": "10.13",
       "exceptionDomain": "",
-      "signingIdentity": null,
-      "providerShortName": null,
+      "signingIdentity": "Developer ID Application: Leopoldo Raffaele (U59VVNHDJC)",
+      "providerShortName": "U59VVNHDJC",
       "entitlements": "entitlements.plist",
       "dmg": {
         "appPosition": {

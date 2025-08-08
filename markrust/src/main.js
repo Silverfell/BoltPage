@@ -208,9 +208,22 @@ window.addEventListener('DOMContentLoaded', async () => {
         }
     });
     
-    // Check if file was passed as argument
+    // Check if file was passed as CLI argument
     if (window.__INITIAL_FILE_PATH__) {
         await openFile(window.__INITIAL_FILE_PATH__);
+    } else {
+        // Check for files opened via "Open With" or double-click
+        try {
+            const openedFiles = await invoke('get_opened_files');
+            if (openedFiles && openedFiles.length > 0) {
+                // Open the first file (MarkRust is single-file editor)
+                await openFile(openedFiles[0]);
+                // Clear the opened files list
+                await invoke('clear_opened_files');
+            }
+        } catch (err) {
+            console.error('Failed to check for opened files:', err);
+        }
     }
 });
 

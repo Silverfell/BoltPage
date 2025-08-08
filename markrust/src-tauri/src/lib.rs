@@ -18,6 +18,12 @@ impl Default for FileWatchers {
     }
 }
 
+// AppState for managing opened files from macOS Launch Services
+#[derive(Default)]
+struct AppState {
+    opened_files: Arc<Mutex<Vec<String>>>,
+}
+
 #[derive(Debug, Serialize, Deserialize)]
 struct AppPreferences {
     theme: String,
@@ -159,7 +165,7 @@ async fn open_file_dialog(app: AppHandle) -> Result<Option<String>, String> {
 async fn open_editor_window(app: AppHandle, file_path: String, preview_window: String) -> Result<(), String> {
     let editor_label = format!("editor-{}", uuid::Uuid::new_v4());
     
-    let editor_window = WebviewWindowBuilder::new(
+    let _editor_window = WebviewWindowBuilder::new(
         &app,
         &editor_label,
         WebviewUrl::App("editor.html".into())
@@ -174,6 +180,30 @@ async fn open_editor_window(app: AppHandle, file_path: String, preview_window: S
     .build()
     .map_err(|e| format!("Failed to create editor window: {}", e))?;
     
+    Ok(())
+}
+
+#[tauri::command]
+fn get_opened_files(app: AppHandle) -> Result<Vec<String>, String> {
+    let state = app.state::<AppState>();
+    let opened_files = state.opened_files.lock()
+        .map_err(|e| format!("Failed to lock opened files: {}", e))?;
+    
+    // Convert file:// URLs to file paths
+    let file_paths: Vec<String> = opened_files
+        .iter()
+        .map(|url| url.replace("file://", ""))
+        .collect();
+    
+    Ok(file_paths)
+}
+
+#[tauri::command]
+fn clear_opened_files(app: AppHandle) -> Result<(), String> {
+    let state = app.state::<AppState>();
+    let mut opened_files = state.opened_files.lock()
+        .map_err(|e| format!("Failed to lock opened files: {}", e))?;
+    opened_files.clear();
     Ok(())
 }
 
@@ -226,7 +256,11 @@ pub fn run() {
     let args: Vec<String> = std::env::args().collect();
     let file_path = args.get(1).cloned();
     
+    // Initialize app state before building to avoid race condition
+    let app_state = AppState::default();
+    
     tauri::Builder::default()
+        .manage(app_state)
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_store::Builder::new().build())
         .plugin(tauri_plugin_dialog::init())
@@ -242,10 +276,12 @@ pub fn run() {
             refresh_preview,
             start_file_watcher,
             stop_file_watcher,
-            broadcast_theme_change
+            broadcast_theme_change,
+            get_opened_files,
+            clear_opened_files
         ])
         .setup(move |app| {
-            // Initialize file watchers state
+            // Initialize file watchers state only (app state already managed)
             app.manage(FileWatchers::default());
             
             // Set up the menu
@@ -318,6 +354,17 @@ pub fn run() {
                 _ => {}
             }
         })
-        .run(tauri::generate_context!())
-        .expect("error while running tauri application");
+        .build(tauri::generate_context!())
+        .expect("error while building tauri application")
+        .run(|app, event| {
+            // Handle file opening from macOS Launch Services (Open With, double-click)
+            if let tauri::RunEvent::Opened { urls } = event {
+                // Safely access state with error handling
+                if let Some(state) = app.try_state::<AppState>() {
+                    if let Ok(mut opened_files) = state.opened_files.try_lock() {
+                        *opened_files = urls.iter().map(|url| url.to_string()).collect();
+                    }
+                }
+            }
+        });
 }
