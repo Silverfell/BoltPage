@@ -161,6 +161,10 @@
 	<key>LSMinimumSystemVersion</key>
 	<string>10.13</string>
 	
+	<!-- Allow Multiple Instances -->
+	<key>LSMultipleInstancesProhibited</key>
+	<false/>
+	
 	<!-- File System Access -->
 	<key>NSSupportsAutomaticGraphicsSwitching</key>
 	<true/>

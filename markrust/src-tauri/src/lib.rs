@@ -22,6 +22,8 @@ impl Default for FileWatchers {
 #[derive(Default)]
 struct AppState {
     opened_files: Arc<Mutex<Vec<String>>>,
+    open_windows: Arc<Mutex<HashMap<String, String>>>, // file_path -> window_label
+    setup_complete: Arc<Mutex<bool>>, // Track if setup is complete
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -183,6 +185,7 @@ async fn open_editor_window(app: AppHandle, file_path: String, preview_window: S
     Ok(())
 }
 
+
 #[tauri::command]
 fn get_opened_files(app: AppHandle) -> Result<Vec<String>, String> {
     let state = app.state::<AppState>();
@@ -208,11 +211,97 @@ fn clear_opened_files(app: AppHandle) -> Result<(), String> {
 }
 
 #[tauri::command]
+fn create_new_window_command(app: AppHandle, file_path: Option<String>) -> Result<String, String> {
+    if let Some(path) = file_path {
+        create_new_window_for_file(&app, path)
+    } else {
+        // Create empty window
+        let window_label = format!("markdown-{}", uuid::Uuid::new_v4());
+        let prefs = get_preferences(app.clone()).unwrap_or_default();
+        
+        WebviewWindowBuilder::new(
+            &app,
+            &window_label,
+            WebviewUrl::App("index.html".into())
+        )
+        .title("MarkRust")
+        .inner_size(prefs.window_width as f64, prefs.window_height as f64)
+        .build()
+        .map_err(|e| format!("Failed to create window: {}", e))?;
+        
+        Ok(window_label)
+    }
+}
+
+#[tauri::command]
+fn remove_window_from_tracking(app: AppHandle, window_label: String) -> Result<(), String> {
+    let state = app.state::<AppState>();
+    let mut open_windows = state.open_windows.lock()
+        .map_err(|e| format!("Failed to lock open windows: {}", e))?;
+    
+    // Find and remove the window by label
+    open_windows.retain(|_, label| label != &window_label);
+    Ok(())
+}
+
+#[tauri::command]
 fn refresh_preview(app: AppHandle, window: String) -> Result<(), String> {
     if let Some(preview_window) = app.get_webview_window(&window) {
         preview_window.eval("refreshFile()").map_err(|e| format!("Failed to refresh preview: {}", e))?;
     }
     Ok(())
+}
+
+fn create_new_window_for_file(app: &AppHandle, file_path: String) -> Result<String, String> {
+    let prefs = get_preferences(app.clone()).unwrap_or_default();
+    let window_label = format!("markdown-{}", uuid::Uuid::new_v4());
+    
+    // Check if file is already open
+    let app_state = app.state::<AppState>();
+    {
+        let open_windows = app_state.open_windows.lock()
+            .map_err(|e| format!("Failed to lock open windows: {}", e))?;
+        
+        if let Some(existing_label) = open_windows.get(&file_path) {
+            // Check if the existing window still exists
+            if let Some(window) = app.get_webview_window(existing_label) {
+                // Focus existing window instead of creating new one
+                window.set_focus().map_err(|e| format!("Failed to focus window: {}", e))?;
+                return Ok(existing_label.clone());
+            }
+            // If window doesn't exist anymore, we'll create a new one
+        }
+    }
+    
+    let window_builder = WebviewWindowBuilder::new(
+        app,
+        &window_label,
+        WebviewUrl::App("index.html".into())
+    )
+    .title({
+        let filename = PathBuf::from(&file_path)
+            .file_name()
+            .map(|n| format!("MarkRust - {}", n.to_string_lossy()))
+            .unwrap_or_else(|| "MarkRust".to_string());
+        filename
+    })
+    .inner_size(prefs.window_width as f64, prefs.window_height as f64)
+    .initialization_script(&format!(
+        "window.__INITIAL_FILE_PATH__ = {};",
+        serde_json::to_string(&file_path).unwrap()
+    ));
+    
+    window_builder.build()
+        .map_err(|e| format!("Failed to create window: {}", e))?;
+    
+    // Track the new window
+    {
+        let mut open_windows = app_state.open_windows.lock()
+            .map_err(|e| format!("Failed to lock open windows: {}", e))?;
+        open_windows.insert(file_path, window_label.clone());
+    }
+    
+    Ok(window_label)
 }
 
 fn open_markdown_window(app: &AppHandle, file_path: Option<String>) -> Result<(), String> {
@@ -278,7 +367,9 @@ pub fn run() {
             stop_file_watcher,
             broadcast_theme_change,
             get_opened_files,
-            clear_opened_files
+            clear_opened_files,
+            create_new_window_command,
+            remove_window_from_tracking
         ])
         .setup(move |app| {
             // Initialize file watchers state only (app state already managed)
@@ -286,8 +377,10 @@ pub fn run() {
             
             // Set up the menu
             let file_menu = SubmenuBuilder::new(app, "File")
+                .item(&MenuItemBuilder::with_id("new-window", "New Window").accelerator("CmdOrCtrl+N").build(app)?)
                 .item(&MenuItemBuilder::with_id("open", "Open").accelerator("CmdOrCtrl+O").build(app)?)
                 .separator()
+                .item(&MenuItemBuilder::with_id("close", "Close Window").accelerator("CmdOrCtrl+W").build(app)?)
                 .item(&MenuItemBuilder::with_id("quit", "Quit").accelerator("CmdOrCtrl+Q").build(app)?)
                 .build()?;
             
@@ -310,30 +403,49 @@ pub fn run() {
             // Handle menu events
             app.on_menu_event(|app, event| {
                 match event.id().as_ref() {
+                    "new-window" => {
+                        // Create a new empty window
+                        let _ = create_new_window_command(app.clone(), None);
+                    }
                     "open" => {
-                        // Trigger open file in the active window
-                        if let Some(window) = app.get_webview_window("main") {
-                            let _ = window.eval("openFile()");
+                        // Create a new window and trigger open file dialog
+                        if let Ok(_) = create_new_window_command(app.clone(), None) {
+                            // The new window will handle the open file dialog
                         }
+                    }
+                    "close" => {
+                        // This will be handled by the window's menu directly
+                        // Individual windows handle their own close events
                     }
                     "quit" => {
                         app.exit(0);
                     }
-                    "new-window" => {
-                        // Open a new window without a file
-                        let _ = open_markdown_window(&app, None);
-                    }
                     "about" => {
-                        // Show about dialog
+                        // Show about dialog - try to find any active window
                         if let Some(window) = app.get_webview_window("main") {
                             let _ = window.eval("alert('MarkRust v0.1.0\\nA fast Markdown viewer and editor')");
+                        } else {
+                            // Try to find any window if main doesn't exist
+                            for (_, window) in app.webview_windows() {
+                                let _ = window.eval("alert('MarkRust v0.1.0\\nA fast Markdown viewer and editor')");
+                                break;
+                            }
                         }
                     }
                     _ => {}
                 }
             });
             
+            // Always create initial window - RunEvent::Opened handles additional files
+            // For CLI args, open the specified file; otherwise create empty window
             open_markdown_window(&app.handle(), file_path)?;
+            
+            // Mark setup as complete
+            let state = app.state::<AppState>();
+            if let Ok(mut setup_complete) = state.setup_complete.lock() {
+                *setup_complete = true;
+            }
+            
             Ok(())
         })
         .on_window_event(|window, event| {
@@ -347,9 +459,11 @@ pub fn run() {
                     }
                 }
                 tauri::WindowEvent::CloseRequested { .. } => {
-                    // Clean up file watcher for this window
+                    // Clean up file watcher and window tracking
                     let app = window.app_handle();
-                    let _ = stop_file_watcher(app.clone(), window.label().to_string());
+                    let window_label = window.label().to_string();
+                    let _ = stop_file_watcher(app.clone(), window_label.clone());
+                    let _ = remove_window_from_tracking(app.clone(), window_label);
                 }
                 _ => {}
             }
@@ -359,10 +473,25 @@ pub fn run() {
         .run(|app, event| {
             // Handle file opening from macOS Launch Services (Open With, double-click)
             if let tauri::RunEvent::Opened { urls } = event {
-                // Safely access state with error handling
+                // Only create windows if setup is complete, otherwise store for later
                 if let Some(state) = app.try_state::<AppState>() {
-                    if let Ok(mut opened_files) = state.opened_files.try_lock() {
-                        *opened_files = urls.iter().map(|url| url.to_string()).collect();
+                    if let Ok(setup_complete) = state.setup_complete.try_lock() {
+                        if *setup_complete {
+                            // Setup complete - create windows immediately
+                            drop(setup_complete); // Release lock before creating windows
+                            for url in urls {
+                                let file_path = url.to_string().replace("file://", "");
+                                if let Err(e) = create_new_window_for_file(&app, file_path) {
+                                    eprintln!("Failed to create window for file: {}", e);
+                                }
+                            }
+                        } else {
+                            // Setup not complete - store files for later processing
+                            drop(setup_complete);
+                            if let Ok(mut opened_files) = state.opened_files.try_lock() {
+                                *opened_files = urls.iter().map(|url| url.to_string()).collect();
+                            }
+                        }
                     }
                 }
             }
