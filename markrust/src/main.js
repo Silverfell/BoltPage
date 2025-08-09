@@ -56,27 +56,37 @@ function applyTheme(theme) {
 }
 
 async function openFile(filePath) {
+    console.log('[DEBUG] openFile called with:', filePath);
     if (!filePath) {
         filePath = await invoke('open_file_dialog');
         if (!filePath) return;
     }
     
     try {
+        console.log('[DEBUG] About to call read_file with path:', filePath);
         const content = await invoke('read_file', { path: filePath });
+        console.log('[DEBUG] read_file returned content length:', content.length);
+        
+        console.log('[DEBUG] About to call parse_markdown_with_theme');
         const html = await invoke('parse_markdown_with_theme', { content, theme: currentTheme });
+        console.log('[DEBUG] parse_markdown_with_theme returned HTML length:', html.length);
         
         currentFilePath = filePath;
+        console.log('[DEBUG] About to set innerHTML');
         document.getElementById('markdown-content').innerHTML = html;
+        console.log('[DEBUG] innerHTML set successfully');
         
         // Update window title
         const filename = filePath.split(/[/\\]/).pop();
-        appWindow.setTitle(`MarkRust - ${filename}`);
+        await appWindow.setTitle(`MarkRust - ${filename}`);
+        console.log('[DEBUG] Window title updated to:', `MarkRust - ${filename}`);
         
         // Start file watching
         await startFileWatcher();
+        console.log('[DEBUG] File watcher started');
         
     } catch (err) {
-        console.error('Failed to open file:', err);
+        console.error('[DEBUG] Failed to open file:', err);
         alert(`Failed to open file: ${err}`);
     }
 }
@@ -199,47 +209,84 @@ async function stopFileWatcher() {
 
 // Initialize app
 window.addEventListener('DOMContentLoaded', async () => {
-    setupEventListeners();
-    await loadPreferences();
-    
-    // Listen for file change events
-    await listen('file-changed', () => {
-        // Show the refresh indicator
-        document.getElementById('refresh-indicator').classList.add('show');
-    });
-    
-    // Listen for theme change events from other windows
-    await listen('theme-changed', (event) => {
-        currentTheme = event.payload;
-        document.documentElement.setAttribute('data-theme', currentTheme);
+    try {
+        // CRITICAL DEBUG - Show debug info in UI
+        document.getElementById('debug-url').textContent = window.location.href;
+        document.getElementById('debug-search').textContent = window.location.search;
+        document.getElementById('debug-status').textContent = 'Initializing...';
         
-        // Update active theme indicator
-        document.querySelectorAll('.theme-option').forEach(btn => {
-            btn.classList.toggle('active', btn.dataset.theme === currentTheme);
+        setupEventListeners();
+        document.getElementById('debug-status').textContent = 'Loading preferences...';
+        await loadPreferences();
+        document.getElementById('debug-status').textContent = 'Preferences loaded';
+    
+        // Listen for file change events
+        document.getElementById('debug-status').textContent = 'Setting up listeners...';
+        await listen('file-changed', () => {
+            // Show the refresh indicator
+            document.getElementById('refresh-indicator').classList.add('show');
         });
         
-        // Re-render if we have a file open
-        if (currentFilePath) {
-            refreshFile();
+        // Listen for theme change events from other windows
+        await listen('theme-changed', (event) => {
+            currentTheme = event.payload;
+            document.documentElement.setAttribute('data-theme', currentTheme);
+            
+            // Update active theme indicator
+            document.querySelectorAll('.theme-option').forEach(btn => {
+                btn.classList.toggle('active', btn.dataset.theme === currentTheme);
+            });
+            
+            // Re-render if we have a file open
+            if (currentFilePath) {
+                refreshFile();
+            }
+        });
+        
+        // Check for file parameter in querystring (new approach for Opened event handling)
+        document.getElementById('debug-status').textContent = 'Checking for file params...';
+        console.log('[DEBUG] window.location.search:', window.location.search);
+        const params = new URLSearchParams(window.location.search);
+        const fileParam = params.get('file');
+        console.log('[DEBUG] Raw fileParam:', fileParam);
+        let filePath = null;
+        
+        if (fileParam) {
+            // Decode the file path from querystring
+            filePath = decodeURIComponent(fileParam);
+            console.log('[DEBUG] Decoded file path from querystring:', filePath);
+            document.getElementById('debug-file').textContent = filePath;
+            document.getElementById('debug-status').textContent = 'Found file param';
+        } else {
+            console.log('[DEBUG] No file parameter found in querystring');
+            document.getElementById('debug-file').textContent = 'None';
+            document.getElementById('debug-status').textContent = 'No file param found';
         }
-    });
     
     // Debug logging for file path initialization
     console.log('[DEBUG] Window initialized. __INITIAL_FILE_PATH__:', window.__INITIAL_FILE_PATH__);
     
-    // Try to get file path from window label (new robust method)
-    let filePath = null;
-    try {
-        filePath = await invoke('get_file_path_from_window_label');
-        console.log('[DEBUG] File path from window label:', filePath);
-    } catch (err) {
-        console.error('[DEBUG] Failed to get file path from window label:', err);
+    // If no querystring file, try to get file path from window label (fallback method)
+    if (!filePath) {
+        try {
+            filePath = await invoke('get_file_path_from_window_label');
+            console.log('[DEBUG] File path from window label:', filePath);
+        } catch (err) {
+            console.error('[DEBUG] Failed to get file path from window label:', err);
+        }
     }
     
-    // Use the robust window label approach first, then fall back to legacy methods
+    // Use the querystring approach first, then window label, then legacy methods
     if (filePath) {
-        console.log('[DEBUG] Opening file from window label:', filePath);
-        await openFile(filePath);
+        console.log('[DEBUG] About to call openFile with:', filePath);
+        try {
+            await openFile(filePath);
+            console.log('[DEBUG] openFile completed successfully');
+            document.getElementById('debug-status').textContent = 'File loaded successfully';
+        } catch (error) {
+            console.error('[DEBUG] openFile failed:', error);
+            document.getElementById('debug-status').textContent = 'ERROR: ' + error.toString();
+        }
     } else if (window.__INITIAL_FILE_PATH__) {
         console.log('[DEBUG] Opening file from __INITIAL_FILE_PATH__ (legacy):', window.__INITIAL_FILE_PATH__);
         await openFile(window.__INITIAL_FILE_PATH__);
@@ -269,6 +316,10 @@ window.addEventListener('DOMContentLoaded', async () => {
                 await new Promise(resolve => setTimeout(resolve, 100));
             }
         }
+    }
+    } catch (error) {
+        console.error('[CRITICAL ERROR] Initialization failed:', error);
+        document.getElementById('debug-status').textContent = 'ERROR: ' + error.toString();
     }
 });
 

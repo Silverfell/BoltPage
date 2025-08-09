@@ -9,6 +9,100 @@ use serde::{Deserialize, Serialize};
 use tauri::menu::{MenuBuilder, MenuItemBuilder, SubmenuBuilder};
 use notify::{Config, RecommendedWatcher, RecursiveMode, Watcher};
 use tokio::sync::mpsc;
+use url::Url;
+use percent_encoding::{utf8_percent_encode, NON_ALPHANUMERIC};
+
+// Convert file:// URL to filesystem path
+fn file_url_to_path(s: &str) -> Option<PathBuf> {
+    let url = Url::parse(s).ok()?;
+    if url.scheme() == "file" {
+        url.to_file_path().ok()
+    } else {
+        None
+    }
+}
+
+// Resolve file path from various input formats (URLs, relative paths, absolute paths)
+fn resolve_file_path(input: &str) -> Option<PathBuf> {
+    // First try as file URL
+    if let Some(path) = file_url_to_path(input) {
+        return Some(path);
+    }
+    
+    // Then try as regular path and convert to absolute
+    let path = PathBuf::from(input);
+    if path.is_absolute() {
+        Some(path)
+    } else {
+        // Convert relative path to absolute
+        std::env::current_dir().ok().map(|cwd| cwd.join(path))
+    }
+}
+
+// UNIFIED WINDOW CREATION - Single source of truth for all window creation
+fn create_window_with_file(app: &AppHandle, file_path: Option<PathBuf>) -> tauri::Result<String> {
+    println!("[DEBUG] create_window_with_file called with: {:?}", file_path);
+    let prefs = get_preferences(app.clone()).unwrap_or_default();
+    
+    // Generate consistent window label and URL
+    let (window_label, url, title) = if let Some(ref path) = file_path {
+        // File window: use both querystring AND base64 label for compatibility
+        let encoded_path = base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(path.to_string_lossy().as_bytes());
+        let label = format!("markdown-file-{}", encoded_path);
+        // Use standard URI encoding compatible with JavaScript's decodeURIComponent
+        let path_str = path.to_string_lossy().to_string();
+        let encoded_query = urlencoding::encode(&path_str);
+        // Tauri might not handle querystrings in App URLs correctly, so let's use the base64 label approach that was working
+        let url = WebviewUrl::App("index.html".into());
+        println!("[DEBUG] Using window label approach instead of querystring");
+        let title = path.file_name()
+            .and_then(|n| n.to_str())
+            .map(|n| format!("MarkRust - {}", n))
+            .unwrap_or_else(|| "MarkRust".to_string());
+        println!("[DEBUG] File window - label: {}, url: {:?}, title: {}", label, url, title);
+        (label, url, title)
+    } else {
+        // Empty window
+        let label = format!("markdown-{}", uuid::Uuid::new_v4());
+        let url = WebviewUrl::App("index.html".into());
+        let title = "MarkRust".to_string();
+        println!("[DEBUG] Empty window - label: {}, url: {:?}, title: {}", label, url, title);
+        (label, url, title)
+    };
+    
+    // Check if file window already exists and focus it instead
+    if let Some(ref path) = file_path {
+        let app_state = app.state::<AppState>();
+        {
+            if let Ok(open_windows) = app_state.open_windows.lock() {
+                if let Some(existing_label) = open_windows.get(&path.to_string_lossy().to_string()) {
+                    if let Some(window) = app.get_webview_window(existing_label) {
+                        let _ = window.set_focus();
+                        return Ok(existing_label.to_string());
+                    }
+                }
+            };
+        } // Lock dropped here
+    }
+    
+    // Create the window
+    let _window = WebviewWindowBuilder::new(app, &window_label, url)
+        .title(&title)
+        .inner_size(prefs.window_width as f64, prefs.window_height as f64)
+        .build()?;
+    
+    // Track file windows
+    if let Some(path) = file_path {
+        let app_state = app.state::<AppState>();
+        {
+            if let Ok(mut open_windows) = app_state.open_windows.lock() {
+                open_windows.insert(path.to_string_lossy().to_string(), window_label.clone());
+            };
+        } // Lock dropped here
+    }
+    
+    Ok(window_label)
+}
 
 // Global file watchers storage
 struct FileWatchers(Arc<Mutex<HashMap<String, RecommendedWatcher>>>);
@@ -213,25 +307,9 @@ fn clear_opened_files(app: AppHandle) -> Result<(), String> {
 
 #[tauri::command]
 fn create_new_window_command(app: AppHandle, file_path: Option<String>) -> Result<String, String> {
-    if let Some(path) = file_path {
-        create_new_window_for_file(&app, path)
-    } else {
-        // Create empty window
-        let window_label = format!("markdown-{}", uuid::Uuid::new_v4());
-        let prefs = get_preferences(app.clone()).unwrap_or_default();
-        
-        WebviewWindowBuilder::new(
-            &app,
-            &window_label,
-            WebviewUrl::App("index.html".into())
-        )
-        .title("MarkRust")
-        .inner_size(prefs.window_width as f64, prefs.window_height as f64)
-        .build()
-        .map_err(|e| format!("Failed to create window: {}", e))?;
-        
-        Ok(window_label)
-    }
+    let resolved_path = file_path.and_then(|p| resolve_file_path(&p));
+    create_window_with_file(&app, resolved_path)
+        .map_err(|e| format!("Failed to create window: {}", e))
 }
 
 #[tauri::command]
@@ -296,89 +374,12 @@ fn get_file_path_from_window_label(window: tauri::Window) -> Result<Option<Strin
     }
 }
 
-fn create_new_window_for_file(app: &AppHandle, file_path: String) -> Result<String, String> {
-    let prefs = get_preferences(app.clone()).unwrap_or_default();
-    // Encode file path in window label to avoid initialization script timing issues
-    let encoded_path = base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(&file_path);
-    let window_label = format!("markdown-file-{}", encoded_path);
-    
-    // Check if file is already open
-    let app_state = app.state::<AppState>();
-    {
-        let open_windows = app_state.open_windows.lock()
-            .map_err(|e| format!("Failed to lock open windows: {}", e))?;
-        
-        if let Some(existing_label) = open_windows.get(&file_path) {
-            // Check if the existing window still exists
-            if let Some(window) = app.get_webview_window(existing_label) {
-                // Focus existing window instead of creating new one
-                window.set_focus().map_err(|e| format!("Failed to focus window: {}", e))?;
-                return Ok(existing_label.clone());
-            }
-            // If window doesn't exist anymore, we'll create a new one
-        }
-    }
-    
-    let window_builder = WebviewWindowBuilder::new(
-        app,
-        &window_label,
-        WebviewUrl::App("index.html".into())
-    )
-    .title({
-        let filename = PathBuf::from(&file_path)
-            .file_name()
-            .map(|n| format!("MarkRust - {}", n.to_string_lossy()))
-            .unwrap_or_else(|| "MarkRust".to_string());
-        filename
-    })
-    .inner_size(prefs.window_width as f64, prefs.window_height as f64);
-    
-    println!("[RUST DEBUG] Creating window for file: {}", &file_path);
-    window_builder.build()
-        .map_err(|e| format!("Failed to create window: {}", e))?;
-    
-    // Track the new window
-    {
-        let mut open_windows = app_state.open_windows.lock()
-            .map_err(|e| format!("Failed to lock open windows: {}", e))?;
-        open_windows.insert(file_path, window_label.clone());
-    }
-    
-    Ok(window_label)
-}
 
 fn open_markdown_window(app: &AppHandle, file_path: Option<String>) -> Result<(), String> {
-    let prefs = get_preferences(app.clone()).unwrap_or_default();
-    
-    // Use consistent window labeling approach
-    let window_label = if let Some(ref path) = file_path {
-        // For CLI file opening, use the same base64 encoding as double-click
-        let encoded_path = base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(path);
-        format!("markdown-file-{}", encoded_path)
-    } else {
-        // For empty windows, use simple label
-        "main".to_string()
-    };
-    
-    let window_builder = WebviewWindowBuilder::new(
-        app,
-        &window_label,
-        WebviewUrl::App("index.html".into())
-    )
-    .title(file_path.as_ref().map(|p| {
-        PathBuf::from(p)
-            .file_name()
-            .map(|n| format!("MarkRust - {}", n.to_string_lossy()))
-            .unwrap_or_else(|| "MarkRust".to_string())
-    }).unwrap_or_else(|| "MarkRust".to_string()))
-    .inner_size(prefs.window_width as f64, prefs.window_height as f64);
-    
-    println!("[RUST DEBUG] Creating setup window with label: {} for file: {:?}", window_label, file_path);
-    
-    window_builder.build()
-        .map_err(|e| format!("Failed to create window: {}", e))?;
-    
-    Ok(())
+    let resolved_path = file_path.and_then(|p| resolve_file_path(&p));
+    create_window_with_file(app, resolved_path)
+        .map_err(|e| format!("Failed to create window: {}", e))
+        .map(|_| ()) // Convert Result<String, String> to Result<(), String>
 }
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
@@ -523,9 +524,12 @@ pub fn run() {
                             // Setup complete - create windows immediately
                             drop(setup_complete); // Release lock before creating windows
                             for url in urls {
-                                let file_path = url.to_string().replace("file://", "");
-                                if let Err(e) = create_new_window_for_file(&app, file_path) {
-                                    eprintln!("Failed to create window for file: {}", e);
+                                if let Some(path) = resolve_file_path(&url.to_string()) {
+                                    if let Err(e) = create_window_with_file(&app, Some(path.clone())) {
+                                        eprintln!("Failed to open window for {:?}: {}", path, e);
+                                    }
+                                } else {
+                                    eprintln!("Ignored non-file URL: {}", url);
                                 }
                             }
                         } else {
