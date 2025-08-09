@@ -79,6 +79,13 @@ async function openFile(filePath) {
         
         // Title is already set during window creation - no need to set it again
         
+        // Show the window now that content is loaded (prevents flash of welcome message)
+        try {
+            await invoke('show_window', { windowLabel: appWindow.label });
+        } catch (err) {
+            console.error('Failed to show window:', err);
+        }
+        
         // Start file watching
         await startFileWatcher();
         console.log('[DEBUG] File watcher started');

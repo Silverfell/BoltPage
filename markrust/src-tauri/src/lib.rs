@@ -39,6 +39,32 @@ fn resolve_file_path(input: &str) -> Option<PathBuf> {
     }
 }
 
+// Calculate appropriate window size with page-like proportions
+fn calculate_window_size(app: &AppHandle, prefs: &AppPreferences) -> tauri::Result<(f64, f64)> {
+    // Try to get primary monitor dimensions
+    if let Ok(Some(monitor)) = app.primary_monitor() {
+        let monitor_size = monitor.size();
+        let scale_factor = monitor.scale_factor();
+        
+        // Convert physical pixels to logical pixels
+        let logical_width = monitor_size.width as f64 / scale_factor;
+        let logical_height = monitor_size.height as f64 / scale_factor;
+        
+        // Page-like proportions: reasonable reading width, full screen height
+        let page_width = 900.0; // Good for reading text
+        let page_height = logical_height; // Full screen height as requested
+        
+        println!("[DEBUG] Monitor size: {}x{} (scale: {}), Using window size: {}x{}", 
+                 logical_width, logical_height, scale_factor, page_width, page_height);
+        
+        Ok((page_width, page_height))
+    } else {
+        // Fallback to preferences if can't get monitor info
+        println!("[DEBUG] Could not get monitor info, using preferences");
+        Ok((prefs.window_width as f64, prefs.window_height as f64))
+    }
+}
+
 // UNIFIED WINDOW CREATION - Single source of truth for all window creation
 fn create_window_with_file(app: &AppHandle, file_path: Option<PathBuf>) -> tauri::Result<String> {
     println!("[DEBUG] create_window_with_file called with: {:?}", file_path);
@@ -85,10 +111,14 @@ fn create_window_with_file(app: &AppHandle, file_path: Option<PathBuf>) -> tauri
         } // Lock dropped here
     }
     
-    // Create the window
+    // Calculate appropriate window size (page-like proportions)
+    let (width, height) = calculate_window_size(app, &prefs)?;
+    
+    // Create the window (hidden initially for file windows to prevent flash)
     let _window = WebviewWindowBuilder::new(app, &window_label, url)
         .title(&title)
-        .inner_size(prefs.window_width as f64, prefs.window_height as f64)
+        .inner_size(width, height)
+        .visible(file_path.is_none()) // Only show empty windows immediately
         .build()?;
     
     // Track file windows
@@ -135,8 +165,8 @@ impl Default for AppPreferences {
     fn default() -> Self {
         Self {
             theme: "system".to_string(),
-            window_width: 800,
-            window_height: 600,
+            window_width: 900,  // Page-like width for reading
+            window_height: 800, // Taller default height
             font_size: None,
             word_wrap: None,
             show_line_numbers: None,
@@ -198,6 +228,14 @@ fn broadcast_theme_change(app: AppHandle, theme: String) -> Result<(), String> {
     // Emit theme change event to all windows
     app.emit("theme-changed", &theme)
         .map_err(|e| format!("Failed to broadcast theme change: {}", e))?;
+    Ok(())
+}
+
+#[tauri::command]
+fn show_window(app: AppHandle, window_label: String) -> Result<(), String> {
+    if let Some(window) = app.get_webview_window(&window_label) {
+        window.show().map_err(|e| format!("Failed to show window: {}", e))?;
+    }
     Ok(())
 }
 
@@ -408,6 +446,7 @@ pub fn run() {
             start_file_watcher,
             stop_file_watcher,
             broadcast_theme_change,
+            show_window,
             get_opened_files,
             clear_opened_files,
             create_new_window_command,
