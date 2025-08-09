@@ -2,6 +2,7 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 use std::collections::HashMap;
+use base64::Engine;
 use tauri::{AppHandle, Manager, WebviewUrl, WebviewWindowBuilder, Emitter};
 use tauri_plugin_store::StoreExt;
 use serde::{Deserialize, Serialize};
@@ -252,9 +253,54 @@ fn refresh_preview(app: AppHandle, window: String) -> Result<(), String> {
     Ok(())
 }
 
+#[tauri::command]
+fn debug_dump_state(app: AppHandle) -> Result<String, String> {
+    let state = app.state::<AppState>();
+    let opened_files = state.opened_files.lock()
+        .map_err(|e| format!("Failed to lock opened files: {}", e))?;
+    let open_windows = state.open_windows.lock()
+        .map_err(|e| format!("Failed to lock open windows: {}", e))?;
+    let setup_complete = state.setup_complete.lock()
+        .map_err(|e| format!("Failed to lock setup_complete: {}", e))?;
+    
+    let debug_info = format!(
+        "AppState Debug:\n- setup_complete: {}\n- opened_files: {:?}\n- open_windows: {:?}",
+        *setup_complete, *opened_files, *open_windows
+    );
+    
+    println!("[RUST DEBUG] State dump: {}", debug_info);
+    Ok(debug_info)
+}
+
+#[tauri::command]
+fn get_file_path_from_window_label(window: tauri::Window) -> Result<Option<String>, String> {
+    let window_label = window.label();
+    
+    // Check if this is a file window (starts with "markdown-file-")
+    if let Some(encoded_path) = window_label.strip_prefix("markdown-file-") {
+        match base64::engine::general_purpose::URL_SAFE_NO_PAD.decode(encoded_path) {
+            Ok(decoded_bytes) => {
+                match String::from_utf8(decoded_bytes) {
+                    Ok(file_path) => {
+                        println!("[RUST DEBUG] Decoded file path from window label: {}", file_path);
+                        Ok(Some(file_path))
+                    }
+                    Err(e) => Err(format!("Failed to decode UTF-8: {}", e))
+                }
+            }
+            Err(e) => Err(format!("Failed to decode base64: {}", e))
+        }
+    } else {
+        // Not a file window, return None
+        Ok(None)
+    }
+}
+
 fn create_new_window_for_file(app: &AppHandle, file_path: String) -> Result<String, String> {
     let prefs = get_preferences(app.clone()).unwrap_or_default();
-    let window_label = format!("markdown-{}", uuid::Uuid::new_v4());
+    // Encode file path in window label to avoid initialization script timing issues
+    let encoded_path = base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(&file_path);
+    let window_label = format!("markdown-file-{}", encoded_path);
     
     // Check if file is already open
     let app_state = app.state::<AppState>();
@@ -285,12 +331,9 @@ fn create_new_window_for_file(app: &AppHandle, file_path: String) -> Result<Stri
             .unwrap_or_else(|| "MarkRust".to_string());
         filename
     })
-    .inner_size(prefs.window_width as f64, prefs.window_height as f64)
-    .initialization_script(&format!(
-        "window.__INITIAL_FILE_PATH__ = {};",
-        serde_json::to_string(&file_path).unwrap()
-    ));
+    .inner_size(prefs.window_width as f64, prefs.window_height as f64);
     
+    println!("[RUST DEBUG] Creating window for file: {}", &file_path);
     window_builder.build()
         .map_err(|e| format!("Failed to create window: {}", e))?;
     
@@ -307,13 +350,17 @@ fn create_new_window_for_file(app: &AppHandle, file_path: String) -> Result<Stri
 fn open_markdown_window(app: &AppHandle, file_path: Option<String>) -> Result<(), String> {
     let prefs = get_preferences(app.clone()).unwrap_or_default();
     
-    let window_label = if file_path.is_some() {
-        format!("markdown-{}", uuid::Uuid::new_v4())
+    // Use consistent window labeling approach
+    let window_label = if let Some(ref path) = file_path {
+        // For CLI file opening, use the same base64 encoding as double-click
+        let encoded_path = base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(path);
+        format!("markdown-file-{}", encoded_path)
     } else {
+        // For empty windows, use simple label
         "main".to_string()
     };
     
-    let mut window_builder = WebviewWindowBuilder::new(
+    let window_builder = WebviewWindowBuilder::new(
         app,
         &window_label,
         WebviewUrl::App("index.html".into())
@@ -324,15 +371,9 @@ fn open_markdown_window(app: &AppHandle, file_path: Option<String>) -> Result<()
             .map(|n| format!("MarkRust - {}", n.to_string_lossy()))
             .unwrap_or_else(|| "MarkRust".to_string())
     }).unwrap_or_else(|| "MarkRust".to_string()))
-    .inner_size(prefs.window_width as f64, prefs.window_height as f64)
-    ;
+    .inner_size(prefs.window_width as f64, prefs.window_height as f64);
     
-    if let Some(path) = file_path {
-        window_builder = window_builder.initialization_script(&format!(
-            "window.__INITIAL_FILE_PATH__ = {};",
-            serde_json::to_string(&path).unwrap()
-        ));
-    }
+    println!("[RUST DEBUG] Creating setup window with label: {} for file: {:?}", window_label, file_path);
     
     window_builder.build()
         .map_err(|e| format!("Failed to create window: {}", e))?;
@@ -369,7 +410,9 @@ pub fn run() {
             get_opened_files,
             clear_opened_files,
             create_new_window_command,
-            remove_window_from_tracking
+            remove_window_from_tracking,
+            debug_dump_state,
+            get_file_path_from_window_label
         ])
         .setup(move |app| {
             // Initialize file watchers state only (app state already managed)

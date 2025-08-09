@@ -32,4 +32,5 @@ markrust-core = { path = "../markrust-core" }
 uuid = { version = "1", features = ["v4"] }
 notify = "6.1"
 tokio = { version = "1", features = ["sync"] }
+base64 = "0.22"
 

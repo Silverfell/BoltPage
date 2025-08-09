@@ -224,10 +224,27 @@ window.addEventListener('DOMContentLoaded', async () => {
         }
     });
     
-    // Check if file was passed as CLI argument
-    if (window.__INITIAL_FILE_PATH__) {
+    // Debug logging for file path initialization
+    console.log('[DEBUG] Window initialized. __INITIAL_FILE_PATH__:', window.__INITIAL_FILE_PATH__);
+    
+    // Try to get file path from window label (new robust method)
+    let filePath = null;
+    try {
+        filePath = await invoke('get_file_path_from_window_label');
+        console.log('[DEBUG] File path from window label:', filePath);
+    } catch (err) {
+        console.error('[DEBUG] Failed to get file path from window label:', err);
+    }
+    
+    // Use the robust window label approach first, then fall back to legacy methods
+    if (filePath) {
+        console.log('[DEBUG] Opening file from window label:', filePath);
+        await openFile(filePath);
+    } else if (window.__INITIAL_FILE_PATH__) {
+        console.log('[DEBUG] Opening file from __INITIAL_FILE_PATH__ (legacy):', window.__INITIAL_FILE_PATH__);
         await openFile(window.__INITIAL_FILE_PATH__);
     } else {
+        console.log('[DEBUG] No file path found, trying opened files retry logic');
         // Check for files opened via "Open With" or double-click
         // Try multiple times in case RunEvent::Opened is still processing
         let attempts = 0;
