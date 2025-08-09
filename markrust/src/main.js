@@ -8,6 +8,7 @@ let currentFilePath = null;
 let fileWatcher = null;
 let currentTheme = 'system';
 
+
 async function loadPreferences() {
     try {
         const prefs = await invoke('get_preferences');
@@ -76,10 +77,7 @@ async function openFile(filePath) {
         document.getElementById('markdown-content').innerHTML = html;
         console.log('[DEBUG] innerHTML set successfully');
         
-        // Update window title
-        const filename = filePath.split(/[/\\]/).pop();
-        await appWindow.setTitle(`MarkRust - ${filename}`);
-        console.log('[DEBUG] Window title updated to:', `MarkRust - ${filename}`);
+        // Title is already set during window creation - no need to set it again
         
         // Start file watching
         await startFileWatcher();
@@ -210,18 +208,11 @@ async function stopFileWatcher() {
 // Initialize app
 window.addEventListener('DOMContentLoaded', async () => {
     try {
-        // CRITICAL DEBUG - Show debug info in UI
-        document.getElementById('debug-url').textContent = window.location.href;
-        document.getElementById('debug-search').textContent = window.location.search;
-        document.getElementById('debug-status').textContent = 'Initializing...';
         
         setupEventListeners();
-        document.getElementById('debug-status').textContent = 'Loading preferences...';
         await loadPreferences();
-        document.getElementById('debug-status').textContent = 'Preferences loaded';
     
         // Listen for file change events
-        document.getElementById('debug-status').textContent = 'Setting up listeners...';
         await listen('file-changed', () => {
             // Show the refresh indicator
             document.getElementById('refresh-indicator').classList.add('show');
@@ -244,7 +235,6 @@ window.addEventListener('DOMContentLoaded', async () => {
         });
         
         // Check for file parameter in querystring (new approach for Opened event handling)
-        document.getElementById('debug-status').textContent = 'Checking for file params...';
         console.log('[DEBUG] window.location.search:', window.location.search);
         const params = new URLSearchParams(window.location.search);
         const fileParam = params.get('file');
@@ -255,13 +245,10 @@ window.addEventListener('DOMContentLoaded', async () => {
             // Decode the file path from querystring
             filePath = decodeURIComponent(fileParam);
             console.log('[DEBUG] Decoded file path from querystring:', filePath);
-            document.getElementById('debug-file').textContent = filePath;
-            document.getElementById('debug-status').textContent = 'Found file param';
         } else {
             console.log('[DEBUG] No file parameter found in querystring');
-            document.getElementById('debug-file').textContent = 'None';
-            document.getElementById('debug-status').textContent = 'No file param found';
         }
+        
     
     // Debug logging for file path initialization
     console.log('[DEBUG] Window initialized. __INITIAL_FILE_PATH__:', window.__INITIAL_FILE_PATH__);
@@ -282,10 +269,8 @@ window.addEventListener('DOMContentLoaded', async () => {
         try {
             await openFile(filePath);
             console.log('[DEBUG] openFile completed successfully');
-            document.getElementById('debug-status').textContent = 'File loaded successfully';
         } catch (error) {
             console.error('[DEBUG] openFile failed:', error);
-            document.getElementById('debug-status').textContent = 'ERROR: ' + error.toString();
         }
     } else if (window.__INITIAL_FILE_PATH__) {
         console.log('[DEBUG] Opening file from __INITIAL_FILE_PATH__ (legacy):', window.__INITIAL_FILE_PATH__);
@@ -319,7 +304,6 @@ window.addEventListener('DOMContentLoaded', async () => {
     }
     } catch (error) {
         console.error('[CRITICAL ERROR] Initialization failed:', error);
-        document.getElementById('debug-status').textContent = 'ERROR: ' + error.toString();
     }
 });
 
