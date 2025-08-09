@@ -41,7 +41,18 @@ fn resolve_file_path(input: &str) -> Option<PathBuf> {
 
 // Calculate appropriate window size with page-like proportions
 fn calculate_window_size(app: &AppHandle, prefs: &AppPreferences) -> tauri::Result<(f64, f64)> {
-    // Try to get primary monitor dimensions
+    println!("[DEBUG] Current preferences: {}x{}", prefs.window_width, prefs.window_height);
+    
+    // If user has resized windows (preferences were saved), use those dimensions
+    // Check if these are reasonable user-resized values (not corrupted massive values)
+    if prefs.window_width > 200 && prefs.window_width < 5000 && 
+       prefs.window_height > 200 && prefs.window_height < 5000 &&
+       (prefs.window_width != 900 || prefs.window_height != 800) {
+        println!("[DEBUG] Using saved custom window size: {}x{}", prefs.window_width, prefs.window_height);
+        return Ok((prefs.window_width as f64, prefs.window_height as f64));
+    }
+    
+    // Otherwise, calculate default page-like proportions using monitor size  
     if let Ok(Some(monitor)) = app.primary_monitor() {
         let monitor_size = monitor.size();
         let scale_factor = monitor.scale_factor();
@@ -51,17 +62,16 @@ fn calculate_window_size(app: &AppHandle, prefs: &AppPreferences) -> tauri::Resu
         let logical_height = monitor_size.height as f64 / scale_factor;
         
         // Page-like proportions: reasonable reading width, full screen height
-        let page_width = 900.0; // Good for reading text
-        let page_height = logical_height; // Full screen height as requested
+        let page_width = 900.0;
+        let page_height = logical_height;
         
-        println!("[DEBUG] Monitor size: {}x{} (scale: {}), Using window size: {}x{}", 
+        println!("[DEBUG] Monitor size: {}x{} (scale: {}), Using calculated window size: {}x{}", 
                  logical_width, logical_height, scale_factor, page_width, page_height);
         
         Ok((page_width, page_height))
     } else {
-        // Fallback to preferences if can't get monitor info
-        println!("[DEBUG] Could not get monitor info, using preferences");
-        Ok((prefs.window_width as f64, prefs.window_height as f64))
+        println!("[DEBUG] Could not get monitor info, using fallback");
+        Ok((900.0, 800.0))
     }
 }
 
@@ -236,6 +246,28 @@ fn show_window(app: AppHandle, window_label: String) -> Result<(), String> {
     if let Some(window) = app.get_webview_window(&window_label) {
         window.show().map_err(|e| format!("Failed to show window: {}", e))?;
     }
+    Ok(())
+}
+
+#[tauri::command]
+fn save_window_size(app: AppHandle, width: u32, height: u32) -> Result<(), String> {
+    // Convert physical pixels to logical pixels to match our window creation logic
+    let logical_size = if let Ok(Some(monitor)) = app.primary_monitor() {
+        let scale_factor = monitor.scale_factor();
+        let logical_width = (width as f64 / scale_factor).round() as u32;
+        let logical_height = (height as f64 / scale_factor).round() as u32;
+        println!("[DEBUG] Converting physical {}x{} to logical {}x{} (scale: {})", 
+                 width, height, logical_width, logical_height, scale_factor);
+        (logical_width, logical_height)
+    } else {
+        (width, height)
+    };
+    
+    let mut prefs = get_preferences(app.clone()).unwrap_or_default();
+    prefs.window_width = logical_size.0;
+    prefs.window_height = logical_size.1;
+    save_preferences(app, prefs)?;
+    println!("[DEBUG] Saved new window size: {}x{}", logical_size.0, logical_size.1);
     Ok(())
 }
 
@@ -447,6 +479,7 @@ pub fn run() {
             stop_file_watcher,
             broadcast_theme_change,
             show_window,
+            save_window_size,
             get_opened_files,
             clear_opened_files,
             create_new_window_command,

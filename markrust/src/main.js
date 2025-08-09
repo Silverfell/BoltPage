@@ -212,6 +212,24 @@ async function stopFileWatcher() {
     }
 }
 
+// Listen for window resize events and save the new size
+let resizeTimeout;
+appWindow.listen('tauri://resize', async (event) => {
+    // Debounce resize events to avoid excessive saves
+    clearTimeout(resizeTimeout);
+    resizeTimeout = setTimeout(async () => {
+        try {
+            const size = await appWindow.innerSize();
+            await invoke('save_window_size', { 
+                width: size.width, 
+                height: size.height 
+            });
+        } catch (err) {
+            console.error('Failed to save window size:', err);
+        }
+    }, 500); // Save 500ms after user stops resizing
+});
+
 // Initialize app
 window.addEventListener('DOMContentLoaded', async () => {
     try {
