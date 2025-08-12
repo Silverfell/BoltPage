@@ -47,27 +47,8 @@ case "$OS_NAME" in
     echo "   Use the DMG file printed above (in target/release/bundle/dmg)"
 
     echo ""
-    echo "🪟 Attempting Windows (NSIS) cross-build from macOS..."
-    # Prereqs: rustup target add x86_64-pc-windows-gnu; brew install mingw-w64 nsis
-    WIN_TARGET="x86_64-pc-windows-gnu"
-    if rustup target list --installed | grep -q "${WIN_TARGET}" && \
-       command -v x86_64-w64-mingw32-gcc >/dev/null 2>&1 && \
-       command -v makensis >/dev/null 2>&1; then
-      echo "📦 Building Windows NSIS installer..."
-      # Pass args through npm to tauri CLI
-      npm run tauri build -- --bundles nsis --target ${WIN_TARGET}
-
-      echo "✅ Windows build complete (if bundling succeeded)."
-      echo "📁 Windows artifacts:"
-      ls -1 target/${WIN_TARGET}/release/bundle/nsis/*.exe 2>/dev/null || \
-        ls -1 target/release/bundle/nsis/*.exe 2>/dev/null || echo "   (no NSIS EXE found)"
-    else
-      echo "⚠️  Skipping Windows cross-build. Missing prerequisites."
-      echo "   Required: rust target '${WIN_TARGET}', MinGW-w64 toolchain, NSIS (makensis)."
-      echo "   Install suggestions:"
-      echo "     rustup target add ${WIN_TARGET}"
-      echo "     brew install mingw-w64 nsis"
-    fi
+    echo "🪟 Windows installers are not supported from macOS in Tauri v2."
+    echo "   To produce Windows MSI/NSIS: run this script on Windows, or use CI with a Windows runner."
     ;;
 
   MINGW*|MSYS*|CYGWIN*)
