@@ -1,7 +1,7 @@
 use pulldown_cmark::{html, Event, Options, Parser, Tag, TagEnd, CowStr};
 use syntect::parsing::SyntaxSet;
 use syntect::highlighting::ThemeSet;
-use syntect::html::highlighted_html_for_string;
+use syntect::html::{ClassedHTMLGenerator, ClassStyle, css_for_theme_with_class_style};
 use once_cell::sync::Lazy;
 
 static SYNTAX_SET: Lazy<SyntaxSet> = Lazy::new(|| SyntaxSet::load_defaults_newlines());
@@ -11,7 +11,7 @@ pub fn parse_markdown(content: &str) -> String {
     parse_markdown_with_theme(content, "light")
 }
 
-pub fn parse_markdown_with_theme(content: &str, theme_name: &str) -> String {
+pub fn parse_markdown_with_theme(content: &str, _theme_name: &str) -> String {
     let mut options = Options::empty();
     options.insert(Options::ENABLE_TABLES);
     options.insert(Options::ENABLE_FOOTNOTES);
@@ -19,24 +19,6 @@ pub fn parse_markdown_with_theme(content: &str, theme_name: &str) -> String {
     options.insert(Options::ENABLE_TASKLISTS);
     
     let parser = Parser::new_ext(content, options);
-    
-    // Try to choose syntect theme based on app theme - make it optional to prevent crashes
-    let syntax_theme = match theme_name {
-        "dark" | "drac" => {
-            // Try dark themes first
-            THEME_SET.themes.get("Monokai")
-                .or_else(|| THEME_SET.themes.get("base16-ocean.dark"))
-                .or_else(|| THEME_SET.themes.get("Solarized (dark)"))
-                .or_else(|| THEME_SET.themes.values().next())
-        },
-        _ => {
-            // Try light themes first  
-            THEME_SET.themes.get("InspiredGitHub")
-                .or_else(|| THEME_SET.themes.get("base16-ocean.light"))
-                .or_else(|| THEME_SET.themes.get("Solarized (light)"))
-                .or_else(|| THEME_SET.themes.values().next())
-        }
-    };
     
     let mut in_code_block = false;
     let mut code_block_lang = String::new();
@@ -56,37 +38,32 @@ pub fn parse_markdown_with_theme(content: &str, theme_name: &str) -> String {
             }
             Event::End(TagEnd::CodeBlock) => {
                 in_code_block = false;
-                
-                // Try to highlight the code block
-                let highlighted = if !code_block_lang.is_empty() && syntax_theme.is_some() {
+                // Highlight using class-based HTML to allow CSS-only theme switching
+                if !code_block_lang.is_empty() {
                     if let Some(syntax) = SYNTAX_SET.find_syntax_by_token(&code_block_lang) {
-                        highlighted_html_for_string(
-                            &code_block_content,
-                            &SYNTAX_SET,
+                        let mut generator = ClassedHTMLGenerator::new_with_class_style(
                             syntax,
-                            syntax_theme.unwrap(),
-                        ).ok()
+                            &SYNTAX_SET,
+                            ClassStyle::Spaced,
+                        );
+                        for line in code_block_content.lines() {
+                            let _ = generator.parse_html_for_line_which_includes_newline(&format!("{}\n", line));
+                        }
+                        let highlighted = generator.finalize();
+                        let block = format!(
+                            "<div class=\"highlight\"><pre><code class=\"language-{}\">{}</code></pre></div>",
+                            code_block_lang,
+                            highlighted
+                        );
+                        events.push(Event::Html(CowStr::from(block)));
                     } else {
-                        None
+                        // Unknown language, fallback to plain fenced block
+                        events.push(Event::Start(Tag::CodeBlock(pulldown_cmark::CodeBlockKind::Fenced(CowStr::from(code_block_lang.clone())))));
+                        events.push(Event::Text(CowStr::from(code_block_content.clone())));
+                        events.push(Event::End(TagEnd::CodeBlock));
                     }
                 } else {
-                    None
-                };
-                
-                // If highlighting succeeded, use it; otherwise fall back to plain code
-                if let Some(html) = highlighted {
-                    // Remove the wrapping <pre> tags as pulldown-cmark will add them
-                    let html = html.trim_start_matches("<pre style=\"background-color:#");
-                    let html = if let Some(pos) = html.find("\">") {
-                        &html[pos + 2..]
-                    } else {
-                        &html
-                    };
-                    let html = html.trim_end_matches("</pre>\n");
-                    
-                    events.push(Event::Html(CowStr::from(format!("<div class=\"highlight\">{}</div>", html))));
-                } else {
-                    // Fallback to plain code
+                    // No language, fallback to plain fenced block
                     events.push(Event::Start(Tag::CodeBlock(pulldown_cmark::CodeBlockKind::Fenced(CowStr::from(code_block_lang.clone())))));
                     events.push(Event::Text(CowStr::from(code_block_content.clone())));
                     events.push(Event::End(TagEnd::CodeBlock));
@@ -111,4 +88,24 @@ pub fn parse_markdown_with_theme(content: &str, theme_name: &str) -> String {
 // Export theme names for the UI
 pub fn get_syntax_themes() -> Vec<&'static str> {
     vec!["InspiredGitHub", "Monokai", "Solarized (dark)", "Solarized (light)"]
+}
+
+// Generate CSS for the given theme to style class-based highlighted code.
+pub fn get_syntax_theme_css(theme_name: &str) -> Option<String> {
+    // Pick a theme similar to earlier selection behavior
+    let theme = match theme_name {
+        "dark" | "drac" => {
+            THEME_SET.themes.get("Monokai")
+                .or_else(|| THEME_SET.themes.get("base16-ocean.dark"))
+                .or_else(|| THEME_SET.themes.get("Solarized (dark)"))
+        }
+        _ => {
+            THEME_SET.themes.get("InspiredGitHub")
+                .or_else(|| THEME_SET.themes.get("base16-ocean.light"))
+                .or_else(|| THEME_SET.themes.get("Solarized (light)"))
+        }
+    }.or_else(|| THEME_SET.themes.values().next())?;
+
+    let css = css_for_theme_with_class_style(theme, ClassStyle::Spaced).ok()?;
+    Some(css)
 }

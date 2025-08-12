@@ -41,19 +41,31 @@ function applyTheme(theme) {
     currentTheme = theme;
     document.documentElement.setAttribute('data-theme', theme);
     savePreference('theme', theme);
+    // Ensure syntax CSS for this theme is loaded
+    ensureSyntaxCss(theme);
     
     // Update active theme indicator
     document.querySelectorAll('.theme-option').forEach(btn => {
         btn.classList.toggle('active', btn.dataset.theme === theme);
     });
     
-    // Re-render if we have a file open
-    if (currentFilePath) {
-        refreshFile();
-    }
-    
     // Notify all windows of theme change
     broadcastThemeChange(theme);
+}
+
+async function ensureSyntaxCss(theme) {
+    try {
+        const css = await invoke('get_syntax_css', { theme });
+        let styleEl = document.getElementById('syntax-css');
+        if (!styleEl) {
+            styleEl = document.createElement('style');
+            styleEl.id = 'syntax-css';
+            document.head.appendChild(styleEl);
+        }
+        styleEl.textContent = css;
+    } catch (err) {
+        console.error('Failed to load syntax CSS:', err);
+    }
 }
 
 async function openFile(filePath) {
@@ -212,23 +224,7 @@ async function stopFileWatcher() {
     }
 }
 
-// Listen for window resize events and save the new size
-let resizeTimeout;
-appWindow.listen('tauri://resize', async (event) => {
-    // Debounce resize events to avoid excessive saves
-    clearTimeout(resizeTimeout);
-    resizeTimeout = setTimeout(async () => {
-        try {
-            const size = await appWindow.innerSize();
-            await invoke('save_window_size', { 
-                width: size.width, 
-                height: size.height 
-            });
-        } catch (err) {
-            console.error('Failed to save window size:', err);
-        }
-    }, 500); // Save 500ms after user stops resizing
-});
+// Window size persistence handled in Rust with debounce.
 
 // Initialize app
 window.addEventListener('DOMContentLoaded', async () => {
@@ -244,19 +240,16 @@ window.addEventListener('DOMContentLoaded', async () => {
         });
         
         // Listen for theme change events from other windows
-        await listen('theme-changed', (event) => {
+        await listen('theme-changed', async (event) => {
             currentTheme = event.payload;
             document.documentElement.setAttribute('data-theme', currentTheme);
+            await ensureSyntaxCss(currentTheme);
             
             // Update active theme indicator
             document.querySelectorAll('.theme-option').forEach(btn => {
                 btn.classList.toggle('active', btn.dataset.theme === currentTheme);
             });
-            
-            // Re-render if we have a file open
-            if (currentFilePath) {
-                refreshFile();
-            }
+            // No need to re-render; CSS-only theme swap
         });
         
         // Check for file parameter in querystring (new approach for Opened event handling)

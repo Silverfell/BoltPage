@@ -10,7 +10,17 @@ use tauri::menu::{MenuBuilder, MenuItemBuilder, SubmenuBuilder};
 use notify::{Config, RecommendedWatcher, RecursiveMode, Watcher};
 use tokio::sync::mpsc;
 use url::Url;
-use percent_encoding::{utf8_percent_encode, NON_ALPHANUMERIC};
+// Simple debug macro to strip logs in release
+macro_rules! debug_log {
+    ($($arg:tt)*) => {
+        #[cfg(debug_assertions)]
+        {
+            println!($($arg)*);
+        }
+    }
+}
+// removed unused percent_encoding imports
+use tokio::time::{sleep, Duration};
 
 // Convert file:// URL to filesystem path
 fn file_url_to_path(s: &str) -> Option<PathBuf> {
@@ -41,14 +51,14 @@ fn resolve_file_path(input: &str) -> Option<PathBuf> {
 
 // Calculate appropriate window size with page-like proportions
 fn calculate_window_size(app: &AppHandle, prefs: &AppPreferences) -> tauri::Result<(f64, f64)> {
-    println!("[DEBUG] Current preferences: {}x{}", prefs.window_width, prefs.window_height);
+    debug_log!("[DEBUG] Current preferences: {}x{}", prefs.window_width, prefs.window_height);
     
     // If user has resized windows (preferences were saved), use those dimensions
     // Check if these are reasonable user-resized values (not corrupted massive values)
     if prefs.window_width > 200 && prefs.window_width < 5000 && 
        prefs.window_height > 200 && prefs.window_height < 5000 &&
        (prefs.window_width != 900 || prefs.window_height != 800) {
-        println!("[DEBUG] Using saved custom window size: {}x{}", prefs.window_width, prefs.window_height);
+        debug_log!("[DEBUG] Using saved custom window size: {}x{}", prefs.window_width, prefs.window_height);
         return Ok((prefs.window_width as f64, prefs.window_height as f64));
     }
     
@@ -65,19 +75,19 @@ fn calculate_window_size(app: &AppHandle, prefs: &AppPreferences) -> tauri::Resu
         let page_width = 900.0;
         let page_height = logical_height;
         
-        println!("[DEBUG] Monitor size: {}x{} (scale: {}), Using calculated window size: {}x{}", 
+        debug_log!("[DEBUG] Monitor size: {}x{} (scale: {}), Using calculated window size: {}x{}", 
                  logical_width, logical_height, scale_factor, page_width, page_height);
         
         Ok((page_width, page_height))
     } else {
-        println!("[DEBUG] Could not get monitor info, using fallback");
+        debug_log!("[DEBUG] Could not get monitor info, using fallback");
         Ok((900.0, 800.0))
     }
 }
 
 // UNIFIED WINDOW CREATION - Single source of truth for all window creation
 fn create_window_with_file(app: &AppHandle, file_path: Option<PathBuf>) -> tauri::Result<String> {
-    println!("[DEBUG] create_window_with_file called with: {:?}", file_path);
+    debug_log!("[DEBUG] create_window_with_file called with: {:?}", file_path);
     let prefs = get_preferences(app.clone()).unwrap_or_default();
     
     // Generate consistent window label and URL
@@ -86,23 +96,22 @@ fn create_window_with_file(app: &AppHandle, file_path: Option<PathBuf>) -> tauri
         let encoded_path = base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(path.to_string_lossy().as_bytes());
         let label = format!("markdown-file-{}", encoded_path);
         // Use standard URI encoding compatible with JavaScript's decodeURIComponent
-        let path_str = path.to_string_lossy().to_string();
-        let encoded_query = urlencoding::encode(&path_str);
+        // Reserve: available string path if needed for future query encoding
         // Tauri might not handle querystrings in App URLs correctly, so let's use the base64 label approach that was working
         let url = WebviewUrl::App("index.html".into());
-        println!("[DEBUG] Using window label approach instead of querystring");
+        debug_log!("[DEBUG] Using window label approach instead of querystring");
         let title = path.file_name()
             .and_then(|n| n.to_str())
             .map(|n| format!("BoltPage - {}", n))
             .unwrap_or_else(|| "BoltPage".to_string());
-        println!("[DEBUG] File window - label: {}, url: {:?}, title: {}", label, url, title);
+        debug_log!("[DEBUG] File window - label: {}, url: {:?}, title: {}", label, url, title);
         (label, url, title)
     } else {
         // Empty window
         let label = format!("markdown-{}", uuid::Uuid::new_v4());
         let url = WebviewUrl::App("index.html".into());
         let title = "BoltPage".to_string();
-        println!("[DEBUG] Empty window - label: {}, url: {:?}, title: {}", label, url, title);
+        debug_log!("[DEBUG] Empty window - label: {}, url: {:?}, title: {}", label, url, title);
         (label, url, title)
     };
     
@@ -144,12 +153,26 @@ fn create_window_with_file(app: &AppHandle, file_path: Option<PathBuf>) -> tauri
     Ok(window_label)
 }
 
-// Global file watchers storage
-struct FileWatchers(Arc<Mutex<HashMap<String, RecommendedWatcher>>>);
+// Global file watchers storage with dedup by file path and debounced emits
+struct FileWatchers {
+    // One OS watcher per file path
+    watchers: Arc<Mutex<HashMap<String, RecommendedWatcher>>>,
+    // Sender per file path to notify async task
+    senders: Arc<Mutex<HashMap<String, mpsc::UnboundedSender<()>>>>,
+    // Debounce task per file path
+    debounce_tasks: Arc<Mutex<HashMap<String, tauri::async_runtime::JoinHandle<()>>>>,
+    // Subscriptions: file path -> list of window labels
+    subs: Arc<Mutex<HashMap<String, Vec<String>>>>,
+}
 
 impl Default for FileWatchers {
     fn default() -> Self {
-        Self(Arc::new(Mutex::new(HashMap::new())))
+        Self {
+            watchers: Arc::new(Mutex::new(HashMap::new())),
+            senders: Arc::new(Mutex::new(HashMap::new())),
+            debounce_tasks: Arc::new(Mutex::new(HashMap::new())),
+            subs: Arc::new(Mutex::new(HashMap::new())),
+        }
     }
 }
 
@@ -159,6 +182,10 @@ struct AppState {
     opened_files: Arc<Mutex<Vec<String>>>,
     open_windows: Arc<Mutex<HashMap<String, String>>>, // file_path -> window_label
     setup_complete: Arc<Mutex<bool>>, // Track if setup is complete
+    // Debounced window resize save tasks per window label
+    resize_tasks: Arc<Mutex<HashMap<String, tauri::async_runtime::JoinHandle<()>>>>,
+    // Latest logical sizes per window label
+    latest_sizes: Arc<Mutex<HashMap<String, (u32, u32)>>>,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -186,50 +213,106 @@ impl Default for AppPreferences {
 
 #[tauri::command]
 async fn start_file_watcher(app: AppHandle, file_path: String, window_label: String) -> Result<(), String> {
-    let file_path_clone = file_path.clone();
-    let window_label_clone = window_label.clone();
-    
-    // Create a channel for file events
-    let (tx, mut rx) = mpsc::unbounded_channel();
-    
-    // Create the watcher
-    let mut watcher = RecommendedWatcher::new(
-        move |res: Result<notify::Event, notify::Error>| {
-            if let Ok(event) = res {
-                if matches!(event.kind, notify::EventKind::Modify(_)) {
-                    let _ = tx.send(());
-                }
-            }
-        },
-        Config::default(),
-    ).map_err(|e| format!("Failed to create watcher: {}", e))?;
-    
-    // Watch the file
-    watcher.watch(Path::new(&file_path_clone), RecursiveMode::NonRecursive)
-        .map_err(|e| format!("Failed to watch file: {}", e))?;
-    
-    // Store the watcher
     let watchers = app.state::<FileWatchers>();
-    watchers.0.lock().unwrap().insert(window_label_clone.clone(), watcher);
-    
-    // Spawn a task to handle file change events
-    let app_clone = app.clone();
-    tauri::async_runtime::spawn(async move {
-        while let Some(_) = rx.recv().await {
-            // Notify the window that the file has changed
-            if let Some(window) = app_clone.get_webview_window(&window_label_clone) {
-                let _ = window.emit("file-changed", ());
-            }
+
+    // Register subscription
+    {
+        let mut subs = watchers.subs.lock().map_err(|e| e.to_string())?;
+        let entry = subs.entry(file_path.clone()).or_default();
+        if !entry.iter().any(|w| w == &window_label) {
+            entry.push(window_label.clone());
         }
-    });
-    
+    }
+
+    // Ensure a single watcher exists for this file path
+    let need_create = {
+        let map = watchers.watchers.lock().map_err(|e| e.to_string())?;
+        !map.contains_key(&file_path)
+    };
+
+    if need_create {
+        // Channel for raw events
+        let (tx, mut rx) = mpsc::unbounded_channel();
+
+        // Create the watcher
+        let tx_for_watcher = tx.clone();
+        let mut watcher = RecommendedWatcher::new(
+            move |res: Result<notify::Event, notify::Error>| {
+                if let Ok(event) = res {
+                    if matches!(event.kind, notify::EventKind::Modify(_)) {
+                        let _ = tx_for_watcher.send(());
+                    }
+                }
+            },
+            Config::default(),
+        ).map_err(|e| format!("Failed to create watcher: {}", e))?;
+
+        // Watch the file
+        watcher.watch(Path::new(&file_path), RecursiveMode::NonRecursive)
+            .map_err(|e| format!("Failed to watch file: {}", e))?;
+
+        // Store watcher and sender
+        watchers.watchers.lock().map_err(|e| e.to_string())?.insert(file_path.clone(), watcher);
+        watchers.senders.lock().map_err(|e| e.to_string())?.insert(file_path.clone(), tx);
+
+        // Spawn a debounced notifier for this file path
+        let app_clone = app.clone();
+        let file_key = file_path.clone();
+        let handle = tauri::async_runtime::spawn(async move {
+            let mut pending_task: Option<tauri::async_runtime::JoinHandle<()>> = None;
+            while let Some(_) = rx.recv().await {
+                // Reset debounce timer
+                if let Some(h) = pending_task.take() { h.abort(); }
+                let app2 = app_clone.clone();
+                let file2 = file_key.clone();
+                pending_task = Some(tauri::async_runtime::spawn(async move {
+                    sleep(Duration::from_millis(250)).await;
+                    if let Some(state) = app2.try_state::<FileWatchers>() {
+                        if let Ok(subs) = state.subs.lock() {
+                            if let Some(labels) = subs.get(&file2) {
+                                for label in labels.iter() {
+                                    if let Some(win) = app2.get_webview_window(label) {
+                                        let _ = win.emit("file-changed", ());
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }));
+            }
+        });
+        watchers.debounce_tasks.lock().map_err(|e| e.to_string())?.insert(file_path.clone(), handle);
+    }
+
     Ok(())
 }
 
 #[tauri::command]
 fn stop_file_watcher(app: AppHandle, window_label: String) -> Result<(), String> {
     let watchers = app.state::<FileWatchers>();
-    watchers.0.lock().unwrap().remove(&window_label);
+    // Remove the window from all subscriptions and clean up any orphaned watchers
+    let mut to_remove: Vec<String> = Vec::new();
+    {
+        let mut subs = watchers.subs.lock().map_err(|e| e.to_string())?;
+        for (file, labels) in subs.iter_mut() {
+            labels.retain(|l| l != &window_label);
+            if labels.is_empty() {
+                to_remove.push(file.clone());
+            }
+        }
+        // Actually remove empty entries
+        for f in to_remove.iter() { subs.remove(f); }
+    }
+
+    // Stop watchers for files with no subscribers
+    for f in to_remove.iter() {
+        if let Ok(mut map) = watchers.watchers.lock() { map.remove(f); }
+        if let Ok(mut txs) = watchers.senders.lock() { txs.remove(f); }
+        if let Ok(mut tasks) = watchers.debounce_tasks.lock() {
+            if let Some(h) = tasks.remove(f) { h.abort(); }
+        }
+    }
+
     Ok(())
 }
 
@@ -249,26 +332,31 @@ fn show_window(app: AppHandle, window_label: String) -> Result<(), String> {
     Ok(())
 }
 
+// save_window_size kept for compatibility but now unused on the JS side.
 #[tauri::command]
 fn save_window_size(app: AppHandle, width: u32, height: u32) -> Result<(), String> {
-    // Convert physical pixels to logical pixels to match our window creation logic
-    let logical_size = if let Ok(Some(monitor)) = app.primary_monitor() {
+    let (lw, lh) = convert_to_logical(&app, width, height);
+    let mut prefs = get_preferences(app.clone()).unwrap_or_default();
+    prefs.window_width = lw;
+    prefs.window_height = lh;
+    save_preferences(app, prefs)?;
+    debug_log!("Saved new window size: {}x{}", lw, lh);
+    Ok(())
+}
+
+fn convert_to_logical(app: &AppHandle, width: u32, height: u32) -> (u32, u32) {
+    if let Ok(Some(monitor)) = app.primary_monitor() {
         let scale_factor = monitor.scale_factor();
         let logical_width = (width as f64 / scale_factor).round() as u32;
         let logical_height = (height as f64 / scale_factor).round() as u32;
-        println!("[DEBUG] Converting physical {}x{} to logical {}x{} (scale: {})", 
-                 width, height, logical_width, logical_height, scale_factor);
+        debug_log!(
+            "Converting physical {}x{} to logical {}x{} (scale: {})",
+            width, height, logical_width, logical_height, scale_factor
+        );
         (logical_width, logical_height)
     } else {
         (width, height)
-    };
-    
-    let mut prefs = get_preferences(app.clone()).unwrap_or_default();
-    prefs.window_width = logical_size.0;
-    prefs.window_height = logical_size.1;
-    save_preferences(app, prefs)?;
-    println!("[DEBUG] Saved new window size: {}x{}", logical_size.0, logical_size.1);
-    Ok(())
+    }
 }
 
 #[tauri::command]
@@ -291,6 +379,11 @@ fn parse_markdown(content: String) -> String {
 #[tauri::command]
 fn parse_markdown_with_theme(content: String, theme: String) -> String {
     markrust_core::parse_markdown_with_theme(&content, &theme)
+}
+
+#[tauri::command]
+fn get_syntax_css(theme: String) -> Result<String, String> {
+    markrust_core::get_syntax_theme_css(&theme).ok_or_else(|| "Failed to generate syntax CSS".to_string())
 }
 
 #[tauri::command]
@@ -416,7 +509,7 @@ fn debug_dump_state(app: AppHandle) -> Result<String, String> {
         *setup_complete, *opened_files, *open_windows
     );
     
-    println!("[RUST DEBUG] State dump: {}", debug_info);
+    debug_log!("[RUST DEBUG] State dump: {}", debug_info);
     Ok(debug_info)
 }
 
@@ -430,7 +523,7 @@ fn get_file_path_from_window_label(window: tauri::Window) -> Result<Option<Strin
             Ok(decoded_bytes) => {
                 match String::from_utf8(decoded_bytes) {
                     Ok(file_path) => {
-                        println!("[RUST DEBUG] Decoded file path from window label: {}", file_path);
+                        debug_log!("[RUST DEBUG] Decoded file path from window label: {}", file_path);
                         Ok(Some(file_path))
                     }
                     Err(e) => Err(format!("Failed to decode UTF-8: {}", e))
@@ -485,7 +578,8 @@ pub fn run() {
             create_new_window_command,
             remove_window_from_tracking,
             debug_dump_state,
-            get_file_path_from_window_label
+            get_file_path_from_window_label,
+            get_syntax_css
         ])
         .setup(move |app| {
             // Initialize file watchers state only (app state already managed)
@@ -567,11 +661,39 @@ pub fn run() {
         .on_window_event(|window, event| {
             match event {
                 tauri::WindowEvent::Resized(size) => {
+                    // Debounce saves on the Rust side and convert to logical pixels
                     let app = window.app_handle();
-                    if let Ok(mut prefs) = get_preferences(app.clone()) {
-                        prefs.window_width = size.width;
-                        prefs.window_height = size.height;
-                        let _ = save_preferences(app.clone(), prefs);
+                    let label = window.label().to_string();
+                    let (lw, lh) = convert_to_logical(&app, size.width, size.height);
+
+                    // update latest size
+                    if let Some(state) = app.try_state::<AppState>() {
+                        if let Ok(mut latest) = state.latest_sizes.lock() {
+                            latest.insert(label.clone(), (lw, lh));
+                        }
+                        // cancel previous task if any
+                        if let Ok(mut tasks) = state.resize_tasks.lock() {
+                            if let Some(handle) = tasks.remove(&label) {
+                                handle.abort();
+                            }
+                            let app_clone = app.clone();
+                            let label_clone = label.clone();
+                            let handle = tauri::async_runtime::spawn(async move {
+                                sleep(Duration::from_millis(450)).await;
+                                if let Some(state2) = app_clone.try_state::<AppState>() {
+                                    if let Ok(latest2) = state2.latest_sizes.lock() {
+                                        if let Some((w, h)) = latest2.get(&label_clone) {
+                                            let mut prefs = get_preferences(app_clone.clone()).unwrap_or_default();
+                                            prefs.window_width = *w;
+                                            prefs.window_height = *h;
+                                            let _ = save_preferences(app_clone.clone(), prefs);
+                                            debug_log!("Debounced save window size: {}x{} for {}", w, h, label_clone);
+                                        }
+                                    }
+                                }
+                            });
+                            tasks.insert(label, handle);
+                        }
                     }
                 }
                 tauri::WindowEvent::CloseRequested { .. } => {
