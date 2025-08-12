@@ -68,7 +68,7 @@ fn calculate_window_size(app: &AppHandle, prefs: &AppPreferences) -> tauri::Resu
         let scale_factor = monitor.scale_factor();
         
         // Convert physical pixels to logical pixels
-        let logical_width = monitor_size.width as f64 / scale_factor;
+        let _logical_width = monitor_size.width as f64 / scale_factor;
         let logical_height = monitor_size.height as f64 / scale_factor;
         
         // Page-like proportions: reasonable reading width, full screen height
@@ -76,7 +76,7 @@ fn calculate_window_size(app: &AppHandle, prefs: &AppPreferences) -> tauri::Resu
         let page_height = logical_height;
         
         debug_log!("[DEBUG] Monitor size: {}x{} (scale: {}), Using calculated window size: {}x{}", 
-                 logical_width, logical_height, scale_factor, page_width, page_height);
+                 _logical_width, logical_height, scale_factor, page_width, page_height);
         
         Ok((page_width, page_height))
     } else {
@@ -709,14 +709,13 @@ pub fn run() {
         .build(tauri::generate_context!())
         .expect("error while building tauri application")
         .run(|app, event| {
-            // Handle file opening from macOS Launch Services (Open With, double-click)
+            // Handle file opening via Launch Services only on Apple platforms
+            #[cfg(any(target_os = "macos", target_os = "ios"))]
             if let tauri::RunEvent::Opened { urls } = event {
-                // Only create windows if setup is complete, otherwise store for later
                 if let Some(state) = app.try_state::<AppState>() {
                     if let Ok(setup_complete) = state.setup_complete.try_lock() {
                         if *setup_complete {
-                            // Setup complete - create windows immediately
-                            drop(setup_complete); // Release lock before creating windows
+                            drop(setup_complete);
                             for url in urls {
                                 if let Some(path) = resolve_file_path(&url.to_string()) {
                                     if let Err(e) = create_window_with_file(&app, Some(path.clone())) {
@@ -727,7 +726,6 @@ pub fn run() {
                                 }
                             }
                         } else {
-                            // Setup not complete - store files for later processing
                             drop(setup_complete);
                             if let Ok(mut opened_files) = state.opened_files.try_lock() {
                                 *opened_files = urls.iter().map(|url| url.to_string()).collect();
