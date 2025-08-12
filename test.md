@@ -1,6 +1,6 @@
-# MarkRust Test Document
+# BoltPage Test Document
 
-This is a test document to demonstrate MarkRust's features.
+This is a test document to demonstrate BoltPage's features.
 
 ## GitHub Flavored Markdown Features
 
@@ -28,7 +28,7 @@ This is ~~deleted~~ text.
 
 ```javascript
 function hello() {
-    console.log("Hello from MarkRust!");
+    console.log("Hello from BoltPage!");
 }
 ```
 

@@ -8,7 +8,7 @@ This document tests all themes with various Markdown elements.
 ```javascript
 // Test JavaScript syntax highlighting
 const app = {
-    name: 'MarkRust',
+    name: 'BoltPage',
     version: '1.0.0',
     themes: ['light', 'dark', 'system', 'drac'],
     
