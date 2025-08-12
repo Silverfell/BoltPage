@@ -53,20 +53,20 @@ case "$OS_NAME" in
 
   MINGW*|MSYS*|CYGWIN*)
     echo "🚀 Building BoltPage for Windows release..."
-    echo "📦 Building installers (MSI/NSIS) via Tauri..."
+    echo "📦 Building NSIS installer via Tauri (avoids WiX/MSI requirement)..."
 
     # On Windows, signing requires proper configuration in tauri.conf.json and installed tooling.
     # This script will just build the installers as configured.
-    npm run tauri build
+    npm run tauri build -- --bundles nsis
 
     echo "✅ Build complete!"
     echo ""
-    echo "📁 Build artifacts (if configured):"
-    echo "   MSI:"
-    ls -1 target/release/bundle/msi/*.msi 2>/dev/null || echo "   (no MSI found)"
+    echo "📁 Build artifacts:"
     echo "   NSIS/EXE:"
     ls -1 target/release/bundle/nsis/*.exe 2>/dev/null || echo "   (no NSIS EXE found)"
     echo ""
+    echo "ℹ️ For MSI output, install WiX Toolset v3 and run: 'npm run tauri build -- --bundles msi'"
+    echo "   WiX install (PowerShell/Administrator): choco install wixtoolset --version 3.14.0.2921"
     echo "ℹ️ Windows code signing can be configured in src-tauri/tauri.conf.json under bundle.windows."
     ;;
 

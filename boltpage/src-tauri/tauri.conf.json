@@ -46,7 +46,7 @@
       "tsp": false,
       "wix": {
         "language": "en-US",
-        "template": "main.wxs",
+        "template": null,
         "fragmentPaths": [],
         "componentGroupRefs": [],
         "componentRefs": [],

@@ -708,17 +708,17 @@ pub fn run() {
         })
         .build(tauri::generate_context!())
         .expect("error while building tauri application")
-        .run(|app, event| {
+        .run(|_app, _event| {
             // Handle file opening via Launch Services only on Apple platforms
             #[cfg(any(target_os = "macos", target_os = "ios"))]
-            if let tauri::RunEvent::Opened { urls } = event {
-                if let Some(state) = app.try_state::<AppState>() {
+            if let tauri::RunEvent::Opened { urls } = _event {
+                if let Some(state) = _app.try_state::<AppState>() {
                     if let Ok(setup_complete) = state.setup_complete.try_lock() {
                         if *setup_complete {
                             drop(setup_complete);
                             for url in urls {
                                 if let Some(path) = resolve_file_path(&url.to_string()) {
-                                    if let Err(e) = create_window_with_file(&app, Some(path.clone())) {
+                                    if let Err(e) = create_window_with_file(&_app, Some(path.clone())) {
                                         eprintln!("Failed to open window for {:?}: {}", path, e);
                                     }
                                 } else {
