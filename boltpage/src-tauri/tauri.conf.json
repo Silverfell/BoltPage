@@ -29,6 +29,18 @@
         "name": "Markdown Document",
         "description": "Markdown Document",
         "role": "Editor"
+      },
+      {
+        "ext": ["json"],
+        "name": "JSON Document",
+        "description": "JSON Document",
+        "role": "Editor"
+      },
+      {
+        "ext": ["txt"],
+        "name": "Text Document",
+        "description": "Text Document",
+        "role": "Editor"
       }
     ],
     "category": "Productivity",

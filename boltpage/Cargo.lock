@@ -2134,6 +2134,7 @@ version = "0.1.0"
 dependencies = [
  "once_cell",
  "pulldown-cmark",
+ "serde_json",
  "syntect",
 ]
 

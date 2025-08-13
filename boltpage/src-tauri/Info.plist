@@ -60,6 +60,26 @@
 				<string>public.plain-text</string>
 			</array>
 		</dict>
+		<!-- JSON Files -->
+		<dict>
+			<key>CFBundleTypeExtensions</key>
+			<array>
+				<string>json</string>
+			</array>
+			<key>CFBundleTypeIconFile</key>
+			<string>icon</string>
+			<key>CFBundleTypeName</key>
+			<string>JSON Document</string>
+			<key>CFBundleTypeRole</key>
+			<string>Editor</string>
+			<key>LSHandlerRank</key>
+			<string>Alternate</string>
+			<key>LSItemContentTypes</key>
+			<array>
+				<string>public.json</string>
+				<string>public.plain-text</string>
+			</array>
+		</dict>
 	</array>
 	
 	<!-- Imported Type Declarations -->
@@ -173,6 +193,8 @@
 	<key>QLSupportedContentTypes</key>
 	<array>
 		<string>net.daringfireball.markdown</string>
+		<string>public.json</string>
+		<string>public.plain-text</string>
 	</array>
 </dict>
 </plist>

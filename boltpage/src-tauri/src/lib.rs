@@ -387,6 +387,11 @@ fn get_syntax_css(theme: String) -> Result<String, String> {
 }
 
 #[tauri::command]
+fn parse_json_with_theme(content: String, theme: String) -> Result<String, String> {
+    markrust_core::parse_json_with_theme(&content, &theme)
+}
+
+#[tauri::command]
 fn get_preferences(app: AppHandle) -> Result<AppPreferences, String> {
     let store = app.store(".boltpage.dat")
         .map_err(|e| format!("Failed to access store: {}", e))?;
@@ -415,7 +420,10 @@ async fn open_file_dialog(app: AppHandle) -> Result<Option<String>, String> {
     
     let file_path = app.dialog()
         .file()
+        .add_filter("Supported Files", &["md", "markdown", "json", "txt"])
         .add_filter("Markdown", &["md", "markdown"])
+        .add_filter("JSON", &["json"])
+        .add_filter("Text", &["txt"])
         .blocking_pick_file();
     
     Ok(file_path.map(|p| p.to_string()))
@@ -579,7 +587,8 @@ pub fn run() {
             remove_window_from_tracking,
             debug_dump_state,
             get_file_path_from_window_label,
-            get_syntax_css
+            get_syntax_css,
+            parse_json_with_theme
         ])
         .setup(move |app| {
             // Initialize file watchers state only (app state already managed)

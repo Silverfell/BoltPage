@@ -3,6 +3,7 @@ use syntect::parsing::SyntaxSet;
 use syntect::highlighting::ThemeSet;
 use syntect::html::{ClassedHTMLGenerator, ClassStyle, css_for_theme_with_class_style};
 use once_cell::sync::Lazy;
+use serde_json as serde_json_crate;
 
 static SYNTAX_SET: Lazy<SyntaxSet> = Lazy::new(|| SyntaxSet::load_defaults_newlines());
 static THEME_SET: Lazy<ThemeSet> = Lazy::new(|| ThemeSet::load_defaults());
@@ -108,4 +109,36 @@ pub fn get_syntax_theme_css(theme_name: &str) -> Option<String> {
 
     let css = css_for_theme_with_class_style(theme, ClassStyle::Spaced).ok()?;
     Some(css)
+}
+
+/// Pretty-print JSON and return class-based highlighted HTML for the JSON syntax
+pub fn parse_json_with_theme(content: &str, _theme_name: &str) -> Result<String, String> {
+    // Pretty-print
+    let json_value: serde_json_crate::Value = serde_json_crate::from_str(content)
+        .map_err(|e| format!("Invalid JSON: {}", e))?;
+    let pretty = serde_json_crate::to_string_pretty(&json_value)
+        .map_err(|e| format!("Failed to pretty-print JSON: {}", e))?;
+
+    // Highlight as JSON
+    let syntax = SYNTAX_SET
+        .find_syntax_by_token("JSON")
+        .or_else(|| SYNTAX_SET.find_syntax_by_token("json"))
+        .ok_or_else(|| "JSON syntax not found".to_string())?;
+
+    let mut generator = ClassedHTMLGenerator::new_with_class_style(
+        syntax,
+        &SYNTAX_SET,
+        ClassStyle::Spaced,
+    );
+
+    for line in pretty.lines() {
+        let _ = generator.parse_html_for_line_which_includes_newline(&format!("{}\n", line));
+    }
+
+    let highlighted = generator.finalize();
+    let html = format!(
+        "<div class=\"highlight\"><pre><code class=\"language-json\">{}</code></pre></div>",
+        highlighted
+    );
+    Ok(html)
 }

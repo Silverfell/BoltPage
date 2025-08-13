@@ -9,6 +9,15 @@ let fileWatcher = null;
 let currentTheme = 'system';
 
 
+function escapeHtml(str) {
+    return str
+        .replace(/&/g, '&amp;')
+        .replace(/</g, '&lt;')
+        .replace(/>/g, '&gt;')
+        .replace(/"/g, '&quot;')
+        .replace(/'/g, '&#039;');
+}
+
 async function loadPreferences() {
     try {
         const prefs = await invoke('get_preferences');
@@ -79,11 +88,25 @@ async function openFile(filePath) {
         console.log('[DEBUG] About to call read_file with path:', filePath);
         const content = await invoke('read_file', { path: filePath });
         console.log('[DEBUG] read_file returned content length:', content.length);
-        
-        console.log('[DEBUG] About to call parse_markdown_with_theme');
-        const html = await invoke('parse_markdown_with_theme', { content, theme: currentTheme });
-        console.log('[DEBUG] parse_markdown_with_theme returned HTML length:', html.length);
-        
+
+        const lowerPath = String(filePath).toLowerCase();
+        let html;
+        if (lowerPath.endsWith('.json')) {
+            console.log('[DEBUG] About to call parse_json_with_theme');
+            try {
+                html = await invoke('parse_json_with_theme', { content, theme: currentTheme });
+                console.log('[DEBUG] parse_json_with_theme returned HTML length:', html.length);
+            } catch (e) {
+                console.error('[DEBUG] parse_json_with_theme failed:', e);
+                const msg = typeof e === 'string' ? e : (e && e.message) ? e.message : 'Invalid JSON';
+                html = `<div class="markdown-body"><pre style="color: var(--danger, #c00); white-space: pre-wrap;">JSON error: ${escapeHtml(String(msg))}</pre></div>`;
+            }
+        } else {
+            console.log('[DEBUG] About to call parse_markdown_with_theme');
+            html = await invoke('parse_markdown_with_theme', { content, theme: currentTheme });
+            console.log('[DEBUG] parse_markdown_with_theme returned HTML length:', html.length);
+        }
+
         currentFilePath = filePath;
         console.log('[DEBUG] About to set innerHTML');
         document.getElementById('markdown-content').innerHTML = html;
