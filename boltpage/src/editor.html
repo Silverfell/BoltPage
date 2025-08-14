@@ -8,14 +8,22 @@
     <script type="module" src="/editor.js" defer></script>
 </head>
 <body>
-    <div class="editor-container">
+        <div class="editor-container">
         <div class="editor-toolbar">
             <span class="editor-status" id="editor-status">Ready</span>
-            <button id="close-btn" class="toolbar-btn" title="Close editor">
-                <svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="2">
-                    <path d="M12 4L4 12M4 4l8 8"/>
-                </svg>
-            </button>
+            <div class="editor-toolbar-right">
+                <button id="link-scroll-btn" class="toolbar-btn" title="Toggle scroll linking (Ctrl+L)">
+                    <svg width="16" height="16" viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="2">
+                        <path d="M10 13a3 3 0 004.24 0l2.12-2.12a3 3 0 10-4.24-4.24l-.88.88"/>
+                        <path d="M14 7a3 3 0 00-4.24 0L7.64 9.12a3 3 0 104.24 4.24l.88-.88"/>
+                    </svg>
+                </button>
+                <button id="close-btn" class="toolbar-btn" title="Close editor">
+                    <svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="2">
+                        <path d="M12 4L4 12M4 4l8 8"/>
+                    </svg>
+                </button>
+            </div>
         </div>
         <textarea id="editor-textarea" class="editor-textarea" placeholder="Start typing..." spellcheck="false"></textarea>
     </div>

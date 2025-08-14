@@ -325,6 +325,13 @@ fn broadcast_theme_change(app: AppHandle, theme: String) -> Result<(), String> {
 }
 
 #[tauri::command]
+fn broadcast_scroll_link(app: AppHandle, enabled: bool) -> Result<(), String> {
+    app.emit("scroll-link-changed", &enabled)
+        .map_err(|e| format!("Failed to broadcast scroll-link: {}", e))?;
+    Ok(())
+}
+
+#[tauri::command]
 fn show_window(app: AppHandle, window_label: String) -> Result<(), String> {
     if let Some(window) = app.get_webview_window(&window_label) {
         window.show().map_err(|e| format!("Failed to show window: {}", e))?;
@@ -372,6 +379,14 @@ fn write_file(path: String, content: String) -> Result<(), String> {
 }
 
 #[tauri::command]
+fn is_writable(path: String) -> Result<bool, String> {
+    match fs::metadata(&path) {
+        Ok(meta) => Ok(!meta.permissions().readonly()),
+        Err(e) => Err(format!("Failed to get metadata: {}", e)),
+    }
+}
+
+#[tauri::command]
 fn parse_markdown(content: String) -> String {
     markrust_core::parse_markdown(&content)
 }
@@ -384,6 +399,29 @@ fn parse_markdown_with_theme(content: String, theme: String) -> String {
 #[tauri::command]
 fn parse_json_with_theme(content: String, theme: String) -> Result<String, String> {
     markrust_core::parse_json_with_theme(&content, &theme)
+}
+
+#[tauri::command]
+fn format_json_pretty(content: String) -> Result<String, String> {
+    // Pretty-print JSON using serde_json with default map ordering (sorted keys)
+    let value: serde_json::Value = serde_json::from_str(&content)
+        .map_err(|e| format!("Invalid JSON: {}", e))?;
+    serde_json::to_string_pretty(&value).map_err(|e| format!("Failed to pretty-print JSON: {}", e))
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone)]
+struct ScrollSyncPayload {
+    source: String,
+    file_path: String,
+    kind: String,              // e.g., "json", "markdown", "txt"
+    line: Option<u32>,         // topmost line (1-based) when applicable
+    percent: Option<f64>,      // fallback scroll percent [0.0, 1.0]
+}
+
+#[tauri::command]
+fn broadcast_scroll_sync(app: AppHandle, payload: ScrollSyncPayload) -> Result<(), String> {
+    app.emit("scroll-sync", &payload)
+        .map_err(|e| format!("Failed to broadcast scroll sync: {}", e))
 }
 
 #[tauri::command]
@@ -571,9 +609,12 @@ pub fn run() {
         .invoke_handler(tauri::generate_handler![
             read_file,
             write_file,
+            is_writable,
             parse_markdown,
             parse_markdown_with_theme,
             parse_json_with_theme,
+            format_json_pretty,
+            broadcast_scroll_sync,
             get_preferences,
             save_preferences,
             open_file_dialog,
@@ -582,6 +623,7 @@ pub fn run() {
             start_file_watcher,
             stop_file_watcher,
             broadcast_theme_change,
+            broadcast_scroll_link,
             show_window,
             save_window_size,
             get_opened_files,

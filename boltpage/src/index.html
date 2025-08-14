@@ -9,19 +9,21 @@
 </head>
 <body>
     <div class="toolbar">
-        <div class="toolbar-buttons">
+        <div class="toolbar-left">
+            <button id="refresh-btn" class="toolbar-btn" title="Refresh">
+                <svg width="20" height="20" viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="2">
+                    <path d="M4 10a6 6 0 1011.18-3H12v3M16 10a6 6 0 10-11.18 3H8v-3"/>
+                </svg>
+                <span class="refresh-indicator" id="refresh-indicator">!</span>
+            </button>
+        </div>
+        <div class="toolbar-right">
+            <div class="toolbar-buttons">
             <button id="open-btn" class="toolbar-btn" title="Open file (Ctrl+O)">
                 <svg width="20" height="20" viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="2">
                     <path d="M3 7V4a1 1 0 011-1h5l2 2h5a1 1 0 011 1v1M3 7v9a1 1 0 001 1h12a1 1 0 001-1V8a1 1 0 00-1-1h-6l-2-2H4a1 1 0 00-1 1v1z"/>
                 </svg>
                 Open
-            </button>
-            <button id="refresh-btn" class="toolbar-btn" title="Refresh (Ctrl+R)">
-                <svg width="20" height="20" viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="2">
-                    <path d="M4 10a6 6 0 1011.18-3H12v3M16 10a6 6 0 10-11.18 3H8v-3"/>
-                </svg>
-                <span class="refresh-indicator" id="refresh-indicator">!</span>
-                Refresh
             </button>
             <button id="theme-btn" class="toolbar-btn" title="Theme (Ctrl+T)">
                 <svg width="20" height="20" viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="2">
@@ -36,6 +38,7 @@
                 </svg>
                 Edit
             </button>
+            </div>
         </div>
         <div id="theme-menu" class="theme-menu">
             <button class="theme-option" data-theme="light">Light</button>

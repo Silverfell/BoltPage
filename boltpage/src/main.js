@@ -7,6 +7,11 @@ const appWindow = getCurrentWindow();
 let currentFilePath = null;
 let fileWatcher = null;
 let currentTheme = 'system';
+let currentKind = 'markdown'; // 'json' | 'markdown' | 'txt'
+let isProgrammaticScroll = false;
+let scrollDebounce = null;
+let contentEl = null; // scrolling container (.content-wrapper)
+let scrollLinkEnabled = true;
 
 
 function escapeHtml(str) {
@@ -92,6 +97,7 @@ async function openFile(filePath) {
         const lowerPath = String(filePath).toLowerCase();
         let html;
         if (lowerPath.endsWith('.json')) {
+            currentKind = 'json';
             console.log('[DEBUG] About to call parse_json_with_theme');
             try {
                 html = await invoke('parse_json_with_theme', { content, theme: currentTheme });
@@ -101,7 +107,13 @@ async function openFile(filePath) {
                 const msg = typeof e === 'string' ? e : (e && e.message) ? e.message : 'Invalid JSON';
                 html = `<div class="markdown-body"><pre style="color: var(--danger, #c00); white-space: pre-wrap;">JSON error: ${escapeHtml(String(msg))}</pre></div>`;
             }
+        } else if (lowerPath.endsWith('.txt')) {
+            currentKind = 'txt';
+            // Render plain text in a pre block with escaping
+            const escaped = escapeHtml(content);
+            html = `<div class="markdown-body"><pre class="plain-text">${escaped}</pre></div>`;
         } else {
+            currentKind = 'markdown';
             console.log('[DEBUG] About to call parse_markdown_with_theme');
             html = await invoke('parse_markdown_with_theme', { content, theme: currentTheme });
             console.log('[DEBUG] parse_markdown_with_theme returned HTML length:', html.length);
@@ -111,12 +123,17 @@ async function openFile(filePath) {
         console.log('[DEBUG] About to set innerHTML');
         document.getElementById('markdown-content').innerHTML = html;
         console.log('[DEBUG] innerHTML set successfully');
+        // Update edit button availability based on file writability
+        updateEditButtonState();
         
         // Title is already set during window creation - no need to set it again
         
-        // Show the window now that content is loaded (prevents flash of welcome message)
+        // Show the window only if it's not yet visible (first load)
         try {
-            await invoke('show_window', { windowLabel: appWindow.label });
+            const visible = await appWindow.isVisible();
+            if (!visible) {
+                await invoke('show_window', { windowLabel: appWindow.label });
+            }
         } catch (err) {
             console.error('Failed to show window:', err);
         }
@@ -129,6 +146,63 @@ async function openFile(filePath) {
         console.error('[DEBUG] Failed to open file:', err);
         alert(`Failed to open file: ${err}`);
     }
+}
+
+function parsePx(v) {
+    const n = parseFloat(v);
+    return Number.isFinite(n) ? n : 0;
+}
+
+function getPreAndMetrics() {
+    let pre = null;
+    if (currentKind === 'json') {
+        pre = document.querySelector('#markdown-content .highlight pre');
+    } else if (currentKind === 'txt') {
+        pre = document.querySelector('#markdown-content pre.plain-text');
+    }
+    if (!pre) return null;
+    const cs = window.getComputedStyle(pre);
+    let lh = parsePx(cs.lineHeight);
+    if (!lh) {
+        // fallback: 1.2 * font-size
+        lh = 1.2 * parsePx(cs.fontSize || '16');
+    }
+    // compute pre's top relative to the scrolling container
+    const preTop = offsetTopWithin(contentEl, pre);
+    return { pre, lineHeight: lh, preTop };
+}
+
+function getTopLineForPreview() {
+    if (currentKind === 'json' || currentKind === 'txt') {
+        const m = getPreAndMetrics();
+        if (!m) return null;
+        const offset = Math.max(0, contentEl.scrollTop - m.preTop);
+        const line = Math.floor(offset / m.lineHeight) + 1;
+        return { kind: currentKind, line };
+    }
+    // Fallback: percent scroll for markdown
+    const maxScroll = Math.max(1, contentEl.scrollHeight - contentEl.clientHeight);
+    const percent = Math.max(0, Math.min(1, contentEl.scrollTop / maxScroll));
+    return { kind: 'markdown', percent };
+}
+
+function scrollPreviewToLine(line) {
+    const m = getPreAndMetrics();
+    if (!m) return;
+    const y = m.preTop + (Math.max(1, line) - 1) * m.lineHeight;
+    isProgrammaticScroll = true;
+    contentEl.scrollTo({ top: y, behavior: 'auto' });
+    setTimeout(() => { isProgrammaticScroll = false; }, 0);
+}
+
+function offsetTopWithin(container, el) {
+    let y = 0;
+    let node = el;
+    while (node && node !== container) {
+        y += node.offsetTop || 0;
+        node = node.offsetParent;
+    }
+    return y;
 }
 
 async function refreshFile() {
@@ -152,6 +226,23 @@ async function openEditor() {
         alert('Please open a file first');
         return;
     }
+    // Block if file type isn't editable
+    if (!isEditableType(currentFilePath)) {
+        alert('This file type is view-only and cannot be edited.');
+        return;
+    }
+    // Block if file is not writable
+    try {
+        const writable = await invoke('is_writable', { path: currentFilePath });
+        if (!writable) {
+            alert('This file is write-protected and cannot be edited.');
+            return;
+        }
+    } catch (_) {
+        // If we cannot confirm writability, be conservative and block
+        alert('Unable to verify edit permission for this file.');
+        return;
+    }
     
     try {
         await invoke('open_editor_window', { 
@@ -164,12 +255,55 @@ async function openEditor() {
     }
 }
 
+async function updateEditButtonState() {
+    const editBtn = document.getElementById('edit-btn');
+    if (!editBtn) return;
+    if (!currentFilePath) {
+        editBtn.setAttribute('disabled', 'true');
+        return;
+    }
+    // Disable for non-editable types (e.g., pdf)
+    if (!isEditableType(currentFilePath)) {
+        editBtn.setAttribute('disabled', 'true');
+        return;
+    }
+    try {
+        const writable = await invoke('is_writable', { path: currentFilePath });
+        if (writable) {
+            editBtn.removeAttribute('disabled');
+        } else {
+            editBtn.setAttribute('disabled', 'true');
+        }
+    } catch (e) {
+        // On error, be conservative and disable
+        editBtn.setAttribute('disabled', 'true');
+    }
+}
+
+function isEditableType(filePath) {
+    const lower = String(filePath).toLowerCase();
+    return (
+        lower.endsWith('.md') ||
+        lower.endsWith('.markdown') ||
+        lower.endsWith('.txt') ||
+        lower.endsWith('.json')
+    );
+}
+
 function setupEventListeners() {
     // Toolbar buttons
     document.getElementById('open-btn').addEventListener('click', () => openFile());
     document.getElementById('refresh-btn').addEventListener('click', refreshFile);
     document.getElementById('theme-btn').addEventListener('click', toggleThemeMenu);
     document.getElementById('edit-btn').addEventListener('click', openEditor);
+    const linkBtn = document.getElementById('link-scroll-btn');
+    if (linkBtn) {
+        linkBtn.addEventListener('click', async () => {
+            scrollLinkEnabled = !scrollLinkEnabled;
+            updateLinkScrollButton();
+            try { await invoke('broadcast_scroll_link', { enabled: scrollLinkEnabled }); } catch {}
+        });
+    }
     
     // Theme menu
     document.querySelectorAll('.theme-option').forEach(btn => {
@@ -204,6 +338,9 @@ function setupEventListeners() {
         } else if (ctrl && e.key === 'e') {
             e.preventDefault();
             openEditor();
+        } else if (ctrl && e.key === 'l') {
+            e.preventDefault();
+            if (linkBtn) linkBtn.click();
         } else if (ctrl && e.key === 'n') {
             e.preventDefault();
             // Create new window
@@ -255,6 +392,11 @@ window.addEventListener('DOMContentLoaded', async () => {
         
         setupEventListeners();
         await loadPreferences();
+        // Initial edit button state
+        updateEditButtonState();
+        // Cache content wrapper and attach scroll sync listener
+        contentEl = document.querySelector('.content-wrapper');
+        attachPreviewScrollSync();
     
         // Listen for file change events
         await listen('file-changed', () => {
@@ -273,6 +415,30 @@ window.addEventListener('DOMContentLoaded', async () => {
                 btn.classList.toggle('active', btn.dataset.theme === currentTheme);
             });
             // No need to re-render; CSS-only theme swap
+        });
+
+        // Listen for scroll-link state changes
+        await listen('scroll-link-changed', (event) => {
+            scrollLinkEnabled = !!event.payload;
+            updateLinkScrollButton();
+        });
+
+        // Listen for scroll sync events from other windows
+        await listen('scroll-sync', async (event) => {
+            const payload = event.payload || {};
+            if (!currentFilePath || !scrollLinkEnabled) return;
+            if (payload.source === appWindow.label) return; // ignore self
+            if (payload.file_path !== currentFilePath) return;
+            if (payload.kind === 'json' && typeof payload.line === 'number') {
+                // Scroll preview to the requested line
+                scrollPreviewToLine(payload.line);
+            } else if (typeof payload.percent === 'number') {
+                // Apply percentage scroll for markdown or others
+                const maxScroll = Math.max(1, contentEl.scrollHeight - contentEl.clientHeight);
+                isProgrammaticScroll = true;
+                contentEl.scrollTo({ top: payload.percent * maxScroll, behavior: 'auto' });
+                setTimeout(() => { isProgrammaticScroll = false; }, 0);
+            }
         });
         
         // Check for file parameter in querystring (new approach for Opened event handling)
@@ -304,16 +470,16 @@ window.addEventListener('DOMContentLoaded', async () => {
         }
     }
     
-    // Use the querystring approach first, then window label, then legacy methods
-    if (filePath) {
-        console.log('[DEBUG] About to call openFile with:', filePath);
-        try {
-            await openFile(filePath);
-            console.log('[DEBUG] openFile completed successfully');
-        } catch (error) {
-            console.error('[DEBUG] openFile failed:', error);
-        }
-    } else if (window.__INITIAL_FILE_PATH__) {
+        // Use the querystring approach first, then window label, then legacy methods
+        if (filePath) {
+            console.log('[DEBUG] About to call openFile with:', filePath);
+            try {
+                await openFile(filePath);
+                console.log('[DEBUG] openFile completed successfully');
+            } catch (error) {
+                console.error('[DEBUG] openFile failed:', error);
+            }
+        } else if (window.__INITIAL_FILE_PATH__) {
         console.log('[DEBUG] Opening file from __INITIAL_FILE_PATH__ (legacy):', window.__INITIAL_FILE_PATH__);
         await openFile(window.__INITIAL_FILE_PATH__);
     } else {
@@ -352,3 +518,35 @@ window.addEventListener('DOMContentLoaded', async () => {
 window.addEventListener('beforeunload', () => {
     stopFileWatcher();
 });
+
+// Send scroll position changes to editor (or other listeners)
+function attachPreviewScrollSync() {
+    if (!contentEl) return;
+    contentEl.addEventListener('scroll', () => {
+        if (!currentFilePath || isProgrammaticScroll || !scrollLinkEnabled) return;
+        if (scrollDebounce) cancelAnimationFrame(scrollDebounce);
+        scrollDebounce = requestAnimationFrame(async () => {
+            const info = getTopLineForPreview();
+            if (!info) return;
+            const payload = {
+                source: appWindow.label,
+                file_path: currentFilePath,
+                kind: info.kind,
+                line: typeof info.line === 'number' ? info.line : null,
+                percent: typeof info.percent === 'number' ? info.percent : null,
+            };
+            try {
+                await invoke('broadcast_scroll_sync', { payload });
+            } catch (e) {
+                console.warn('Failed to broadcast scroll sync:', e);
+            }
+        });
+    });
+}
+
+function updateLinkScrollButton() {
+    const btn = document.getElementById('link-scroll-btn');
+    if (!btn) return;
+    btn.classList.toggle('active', scrollLinkEnabled);
+    btn.setAttribute('aria-pressed', String(scrollLinkEnabled));
+}

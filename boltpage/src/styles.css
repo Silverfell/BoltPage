@@ -98,10 +98,16 @@ body {
   border-bottom: 1px solid var(--toolbar-border);
   padding: 8px 12px;
   display: flex;
-  justify-content: flex-end;
+  justify-content: space-between;
   align-items: center;
   position: relative;
   flex-shrink: 0;
+}
+
+.toolbar-left,
+.toolbar-right {
+  display: flex;
+  align-items: center;
 }
 
 .toolbar-buttons {
@@ -123,6 +129,12 @@ body {
   transition: all 0.2s ease;
   font-family: inherit;
   position: relative;
+}
+
+.toolbar-btn[disabled],
+.toolbar-btn.disabled {
+  opacity: 0.5;
+  pointer-events: none;
 }
 
 .toolbar-btn:hover {

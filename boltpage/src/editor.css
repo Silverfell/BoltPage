@@ -80,6 +80,12 @@ body {
   flex-shrink: 0;
 }
 
+.editor-toolbar-right {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+}
+
 .editor-status {
   font-size: 12px;
   color: var(--text-color);
