@@ -12,75 +12,75 @@
 	
 	<!-- Bundle Get Info String -->
     <key>CFBundleGetInfoString</key>
-    <string>BoltPage 1.0.0, Copyright © 2024 BoltPage Contributors</string>
+    <string>BoltPage 1.1.0, Copyright © 2024 BoltPage Contributors</string>
 	
-	<!-- Document Types Configuration -->
-	<key>CFBundleDocumentTypes</key>
-	<array>
-		<!-- Markdown Files -->
-		<dict>
-			<key>CFBundleTypeExtensions</key>
-			<array>
-				<string>md</string>
-				<string>markdown</string>
-				<string>mdown</string>
-				<string>mkd</string>
-				<string>mkdn</string>
-			</array>
-			<key>CFBundleTypeIconFile</key>
-			<string>icon</string>
-			<key>CFBundleTypeName</key>
-			<string>Markdown Document</string>
-			<key>CFBundleTypeRole</key>
-			<string>Editor</string>
-			<key>LSHandlerRank</key>
-			<string>Owner</string>
-			<key>LSItemContentTypes</key>
-			<array>
-				<string>net.daringfireball.markdown</string>
-				<string>public.plain-text</string>
-			</array>
-		</dict>
-		<!-- Text Files (fallback) -->
-		<dict>
-			<key>CFBundleTypeExtensions</key>
-			<array>
-				<string>txt</string>
-			</array>
-			<key>CFBundleTypeIconFile</key>
-			<string>icon</string>
-			<key>CFBundleTypeName</key>
-			<string>Plain Text Document</string>
-			<key>CFBundleTypeRole</key>
-			<string>Editor</string>
-			<key>LSHandlerRank</key>
-			<string>Alternate</string>
-			<key>LSItemContentTypes</key>
-			<array>
-				<string>public.plain-text</string>
-			</array>
-		</dict>
-		<!-- JSON Files -->
-		<dict>
-			<key>CFBundleTypeExtensions</key>
-			<array>
-				<string>json</string>
-			</array>
-			<key>CFBundleTypeIconFile</key>
-			<string>icon</string>
-			<key>CFBundleTypeName</key>
-			<string>JSON Document</string>
-			<key>CFBundleTypeRole</key>
-			<string>Editor</string>
-			<key>LSHandlerRank</key>
-			<string>Alternate</string>
-			<key>LSItemContentTypes</key>
-			<array>
-				<string>public.json</string>
-				<string>public.plain-text</string>
-			</array>
-		</dict>
-	</array>
+		<!-- Document Types Configuration (macOS authoritative; Tauri won't merge when a custom plist exists) -->
+		<key>CFBundleDocumentTypes</key>
+		<array>
+			<!-- Markdown Files -->
+			<dict>
+				<key>CFBundleTypeExtensions</key>
+				<array>
+					<string>md</string>
+					<string>markdown</string>
+					<string>mdown</string>
+					<string>mkd</string>
+					<string>mkdn</string>
+				</array>
+				<key>CFBundleTypeIconFile</key>
+				<string>icon</string>
+				<key>CFBundleTypeName</key>
+				<string>Markdown Document</string>
+				<key>CFBundleTypeRole</key>
+				<string>Editor</string>
+				<key>LSHandlerRank</key>
+				<string>Owner</string>
+				<key>LSItemContentTypes</key>
+				<array>
+					<string>net.daringfireball.markdown</string>
+					<string>public.plain-text</string>
+				</array>
+			</dict>
+			<!-- Text Files (fallback) -->
+			<dict>
+				<key>CFBundleTypeExtensions</key>
+				<array>
+					<string>txt</string>
+				</array>
+				<key>CFBundleTypeIconFile</key>
+				<string>icon</string>
+				<key>CFBundleTypeName</key>
+				<string>Plain Text Document</string>
+				<key>CFBundleTypeRole</key>
+				<string>Editor</string>
+				<key>LSHandlerRank</key>
+				<string>Owner</string>
+				<key>LSItemContentTypes</key>
+				<array>
+					<string>public.plain-text</string>
+				</array>
+			</dict>
+			<!-- JSON Files -->
+			<dict>
+				<key>CFBundleTypeExtensions</key>
+				<array>
+					<string>json</string>
+				</array>
+				<key>CFBundleTypeIconFile</key>
+				<string>icon</string>
+				<key>CFBundleTypeName</key>
+				<string>JSON Document</string>
+				<key>CFBundleTypeRole</key>
+				<string>Editor</string>
+				<key>LSHandlerRank</key>
+				<string>Owner</string>
+				<key>LSItemContentTypes</key>
+				<array>
+					<string>public.json</string>
+					<string>public.plain-text</string>
+				</array>
+			</dict>
+		</array>
 	
 	<!-- Imported Type Declarations -->
 	<key>UTImportedTypeDeclarations</key>

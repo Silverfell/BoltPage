@@ -382,13 +382,13 @@ fn parse_markdown_with_theme(content: String, theme: String) -> String {
 }
 
 #[tauri::command]
-fn get_syntax_css(theme: String) -> Result<String, String> {
-    markrust_core::get_syntax_theme_css(&theme).ok_or_else(|| "Failed to generate syntax CSS".to_string())
+fn parse_json_with_theme(content: String, theme: String) -> Result<String, String> {
+    markrust_core::parse_json_with_theme(&content, &theme)
 }
 
 #[tauri::command]
-fn parse_json_with_theme(content: String, theme: String) -> Result<String, String> {
-    markrust_core::parse_json_with_theme(&content, &theme)
+fn get_syntax_css(theme: String) -> Result<String, String> {
+    markrust_core::get_syntax_theme_css(&theme).ok_or_else(|| "Failed to generate syntax CSS".to_string())
 }
 
 #[tauri::command]
@@ -420,7 +420,9 @@ async fn open_file_dialog(app: AppHandle) -> Result<Option<String>, String> {
     
     let file_path = app.dialog()
         .file()
-        .add_filter("Supported Files", &["md", "markdown", "json", "txt"])
+        // Show a combined filter first for convenience
+        .add_filter("Supported", &["md", "markdown", "json", "txt"])
+        // Specific filters
         .add_filter("Markdown", &["md", "markdown"])
         .add_filter("JSON", &["json"])
         .add_filter("Text", &["txt"])
@@ -571,6 +573,7 @@ pub fn run() {
             write_file,
             parse_markdown,
             parse_markdown_with_theme,
+            parse_json_with_theme,
             get_preferences,
             save_preferences,
             open_file_dialog,
@@ -587,8 +590,7 @@ pub fn run() {
             remove_window_from_tracking,
             debug_dump_state,
             get_file_path_from_window_label,
-            get_syntax_css,
-            parse_json_with_theme
+            get_syntax_css
         ])
         .setup(move |app| {
             // Initialize file watchers state only (app state already managed)
