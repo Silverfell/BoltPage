@@ -10,6 +10,9 @@ let previewWindow = null;
 let isProgrammaticScroll = false;
 let scrollDebounce = null;
 let scrollLinkEnabled = true;
+let findOverlay = null;
+let findInput = null;
+let findVisible = false;
 
 // Suppress noisy [DEBUG] logs in production unless window.__DEV__ is true
 (function () {
@@ -174,7 +177,16 @@ document.addEventListener('DOMContentLoaded', async () => {
     document.addEventListener('keydown', async (e) => {
         const ctrl = e.ctrlKey || e.metaKey;
         
-        if (ctrl && e.key === 's') {
+        if (ctrl && e.key.toLowerCase() === 'f') {
+            e.preventDefault();
+            openFindOverlay();
+        } else if (ctrl && e.key.toLowerCase() === 'p') {
+            e.preventDefault();
+            // Print the PREVIEW window, not the editor
+            if (previewWindow) {
+                try { await invoke('print_window', { window: previewWindow }); } catch {}
+            }
+        } else if (ctrl && e.key === 's') {
             e.preventDefault();
             await saveFile();
         } else if (ctrl && e.key === 'w') {
@@ -187,6 +199,18 @@ document.addEventListener('DOMContentLoaded', async () => {
             e.preventDefault();
             const btn = document.getElementById('link-scroll-btn');
             if (btn) btn.click();
+        } else if (ctrl && e.key.toLowerCase() === 'z' && e.shiftKey) {
+            // Redo (Shift+Cmd/Ctrl+Z)
+            e.preventDefault();
+            performEditAction('redo');
+        } else if (ctrl && e.key.toLowerCase() === 'z') {
+            // Undo
+            e.preventDefault();
+            performEditAction('undo');
+        } else if (ctrl && e.key.toLowerCase() === 'y') {
+            // Redo on Windows/Linux
+            e.preventDefault();
+            performEditAction('redo');
         }
     });
     
@@ -239,6 +263,25 @@ document.addEventListener('DOMContentLoaded', async () => {
         updateLinkScrollButton();
     });
 
+    // Listen for menu print requests; forward to preview window
+    listen('menu-print', async () => {
+        if (previewWindow) {
+            try { await invoke('print_window', { window: previewWindow }); } catch {}
+        }
+    });
+
+    // Listen for menu find requests
+    listen('menu-find', () => {
+        openFindOverlay();
+    });
+
+    // Listen for edit menu actions (cut/copy/paste/select-all)
+    listen('menu-edit', async (event) => {
+        if (!document.hasFocus()) return;
+        const action = String(event.payload || '');
+        performEditAction(action);
+    });
+
     // Save on window close
     window.addEventListener('beforeunload', async (e) => {
         if (isDirty) {
@@ -264,4 +307,133 @@ document.addEventListener('DOMContentLoaded', () => {
         });
         updateLinkScrollButton();
     }
+    const findBtn = document.getElementById('find-btn');
+    if (findBtn) findBtn.addEventListener('click', toggleFindOverlay);
 });
+
+// Edit command helpers
+async function tryPasteFallback() {
+    try {
+        const text = await navigator.clipboard.readText();
+        const a = document.activeElement;
+        if (a && (a.tagName === 'TEXTAREA' || (a.tagName === 'INPUT' && /^(text|search|url|tel|password|email)$/i.test(a.type)))) {
+            const start = a.selectionStart ?? 0;
+            const end = a.selectionEnd ?? 0;
+            const val = a.value ?? '';
+            a.value = val.slice(0, start) + text + val.slice(end);
+            const pos = start + text.length;
+            a.setSelectionRange(pos, pos);
+            a.dispatchEvent(new Event('input', { bubbles: true }));
+        }
+    } catch {}
+}
+
+function performEditAction(action) {
+    try {
+        switch (action) {
+            case 'undo':
+                document.execCommand('undo');
+                break;
+            case 'redo':
+                document.execCommand('redo');
+                break;
+            case 'copy':
+                document.execCommand('copy');
+                break;
+            case 'cut':
+                document.execCommand('cut');
+                break;
+            case 'paste':
+                try { if (document.execCommand('paste')) break; } catch {}
+                tryPasteFallback();
+                break;
+            case 'select-all':
+                document.execCommand('selectAll');
+                break;
+        }
+    } catch {}
+}
+
+// --- Find overlay (editor) ---
+function ensureFindOverlay() {
+    if (findOverlay) return;
+    findOverlay = document.createElement('div');
+    findOverlay.className = 'find-overlay';
+    findOverlay.innerHTML = `
+        <input id="find-input" class="find-input" type="text" placeholder="Find..." />
+        <button class="find-btn" id="find-prev" title="Previous">&#8593;</button>
+        <button class="find-btn" id="find-next" title="Next">&#8595;</button>
+        <button class="find-btn" id="find-close" title="Close">&#10005;</button>
+    `;
+    document.body.appendChild(findOverlay);
+    findInput = findOverlay.querySelector('#find-input');
+
+    findInput.addEventListener('keydown', (e) => {
+        if (e.key === 'Enter') {
+            e.preventDefault();
+            const backwards = !!e.shiftKey;
+            findInTextarea(findInput.value, !backwards);
+        } else if (e.key === 'Escape') {
+            e.preventDefault();
+            closeFindOverlay();
+        }
+    });
+    findOverlay.querySelector('#find-prev').addEventListener('click', () => findInTextarea(findInput.value, false));
+    findOverlay.querySelector('#find-next').addEventListener('click', () => findInTextarea(findInput.value, true));
+    findOverlay.querySelector('#find-close').addEventListener('click', closeFindOverlay);
+}
+
+function openFindOverlay() {
+    ensureFindOverlay();
+    findOverlay.classList.add('show');
+    findVisible = true;
+    const ta = document.getElementById('editor-textarea');
+    const sel = ta && ta.value ? ta.value.substring(ta.selectionStart || 0, ta.selectionEnd || 0) : '';
+    if (sel) findInput.value = sel;
+    findInput.focus();
+    findInput.select();
+}
+
+function toggleFindOverlay() {
+    if (findVisible) closeFindOverlay(); else openFindOverlay();
+}
+
+function closeFindOverlay() {
+    if (!findOverlay) return;
+    findOverlay.classList.remove('show');
+    findVisible = false;
+}
+
+function findInTextarea(q, forward) {
+    if (!q) return;
+    const ta = document.getElementById('editor-textarea');
+    const value = ta.value;
+    let start = ta.selectionStart ?? 0;
+    let idx = -1;
+    if (forward) {
+        idx = value.indexOf(q, (ta.selectionEnd ?? start));
+        if (idx === -1) {
+            // wrap
+            idx = value.indexOf(q, 0);
+        }
+    } else {
+        // search backwards from selectionStart-1
+        idx = value.lastIndexOf(q, Math.max(0, start - 1));
+        if (idx === -1) {
+            // wrap to end
+            idx = value.lastIndexOf(q);
+        }
+    }
+    if (idx !== -1) {
+        const end = idx + q.length;
+        ta.focus();
+        ta.setSelectionRange(idx, end);
+        // Scroll into view
+        const lh = getEditorLineHeight();
+        const before = value.slice(0, idx);
+        const line = (before.match(/\n/g) || []).length + 1;
+        isProgrammaticScroll = true;
+        ta.scrollTop = Math.max(0, (line - 1) * lh - ta.clientHeight / 2);
+        setTimeout(() => { isProgrammaticScroll = false; }, 0);
+    }
+}

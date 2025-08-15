@@ -92,6 +92,26 @@ body {
   flex-direction: column;
 }
 
+/* Print styles: print only the preview content */
+@media print {
+  .toolbar,
+  #theme-menu {
+    display: none !important;
+  }
+  body {
+    height: auto;
+    overflow: visible;
+  }
+  .content-wrapper {
+    padding: 0;
+    overflow: visible;
+  }
+  .markdown-body {
+    max-width: none;
+    padding: 0;
+  }
+}
+
 /* Toolbar */
 .toolbar {
   background-color: var(--toolbar-bg);
@@ -221,6 +241,45 @@ body {
   content: "✓";
   font-size: 12px;
   color: var(--link-color);
+}
+
+/* Find overlay */
+.find-overlay {
+  position: absolute;
+  top: 8px;
+  right: 12px;
+  display: none;
+  gap: 6px;
+  align-items: center;
+  background: var(--toolbar-bg);
+  border: 1px solid var(--border-color);
+  border-radius: 6px;
+  padding: 6px;
+  z-index: 1100;
+}
+
+.find-overlay.show { display: flex; }
+
+.find-input {
+  width: 180px;
+  padding: 4px 6px;
+  border: 1px solid var(--border-color);
+  border-radius: 4px;
+  background: transparent;
+  color: var(--text-color);
+}
+
+.find-btn {
+  border: 1px solid var(--border-color);
+  background: transparent;
+  color: var(--text-color);
+  border-radius: 4px;
+  width: 28px;
+  height: 28px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
 }
 
 /* Content wrapper */

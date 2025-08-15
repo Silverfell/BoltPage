@@ -12,6 +12,9 @@ let isProgrammaticScroll = false;
 let scrollDebounce = null;
 let contentEl = null; // scrolling container (.content-wrapper)
 let scrollLinkEnabled = true;
+let findOverlay = null;
+let findInput = null;
+let findVisible = false;
 
 // Suppress noisy [DEBUG] logs in production unless window.__DEV__ is true
 (function () {
@@ -309,6 +312,8 @@ function setupEventListeners() {
     document.getElementById('refresh-btn').addEventListener('click', refreshFile);
     document.getElementById('theme-btn').addEventListener('click', toggleThemeMenu);
     document.getElementById('edit-btn').addEventListener('click', openEditor);
+    const findBtn = document.getElementById('find-btn');
+    if (findBtn) findBtn.addEventListener('click', toggleFindOverlay);
     const linkBtn = document.getElementById('link-scroll-btn');
     if (linkBtn) {
         linkBtn.addEventListener('click', async () => {
@@ -339,7 +344,14 @@ function setupEventListeners() {
     document.addEventListener('keydown', async (e) => {
         const ctrl = e.ctrlKey || e.metaKey;
         
-        if (ctrl && e.key === 'o') {
+        if (ctrl && e.key.toLowerCase() === 'f') {
+            e.preventDefault();
+            openFindOverlay();
+        } else if (ctrl && e.key.toLowerCase() === 'p') {
+            e.preventDefault();
+            // Print the preview (this window)
+            window.print();
+        } else if (ctrl && e.key === 'o') {
             e.preventDefault();
             openFile();
         } else if (ctrl && e.key === 'r') {
@@ -354,6 +366,18 @@ function setupEventListeners() {
         } else if (ctrl && e.key === 'l') {
             e.preventDefault();
             if (linkBtn) linkBtn.click();
+        } else if (ctrl && e.key.toLowerCase() === 'z' && e.shiftKey) {
+            // Redo (Shift+Cmd/Ctrl+Z)
+            e.preventDefault();
+            performEditAction('redo');
+        } else if (ctrl && e.key.toLowerCase() === 'z') {
+            // Undo
+            e.preventDefault();
+            performEditAction('undo');
+        } else if (ctrl && e.key.toLowerCase() === 'y') {
+            // Redo on Windows/Linux
+            e.preventDefault();
+            performEditAction('redo');
         } else if (ctrl && e.key === 'n') {
             e.preventDefault();
             // Create new window
@@ -430,7 +454,7 @@ async function stopFileWatcher() {
 
 // Initialize app
 window.addEventListener('DOMContentLoaded', async () => {
-    try {
+  try {
         
         setupEventListeners();
         attachLinkInterceptor();
@@ -460,10 +484,28 @@ window.addEventListener('DOMContentLoaded', async () => {
             // No need to re-render; CSS-only theme swap
         });
 
+        // Listen for edit menu actions (cut/copy/paste/select-all)
+        await listen('menu-edit', async (event) => {
+            if (!document.hasFocus()) return;
+            const action = String(event.payload || '');
+            performEditAction(action);
+        });
+
         // Listen for scroll-link state changes
         await listen('scroll-link-changed', (event) => {
             scrollLinkEnabled = !!event.payload;
             updateLinkScrollButton();
+        });
+
+        // Listen for print menu requests
+        await listen('menu-print', () => {
+            // This is the preview window; print directly
+            window.print();
+        });
+
+        // Listen for menu find
+        await listen('menu-find', () => {
+            openFindOverlay();
         });
 
         // Listen for scroll sync events from other windows
@@ -592,4 +634,113 @@ function updateLinkScrollButton() {
     if (!btn) return;
     btn.classList.toggle('active', scrollLinkEnabled);
     btn.setAttribute('aria-pressed', String(scrollLinkEnabled));
+}
+
+// Edit command helpers
+async function tryPasteFallback() {
+    try {
+        const text = await navigator.clipboard.readText();
+        const a = document.activeElement;
+        if (a && (a.tagName === 'TEXTAREA' || (a.tagName === 'INPUT' && /^(text|search|url|tel|password|email)$/i.test(a.type)))) {
+            const start = a.selectionStart ?? 0;
+            const end = a.selectionEnd ?? 0;
+            const val = a.value ?? '';
+            a.value = val.slice(0, start) + text + val.slice(end);
+            const pos = start + text.length;
+            a.setSelectionRange(pos, pos);
+            a.dispatchEvent(new Event('input', { bubbles: true }));
+        }
+    } catch {}
+}
+
+function performEditAction(action) {
+    try {
+        switch (action) {
+            case 'undo':
+                document.execCommand('undo');
+                break;
+            case 'redo':
+                document.execCommand('redo');
+                break;
+            case 'copy':
+                document.execCommand('copy');
+                break;
+            case 'cut':
+                document.execCommand('cut');
+                break;
+            case 'paste':
+                try { if (document.execCommand('paste')) break; } catch {}
+                tryPasteFallback();
+                break;
+            case 'select-all':
+                document.execCommand('selectAll');
+                break;
+        }
+    } catch {}
+}
+
+// --- Find overlay (preview) ---
+function ensureFindOverlay() {
+    if (findOverlay) return;
+    findOverlay = document.createElement('div');
+    findOverlay.className = 'find-overlay';
+    findOverlay.innerHTML = `
+        <input id="find-input" class="find-input" type="text" placeholder="Find..." />
+        <button class="find-btn" id="find-prev" title="Previous">&#8593;</button>
+        <button class="find-btn" id="find-next" title="Next">&#8595;</button>
+        <button class="find-btn" id="find-close" title="Close">&#10005;</button>
+    `;
+    document.body.appendChild(findOverlay);
+    findInput = findOverlay.querySelector('#find-input');
+
+    findInput.addEventListener('keydown', (e) => {
+        if (e.key === 'Enter') {
+            e.preventDefault();
+            const backwards = !!e.shiftKey;
+            doFind(findInput.value, !backwards);
+        } else if (e.key === 'Escape') {
+            e.preventDefault();
+            closeFindOverlay();
+        }
+    });
+    findOverlay.querySelector('#find-prev').addEventListener('click', () => doFind(findInput.value, false));
+    findOverlay.querySelector('#find-next').addEventListener('click', () => doFind(findInput.value, true));
+    findOverlay.querySelector('#find-close').addEventListener('click', closeFindOverlay);
+}
+
+function openFindOverlay() {
+    ensureFindOverlay();
+    findOverlay.classList.add('show');
+    findVisible = true;
+    // prefill from selection if any
+    const sel = window.getSelection && window.getSelection().toString();
+    if (sel) findInput.value = sel;
+    findInput.focus();
+    findInput.select();
+}
+
+function toggleFindOverlay() {
+    if (findVisible) closeFindOverlay(); else openFindOverlay();
+}
+
+function closeFindOverlay() {
+    if (!findOverlay) return;
+    findOverlay.classList.remove('show');
+    findVisible = false;
+}
+
+function doFind(q, forward) {
+    if (!q) return;
+    try {
+        // Use built-in find; wrap search
+        const found = window.find(q, false, !forward, true, false, false, false);
+        if (!found) {
+            // if not found, try once more from start by clearing selection
+            const sel = window.getSelection();
+            if (sel && sel.removeAllRanges) sel.removeAllRanges();
+            window.find(q, false, !forward, true, false, false, false);
+        }
+    } catch (e) {
+        // ignore if window.find not available
+    }
 }
