@@ -13,6 +13,17 @@ let scrollDebounce = null;
 let contentEl = null; // scrolling container (.content-wrapper)
 let scrollLinkEnabled = true;
 
+// Suppress noisy [DEBUG] logs in production unless window.__DEV__ is true
+(function () {
+  try {
+    const orig = console.log;
+    console.log = function (...args) {
+      if (!window.__DEV__ && String(args[0] || '').includes('[DEBUG]')) return;
+      return orig.apply(console, args);
+    };
+  } catch {}
+})();
+
 
 function escapeHtml(str) {
     return str
@@ -123,6 +134,8 @@ async function openFile(filePath) {
         console.log('[DEBUG] About to set innerHTML');
         document.getElementById('markdown-content').innerHTML = html;
         console.log('[DEBUG] innerHTML set successfully');
+        // Ensure link interception remains active after content swap
+        attachLinkInterceptor();
         // Update edit button availability based on file writability
         updateEditButtonState();
         
@@ -361,6 +374,35 @@ function setupEventListeners() {
     });
 }
 
+function isAllowedExternalUrl(url) {
+    try {
+        const u = new URL(url, 'http://placeholder');
+        return u.protocol === 'http:' || u.protocol === 'https:';
+    } catch (_) {
+        return false;
+    }
+}
+
+function attachLinkInterceptor() {
+    const container = document.getElementById('markdown-content');
+    if (!container || container.__linksBound) return;
+    container.addEventListener('click', async (e) => {
+        const a = e.target && e.target.closest ? e.target.closest('a') : null;
+        if (!a) return;
+        const href = a.getAttribute('href') || '';
+        e.preventDefault();
+        if (isAllowedExternalUrl(href)) {
+            try {
+                await invoke('plugin:opener|open', { target: href });
+            } catch (err) {
+                console.error('Failed to open external link:', err);
+            }
+        }
+        // Block all other schemes
+    });
+    container.__linksBound = true;
+}
+
 async function startFileWatcher() {
     if (!currentFilePath) return;
     
@@ -391,6 +433,7 @@ window.addEventListener('DOMContentLoaded', async () => {
     try {
         
         setupEventListeners();
+        attachLinkInterceptor();
         await loadPreferences();
         // Initial edit button state
         updateEditButtonState();

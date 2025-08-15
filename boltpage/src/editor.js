@@ -11,6 +11,17 @@ let isProgrammaticScroll = false;
 let scrollDebounce = null;
 let scrollLinkEnabled = true;
 
+// Suppress noisy [DEBUG] logs in production unless window.__DEV__ is true
+(function () {
+  try {
+    const orig = console.log;
+    console.log = function (...args) {
+      if (!window.__DEV__ && String(args[0] || '').includes('[DEBUG]')) return;
+      return orig.apply(console, args);
+    };
+  } catch {}
+})();
+
 // Get file path from window
 async function initialize() {
     // Get file path from initialization script

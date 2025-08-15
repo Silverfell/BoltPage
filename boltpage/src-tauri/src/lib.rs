@@ -134,11 +134,22 @@ fn create_window_with_file(app: &AppHandle, file_path: Option<PathBuf>) -> tauri
     let (width, height) = calculate_window_size(app, &prefs)?;
     
     // Create the window (hidden initially for file windows to prevent flash)
-    let _window = WebviewWindowBuilder::new(app, &window_label, url)
+    let mut builder = WebviewWindowBuilder::new(app, &window_label, url)
         .title(&title)
         .inner_size(width, height)
         .visible(file_path.is_none()) // Only show empty windows immediately
-        .build()?;
+        ;
+    // Inject __DEV__ flag for frontend logging control
+    #[cfg(debug_assertions)]
+    {
+        builder = builder.initialization_script("window.__DEV__ = true;");
+    }
+    #[cfg(not(debug_assertions))]
+    {
+        builder = builder.initialization_script("window.__DEV__ = false;");
+    }
+
+    let _window = builder.build()?;
     
     // Track file windows
     if let Some(path) = file_path {
@@ -480,6 +491,7 @@ async fn open_editor_window(app: AppHandle, file_path: String, preview_window: S
     )
     .title(format!("BoltPage Editor - {}", file_path.split('/').last().unwrap_or("Untitled")))
     .inner_size(800.0, 600.0)
+    .initialization_script(if cfg!(debug_assertions) { "window.__DEV__ = true;" } else { "window.__DEV__ = false;" })
     .initialization_script(&format!(
         "window.__INITIAL_FILE_PATH__ = {}; window.__PREVIEW_WINDOW__ = {};",
         serde_json::to_string(&file_path).unwrap(),
