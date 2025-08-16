@@ -1,3 +1,0 @@
-[workspace]
-members = ["src-tauri", "markrust-core"]
-resolver = "2"
