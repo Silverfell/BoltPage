@@ -269,6 +269,15 @@ body {
   color: var(--text-color);
 }
 
+.find-count {
+  font-size: 12px;
+  color: var(--text-color);
+  opacity: 0.7;
+  min-width: 40px;
+  text-align: center;
+  font-family: monospace;
+}
+
 .find-btn {
   border: 1px solid var(--border-color);
   background: transparent;

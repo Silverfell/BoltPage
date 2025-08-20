@@ -355,12 +355,17 @@ function performEditAction(action) {
 }
 
 // --- Find overlay (editor) ---
+let findResults = [];
+let currentFindIndex = -1;
+let lastSearchQuery = '';
+
 function ensureFindOverlay() {
     if (findOverlay) return;
     findOverlay = document.createElement('div');
     findOverlay.className = 'find-overlay';
     findOverlay.innerHTML = `
         <input id="find-input" class="find-input" type="text" placeholder="Find..." />
+        <span class="find-count" id="find-count"></span>
         <button class="find-btn" id="find-prev" title="Previous">&#8593;</button>
         <button class="find-btn" id="find-next" title="Next">&#8595;</button>
         <button class="find-btn" id="find-close" title="Close">&#10005;</button>
@@ -372,15 +377,132 @@ function ensureFindOverlay() {
         if (e.key === 'Enter') {
             e.preventDefault();
             const backwards = !!e.shiftKey;
-            findInTextarea(findInput.value, !backwards);
+            if (backwards) {
+                findPrevious();
+            } else {
+                findNext();
+            }
         } else if (e.key === 'Escape') {
             e.preventDefault();
             closeFindOverlay();
         }
     });
-    findOverlay.querySelector('#find-prev').addEventListener('click', () => findInTextarea(findInput.value, false));
-    findOverlay.querySelector('#find-next').addEventListener('click', () => findInTextarea(findInput.value, true));
+    
+    findOverlay.querySelector('#find-prev').addEventListener('click', () => {
+        findPrevious();
+    });
+    findOverlay.querySelector('#find-next').addEventListener('click', () => {
+        findNext();
+    });
     findOverlay.querySelector('#find-close').addEventListener('click', closeFindOverlay);
+}
+
+function performFind(query) {
+    if (!query.trim()) {
+        clearFindResults();
+        return;
+    }
+    
+    lastSearchQuery = query;
+    findResults = [];
+    currentFindIndex = -1;
+    
+    const ta = document.getElementById('editor-textarea');
+    const value = ta.value;
+    const lowerValue = value.toLowerCase();
+    const lowerQuery = query.toLowerCase();
+    let index = 0;
+    
+    // Find all instances
+    while ((index = lowerValue.indexOf(lowerQuery, index)) !== -1) {
+        findResults.push({
+            start: index,
+            end: index + query.length
+        });
+        index += 1;
+    }
+    
+    updateFindCount();
+    
+    if (findResults.length > 0) {
+        currentFindIndex = 0;
+        highlightCurrentFind();
+    }
+}
+
+function findNext() {
+    const currentQuery = findInput.value;
+    
+    // If query changed, perform new search
+    if (currentQuery !== lastSearchQuery) {
+        performFind(currentQuery);
+        return;
+    }
+    
+    // If no results, perform search
+    if (findResults.length === 0) {
+        performFind(currentQuery);
+        return;
+    }
+    
+    currentFindIndex = (currentFindIndex + 1) % findResults.length;
+    highlightCurrentFind();
+    updateFindCount();
+}
+
+function findPrevious() {
+    const currentQuery = findInput.value;
+    
+    // If query changed, perform new search
+    if (currentQuery !== lastSearchQuery) {
+        performFind(currentQuery);
+        return;
+    }
+    
+    // If no results, perform search
+    if (findResults.length === 0) {
+        performFind(currentQuery);
+        return;
+    }
+    
+    currentFindIndex = currentFindIndex <= 0 ? findResults.length - 1 : currentFindIndex - 1;
+    highlightCurrentFind();
+    updateFindCount();
+}
+
+function highlightCurrentFind() {
+    if (currentFindIndex < 0 || currentFindIndex >= findResults.length) return;
+    
+    const result = findResults[currentFindIndex];
+    const ta = document.getElementById('editor-textarea');
+    
+    // Don't focus the textarea - keep focus in the find input
+    ta.setSelectionRange(result.start, result.end);
+    
+    // Scroll into view
+    const lh = getEditorLineHeight();
+    const before = ta.value.slice(0, result.start);
+    const line = (before.match(/\n/g) || []).length + 1;
+    isProgrammaticScroll = true;
+    ta.scrollTop = Math.max(0, (line - 1) * lh - ta.clientHeight / 2);
+    setTimeout(() => { isProgrammaticScroll = false; }, 0);
+}
+
+function clearFindResults() {
+    findResults = [];
+    currentFindIndex = -1;
+    updateFindCount();
+}
+
+function updateFindCount() {
+    const countEl = findOverlay?.querySelector('#find-count');
+    if (countEl) {
+        if (findResults.length === 0) {
+            countEl.textContent = '';
+        } else {
+            countEl.textContent = `${currentFindIndex + 1}/${findResults.length}`;
+        }
+    }
 }
 
 function openFindOverlay() {
@@ -402,38 +524,20 @@ function closeFindOverlay() {
     if (!findOverlay) return;
     findOverlay.classList.remove('show');
     findVisible = false;
+    clearFindResults();
 }
 
+// Legacy function for backward compatibility
 function findInTextarea(q, forward) {
     if (!q) return;
-    const ta = document.getElementById('editor-textarea');
-    const value = ta.value;
-    let start = ta.selectionStart ?? 0;
-    let idx = -1;
-    if (forward) {
-        idx = value.indexOf(q, (ta.selectionEnd ?? start));
-        if (idx === -1) {
-            // wrap
-            idx = value.indexOf(q, 0);
-        }
-    } else {
-        // search backwards from selectionStart-1
-        idx = value.lastIndexOf(q, Math.max(0, start - 1));
-        if (idx === -1) {
-            // wrap to end
-            idx = value.lastIndexOf(q);
-        }
+    
+    if (q !== lastSearchQuery) {
+        performFind(q);
     }
-    if (idx !== -1) {
-        const end = idx + q.length;
-        ta.focus();
-        ta.setSelectionRange(idx, end);
-        // Scroll into view
-        const lh = getEditorLineHeight();
-        const before = value.slice(0, idx);
-        const line = (before.match(/\n/g) || []).length + 1;
-        isProgrammaticScroll = true;
-        ta.scrollTop = Math.max(0, (line - 1) * lh - ta.clientHeight / 2);
-        setTimeout(() => { isProgrammaticScroll = false; }, 0);
+    
+    if (forward) {
+        findNext();
+    } else {
+        findPrevious();
     }
 }

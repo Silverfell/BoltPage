@@ -134,22 +134,11 @@ fn create_window_with_file(app: &AppHandle, file_path: Option<PathBuf>) -> tauri
     let (width, height) = calculate_window_size(app, &prefs)?;
     
     // Create the window (hidden initially for file windows to prevent flash)
-    let mut builder = WebviewWindowBuilder::new(app, &window_label, url)
+    let _window = WebviewWindowBuilder::new(app, &window_label, url)
         .title(&title)
         .inner_size(width, height)
         .visible(file_path.is_none()) // Only show empty windows immediately
-        ;
-    // Inject __DEV__ flag for frontend logging control
-    #[cfg(debug_assertions)]
-    {
-        builder = builder.initialization_script("window.__DEV__ = true;");
-    }
-    #[cfg(not(debug_assertions))]
-    {
-        builder = builder.initialization_script("window.__DEV__ = false;");
-    }
-
-    let _window = builder.build()?;
+        .build()?;
     
     // Track file windows
     if let Some(path) = file_path {
@@ -384,6 +373,12 @@ fn read_file(path: String) -> Result<String, String> {
 }
 
 #[tauri::command]
+fn read_pdf_file(path: String) -> Result<Vec<u8>, String> {
+    fs::read(&path)
+        .map_err(|e| format!("Failed to read PDF file: {}", e))
+}
+
+#[tauri::command]
 fn write_file(path: String, content: String) -> Result<(), String> {
     fs::write(&path, content)
         .map_err(|e| format!("Failed to write file: {}", e))
@@ -470,11 +465,12 @@ async fn open_file_dialog(app: AppHandle) -> Result<Option<String>, String> {
     let file_path = app.dialog()
         .file()
         // Show a combined filter first for convenience
-        .add_filter("Supported", &["md", "markdown", "json", "txt"])
+        .add_filter("Supported", &["md", "markdown", "json", "txt", "pdf"])
         // Specific filters
         .add_filter("Markdown", &["md", "markdown"])
         .add_filter("JSON", &["json"])
         .add_filter("Text", &["txt"])
+        .add_filter("PDF", &["pdf"])
         .blocking_pick_file();
     
     Ok(file_path.map(|p| p.to_string()))
@@ -491,7 +487,6 @@ async fn open_editor_window(app: AppHandle, file_path: String, preview_window: S
     )
     .title(format!("BoltPage Editor - {}", file_path.split('/').last().unwrap_or("Untitled")))
     .inner_size(800.0, 600.0)
-    .initialization_script(if cfg!(debug_assertions) { "window.__DEV__ = true;" } else { "window.__DEV__ = false;" })
     .initialization_script(&format!(
         "window.__INITIAL_FILE_PATH__ = {}; window.__PREVIEW_WINDOW__ = {};",
         serde_json::to_string(&file_path).unwrap(),
@@ -550,15 +545,6 @@ fn remove_window_from_tracking(app: AppHandle, window_label: String) -> Result<(
 fn refresh_preview(app: AppHandle, window: String) -> Result<(), String> {
     if let Some(preview_window) = app.get_webview_window(&window) {
         preview_window.eval("refreshFile()").map_err(|e| format!("Failed to refresh preview: {}", e))?;
-    }
-    Ok(())
-}
-
-#[tauri::command]
-fn print_window(app: AppHandle, window: String) -> Result<(), String> {
-    if let Some(w) = app.get_webview_window(&window) {
-        w.eval("window.print()")
-            .map_err(|e| format!("Failed to trigger print: {}", e))?;
     }
     Ok(())
 }
@@ -627,8 +613,9 @@ pub fn run() {
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_store::Builder::new().build())
         .plugin(tauri_plugin_dialog::init())
-    .invoke_handler(tauri::generate_handler![
+        .invoke_handler(tauri::generate_handler![
             read_file,
+            read_pdf_file,
             write_file,
             is_writable,
             parse_markdown,
@@ -641,7 +628,6 @@ pub fn run() {
             open_file_dialog,
             open_editor_window,
             refresh_preview,
-            print_window,
             start_file_watcher,
             stop_file_watcher,
             broadcast_theme_change,
@@ -664,24 +650,9 @@ pub fn run() {
             let file_menu = SubmenuBuilder::new(app, "File")
                 .item(&MenuItemBuilder::with_id("new-window", "New Window").accelerator("CmdOrCtrl+N").build(app)?)
                 .item(&MenuItemBuilder::with_id("open", "Open").accelerator("CmdOrCtrl+O").build(app)?)
-                .item(&MenuItemBuilder::with_id("print", "Print").accelerator("CmdOrCtrl+P").build(app)?)
                 .separator()
                 .item(&MenuItemBuilder::with_id("close", "Close Window").accelerator("CmdOrCtrl+W").build(app)?)
                 .item(&MenuItemBuilder::with_id("quit", "Quit").accelerator("CmdOrCtrl+Q").build(app)?)
-                .build()?;
-
-            // Edit menu with common shortcuts
-            let edit_menu = SubmenuBuilder::new(app, "Edit")
-                .item(&MenuItemBuilder::with_id("undo", "Undo").accelerator("CmdOrCtrl+Z").build(app)?)
-                .item(&MenuItemBuilder::with_id("redo", "Redo").accelerator("Shift+CmdOrCtrl+Z").build(app)?)
-                .separator()
-                .item(&MenuItemBuilder::with_id("find", "Find").accelerator("CmdOrCtrl+F").build(app)?)
-                .separator()
-                .item(&MenuItemBuilder::with_id("cut", "Cut").accelerator("CmdOrCtrl+X").build(app)?)
-                .item(&MenuItemBuilder::with_id("copy", "Copy").accelerator("CmdOrCtrl+C").build(app)?)
-                .item(&MenuItemBuilder::with_id("paste", "Paste").accelerator("CmdOrCtrl+V").build(app)?)
-                .separator()
-                .item(&MenuItemBuilder::with_id("select-all", "Select All").accelerator("CmdOrCtrl+A").build(app)?)
                 .build()?;
             
             let window_menu = SubmenuBuilder::new(app, "Window")
@@ -694,7 +665,6 @@ pub fn run() {
             
             let menu = MenuBuilder::new(app)
                 .item(&file_menu)
-                .item(&edit_menu)
                 .item(&window_menu)
                 .item(&help_menu)
                 .build()?;
@@ -713,34 +683,6 @@ pub fn run() {
                         if let Ok(_) = create_new_window_command(app.clone(), None) {
                             // The new window will handle the open file dialog
                         }
-                    }
-                    "print" => {
-                        // Broadcast print request; preview windows will handle directly,
-                        // editor windows forward to their paired preview.
-                        let _ = app.emit("menu-print", &true);
-                    }
-                    // Edit actions: broadcast to focused window to perform
-                    "undo" => {
-                        let _ = app.emit("menu-edit", &"undo");
-                    }
-                    "redo" => {
-                        let _ = app.emit("menu-edit", &"redo");
-                    }
-                    "find" => {
-                        let _ = app.emit("menu-find", &true);
-                    }
-                    // Edit actions: broadcast to focused window to perform
-                    "cut" => {
-                        let _ = app.emit("menu-edit", &"cut");
-                    }
-                    "copy" => {
-                        let _ = app.emit("menu-edit", &"copy");
-                    }
-                    "paste" => {
-                        let _ = app.emit("menu-edit", &"paste");
-                    }
-                    "select-all" => {
-                        let _ = app.emit("menu-edit", &"select-all");
                     }
                     "close" => {
                         // This will be handled by the window's menu directly

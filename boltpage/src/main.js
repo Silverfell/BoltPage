@@ -680,12 +680,17 @@ function performEditAction(action) {
 }
 
 // --- Find overlay (preview) ---
+let findResults = [];
+let currentFindIndex = -1;
+let lastSearchQuery = '';
+
 function ensureFindOverlay() {
     if (findOverlay) return;
     findOverlay = document.createElement('div');
     findOverlay.className = 'find-overlay';
     findOverlay.innerHTML = `
         <input id="find-input" class="find-input" type="text" placeholder="Find..." />
+        <span class="find-count" id="find-count"></span>
         <button class="find-btn" id="find-prev" title="Previous">&#8593;</button>
         <button class="find-btn" id="find-next" title="Next">&#8595;</button>
         <button class="find-btn" id="find-close" title="Close">&#10005;</button>
@@ -697,15 +702,161 @@ function ensureFindOverlay() {
         if (e.key === 'Enter') {
             e.preventDefault();
             const backwards = !!e.shiftKey;
-            doFind(findInput.value, !backwards);
+            if (backwards) {
+                findPrevious();
+            } else {
+                findNext();
+            }
         } else if (e.key === 'Escape') {
             e.preventDefault();
             closeFindOverlay();
         }
     });
-    findOverlay.querySelector('#find-prev').addEventListener('click', () => doFind(findInput.value, false));
-    findOverlay.querySelector('#find-next').addEventListener('click', () => doFind(findInput.value, true));
+    
+    findOverlay.querySelector('#find-prev').addEventListener('click', () => {
+        findPrevious();
+    });
+    findOverlay.querySelector('#find-next').addEventListener('click', () => {
+        findNext();
+    });
     findOverlay.querySelector('#find-close').addEventListener('click', closeFindOverlay);
+}
+
+function performFind(query) {
+    if (!query.trim()) {
+        clearFindResults();
+        return;
+    }
+    
+    lastSearchQuery = query;
+    findResults = [];
+    currentFindIndex = -1;
+    
+    // Clear any existing highlights
+    clearFindHighlights();
+    
+    // Find all instances in the content
+    const content = document.getElementById('markdown-content');
+    if (!content) return;
+    
+    const walker = document.createTreeWalker(
+        content,
+        NodeFilter.SHOW_TEXT,
+        null,
+        false
+    );
+    
+    let node;
+    let offset = 0;
+    
+    while (node = walker.nextNode()) {
+        const text = node.textContent;
+        const lowerText = text.toLowerCase();
+        const lowerQuery = query.toLowerCase();
+        let index = 0;
+        
+        while ((index = lowerText.indexOf(lowerQuery, index)) !== -1) {
+            findResults.push({
+                node: node,
+                start: index,
+                end: index + query.length,
+                offset: offset + index
+            });
+            index += 1;
+        }
+        
+        offset += text.length;
+    }
+    
+    updateFindCount();
+    
+    if (findResults.length > 0) {
+        currentFindIndex = 0;
+        highlightCurrentFind();
+    }
+}
+
+function findNext() {
+    const currentQuery = findInput.value;
+    
+    // If query changed, perform new search
+    if (currentQuery !== lastSearchQuery) {
+        performFind(currentQuery);
+        return;
+    }
+    
+    // If no results, perform search
+    if (findResults.length === 0) {
+        performFind(currentQuery);
+        return;
+    }
+    
+    currentFindIndex = (currentFindIndex + 1) % findResults.length;
+    highlightCurrentFind();
+    updateFindCount();
+}
+
+function findPrevious() {
+    const currentQuery = findInput.value;
+    
+    // If query changed, perform new search
+    if (currentQuery !== lastSearchQuery) {
+        performFind(currentQuery);
+        return;
+    }
+    
+    // If no results, perform search
+    if (findResults.length === 0) {
+        performFind(currentQuery);
+        return;
+    }
+    
+    currentFindIndex = currentFindIndex <= 0 ? findResults.length - 1 : currentFindIndex - 1;
+    highlightCurrentFind();
+    updateFindCount();
+}
+
+function highlightCurrentFind() {
+    if (currentFindIndex < 0 || currentFindIndex >= findResults.length) return;
+    
+    const result = findResults[currentFindIndex];
+    const range = document.createRange();
+    range.setStart(result.node, result.start);
+    range.setEnd(result.node, result.end);
+    
+    // Clear previous selection
+    const selection = window.getSelection();
+    selection.removeAllRanges();
+    selection.addRange(range);
+    
+    // Scroll into view
+    result.node.parentElement?.scrollIntoView({
+        behavior: 'smooth',
+        block: 'center'
+    });
+}
+
+function clearFindHighlights() {
+    const selection = window.getSelection();
+    selection.removeAllRanges();
+}
+
+function clearFindResults() {
+    findResults = [];
+    currentFindIndex = -1;
+    clearFindHighlights();
+    updateFindCount();
+}
+
+function updateFindCount() {
+    const countEl = findOverlay?.querySelector('#find-count');
+    if (countEl) {
+        if (findResults.length === 0) {
+            countEl.textContent = '';
+        } else {
+            countEl.textContent = `${currentFindIndex + 1}/${findResults.length}`;
+        }
+    }
 }
 
 function openFindOverlay() {
@@ -727,20 +878,20 @@ function closeFindOverlay() {
     if (!findOverlay) return;
     findOverlay.classList.remove('show');
     findVisible = false;
+    clearFindResults();
 }
 
+// Legacy function for backward compatibility
 function doFind(q, forward) {
     if (!q) return;
-    try {
-        // Use built-in find; wrap search
-        const found = window.find(q, false, !forward, true, false, false, false);
-        if (!found) {
-            // if not found, try once more from start by clearing selection
-            const sel = window.getSelection();
-            if (sel && sel.removeAllRanges) sel.removeAllRanges();
-            window.find(q, false, !forward, true, false, false, false);
-        }
-    } catch (e) {
-        // ignore if window.find not available
+    
+    if (q !== lastSearchQuery) {
+        performFind(q);
+    }
+    
+    if (forward) {
+        findNext();
+    } else {
+        findPrevious();
     }
 }

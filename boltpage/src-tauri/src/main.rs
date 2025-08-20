@@ -33,5 +33,5 @@ fn main() {
     }
     
     // Launch the Tauri application (with or without file argument)
-    markrust_lib::run();
+    boltpage::run();
 }
