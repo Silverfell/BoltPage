@@ -190,6 +190,28 @@ update_ruby_name() {
     echo "✅ Updated Ruby name in $file_path to: $new_name"
 }
 
+# Function to update Rust About dialog version in a file
+update_rust_about_version() {
+    local file_path="$1"
+    local new_version="$2"
+    
+    if [[ ! -f "$file_path" ]]; then
+        echo "⚠️  Warning: $file_path not found, skipping..."
+        return 0
+    fi
+    
+    # Use sed to replace the About dialog version - be very precise
+    if [[ "$OS_NAME" == "Darwin" ]]; then
+        # macOS sed requires different syntax
+        sed -i '' "s/BoltPage v[0-9]\+\.[0-9]\+\.[0-9]\+/BoltPage v$new_version/g" "$file_path"
+    else
+        # Linux/Windows sed
+        sed -i "s/BoltPage v[0-9]\+\.[0-9]\+\.[0-9]\+/BoltPage v$new_version/g" "$file_path"
+    fi
+    
+    echo "✅ Updated Rust About dialog version in $file_path to: v$new_version"
+}
+
 # Synchronize versions and app names before building
 echo "🔄 Synchronizing version numbers and app names..."
 PACKAGE_INFO=$(get_package_info)
@@ -206,6 +228,9 @@ update_package_name_in_file "src-tauri/Cargo.toml" "$PACKAGE_NAME"
 # Update tauri.conf.json
 update_json_version "src-tauri/tauri.conf.json" "$PACKAGE_VERSION"
 update_json_product_name "src-tauri/tauri.conf.json" "$PACKAGE_NAME"
+
+# Update Rust source code - About dialog version
+update_rust_about_version "src-tauri/src/lib.rs" "$PACKAGE_VERSION"
 
 # Update Homebrew cask
 update_ruby_version "Homebrew/Casks/boltpage.rb" "$PACKAGE_VERSION"
