@@ -4,6 +4,7 @@ use syntect::highlighting::ThemeSet;
 use syntect::html::{ClassedHTMLGenerator, ClassStyle, css_for_theme_with_class_style};
 use once_cell::sync::Lazy;
 use serde_json as serde_json_crate;
+use serde_yaml as serde_yaml_crate;
 
 static SYNTAX_SET: Lazy<SyntaxSet> = Lazy::new(|| SyntaxSet::load_defaults_newlines());
 static THEME_SET: Lazy<ThemeSet> = Lazy::new(|| ThemeSet::load_defaults());
@@ -154,6 +155,41 @@ pub fn parse_json_with_theme(content: &str, _theme_name: &str) -> Result<String,
     let highlighted = generator.finalize();
     let html = format!(
         "<div class=\"highlight\"><pre><code class=\"language-json\">{}</code></pre></div>",
+        highlighted
+    );
+    Ok(html)
+}
+
+/// Pretty-print YAML and return class-based highlighted HTML for the YAML syntax
+pub fn parse_yaml_with_theme(content: &str, _theme_name: &str) -> Result<String, String> {
+    // Parse YAML to validate it
+    let yaml_value: serde_yaml_crate::Value = serde_yaml_crate::from_str(content)
+        .map_err(|e| format!("Invalid YAML: {}", e))?;
+    
+    // Convert to pretty-printed YAML
+    let pretty = serde_yaml_crate::to_string(&yaml_value)
+        .map_err(|e| format!("Failed to pretty-print YAML: {}", e))?;
+
+    // Highlight as YAML
+    let syntax = SYNTAX_SET
+        .find_syntax_by_token("YAML")
+        .or_else(|| SYNTAX_SET.find_syntax_by_token("yaml"))
+        .or_else(|| SYNTAX_SET.find_syntax_by_token("yml"))
+        .ok_or_else(|| "YAML syntax not found".to_string())?;
+
+    let mut generator = ClassedHTMLGenerator::new_with_class_style(
+        syntax,
+        &SYNTAX_SET,
+        ClassStyle::Spaced,
+    );
+
+    for line in pretty.lines() {
+        let _ = generator.parse_html_for_line_which_includes_newline(&format!("{}\n", line));
+    }
+
+    let highlighted = generator.finalize();
+    let html = format!(
+        "<div class=\"highlight\"><pre><code class=\"language-yaml\">{}</code></pre></div>",
         highlighted
     );
     Ok(html)

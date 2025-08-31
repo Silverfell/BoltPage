@@ -408,6 +408,11 @@ fn parse_json_with_theme(content: String, theme: String) -> Result<String, Strin
 }
 
 #[tauri::command]
+fn parse_yaml_with_theme(content: String, theme: String) -> Result<String, String> {
+    markrust_core::parse_yaml_with_theme(&content, &theme)
+}
+
+#[tauri::command]
 fn format_json_pretty(content: String) -> Result<String, String> {
     // Pretty-print JSON using serde_json with default map ordering (sorted keys)
     let value: serde_json::Value = serde_json::from_str(&content)
@@ -465,10 +470,11 @@ async fn open_file_dialog(app: AppHandle) -> Result<Option<String>, String> {
     let file_path = app.dialog()
         .file()
         // Show a combined filter first for convenience
-        .add_filter("Supported", &["md", "markdown", "json", "txt", "pdf"])
+        .add_filter("Supported", &["md", "markdown", "json", "yaml", "yml", "txt", "pdf"])
         // Specific filters
         .add_filter("Markdown", &["md", "markdown"])
         .add_filter("JSON", &["json"])
+        .add_filter("YAML", &["yaml", "yml"])
         .add_filter("Text", &["txt"])
         .add_filter("PDF", &["pdf"])
         .blocking_pick_file();
@@ -621,6 +627,7 @@ pub fn run() {
             parse_markdown,
             parse_markdown_with_theme,
             parse_json_with_theme,
+            parse_yaml_with_theme,
             format_json_pretty,
             broadcast_scroll_sync,
             get_preferences,

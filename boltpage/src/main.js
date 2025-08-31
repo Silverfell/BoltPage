@@ -121,6 +121,17 @@ async function openFile(filePath) {
                 const msg = typeof e === 'string' ? e : (e && e.message) ? e.message : 'Invalid JSON';
                 html = `<div class="markdown-body"><pre style="color: var(--danger, #c00); white-space: pre-wrap;">JSON error: ${escapeHtml(String(msg))}</pre></div>`;
             }
+        } else if (lowerPath.endsWith('.yaml') || lowerPath.endsWith('.yml')) {
+            currentKind = 'yaml';
+            console.log('[DEBUG] About to call parse_yaml_with_theme');
+            try {
+                html = await invoke('parse_yaml_with_theme', { content, theme: currentTheme });
+                console.log('[DEBUG] parse_yaml_with_theme returned HTML length:', html.length);
+            } catch (e) {
+                console.error('[DEBUG] parse_yaml_with_theme failed:', e);
+                const msg = typeof e === 'string' ? e : (e && e.message) ? e.message : 'Invalid YAML';
+                html = `<div class="markdown-body"><pre style="color: var(--danger, #c00); white-space: pre-wrap;">YAML error: ${escapeHtml(String(msg))}</pre></div>`;
+            }
         } else if (lowerPath.endsWith('.txt')) {
             currentKind = 'txt';
             // Render plain text in a pre block with escaping
@@ -171,7 +182,7 @@ function parsePx(v) {
 
 function getPreAndMetrics() {
     let pre = null;
-    if (currentKind === 'json') {
+    if (currentKind === 'json' || currentKind === 'yaml') {
         pre = document.querySelector('#markdown-content .highlight pre');
     } else if (currentKind === 'txt') {
         pre = document.querySelector('#markdown-content pre.plain-text');
@@ -189,7 +200,7 @@ function getPreAndMetrics() {
 }
 
 function getTopLineForPreview() {
-    if (currentKind === 'json' || currentKind === 'txt') {
+    if (currentKind === 'json' || currentKind === 'yaml' || currentKind === 'txt') {
         const m = getPreAndMetrics();
         if (!m) return null;
         const offset = Math.max(0, contentEl.scrollTop - m.preTop);
@@ -302,7 +313,9 @@ function isEditableType(filePath) {
         lower.endsWith('.md') ||
         lower.endsWith('.markdown') ||
         lower.endsWith('.txt') ||
-        lower.endsWith('.json')
+        lower.endsWith('.json') ||
+        lower.endsWith('.yaml') ||
+        lower.endsWith('.yml')
     );
 }
 
@@ -514,7 +527,7 @@ window.addEventListener('DOMContentLoaded', async () => {
             if (!currentFilePath || !scrollLinkEnabled) return;
             if (payload.source === appWindow.label) return; // ignore self
             if (payload.file_path !== currentFilePath) return;
-            if (payload.kind === 'json' && typeof payload.line === 'number') {
+            if ((payload.kind === 'json' || payload.kind === 'yaml') && typeof payload.line === 'number') {
                 // Scroll preview to the requested line
                 scrollPreviewToLine(payload.line);
             } else if (typeof payload.percent === 'number') {
