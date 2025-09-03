@@ -80,6 +80,27 @@
 					<string>public.plain-text</string>
 				</array>
 			</dict>
+			<!-- YAML Files -->
+			<dict>
+				<key>CFBundleTypeExtensions</key>
+				<array>
+					<string>yaml</string>
+					<string>yml</string>
+				</array>
+				<key>CFBundleTypeIconFile</key>
+				<string>icon</string>
+				<key>CFBundleTypeName</key>
+				<string>YAML Document</string>
+				<key>CFBundleTypeRole</key>
+				<string>Editor</string>
+				<key>LSHandlerRank</key>
+				<string>Owner</string>
+				<key>LSItemContentTypes</key>
+				<array>
+					<string>public.yaml</string>
+					<string>public.plain-text</string>
+				</array>
+			</dict>
 		</array>
 	
 	<!-- Imported Type Declarations -->
@@ -110,6 +131,32 @@
 				<array>
 					<string>text/markdown</string>
 					<string>text/x-markdown</string>
+				</array>
+			</dict>
+		</dict>
+		<!-- YAML UTI -->
+		<dict>
+			<key>UTTypeConformsTo</key>
+			<array>
+				<string>public.plain-text</string>
+				<string>public.text</string>
+			</array>
+			<key>UTTypeDescription</key>
+			<string>YAML Document</string>
+			<key>UTTypeIdentifier</key>
+			<string>public.yaml</string>
+			<key>UTTypeTagSpecification</key>
+			<dict>
+				<key>public.filename-extension</key>
+				<array>
+					<string>yaml</string>
+					<string>yml</string>
+				</array>
+				<key>public.mime-type</key>
+				<array>
+					<string>text/yaml</string>
+					<string>text/x-yaml</string>
+					<string>application/x-yaml</string>
 				</array>
 			</dict>
 		</dict>
@@ -194,6 +241,7 @@
 	<array>
 		<string>net.daringfireball.markdown</string>
 		<string>public.json</string>
+		<string>public.yaml</string>
 		<string>public.plain-text</string>
 	</array>
 </dict>
