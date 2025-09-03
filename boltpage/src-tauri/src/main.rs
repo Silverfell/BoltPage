@@ -25,7 +25,7 @@ fn main() {
                 return;
             }
             "-v" | "--version" => {
-                println!("BoltPage 1.0.0");
+                println!("BoltPage {}", env!("CARGO_PKG_VERSION"));
                 return;
             }
             _ => {}

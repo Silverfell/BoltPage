@@ -140,6 +140,9 @@ fn create_window_with_file(app: &AppHandle, file_path: Option<PathBuf>) -> tauri
         .visible(file_path.is_none()) // Only show empty windows immediately
         .build()?;
     
+    // Rebuild the application menu to include this window in the Window menu
+    let _ = rebuild_app_menu(app);
+    
     // Track file windows
     if let Some(path) = file_path {
         let app_state = app.state::<AppState>();
@@ -151,6 +154,44 @@ fn create_window_with_file(app: &AppHandle, file_path: Option<PathBuf>) -> tauri
     }
     
     Ok(window_label)
+}
+
+// Rebuild the native application menu, including a dynamic Window submenu
+fn rebuild_app_menu(app: &AppHandle) -> tauri::Result<()> {
+    // File menu
+    let file_menu = SubmenuBuilder::new(app, "File")
+        .item(&MenuItemBuilder::with_id("new-window", "New Window").accelerator("CmdOrCtrl+N").build(app)?)
+        .item(&MenuItemBuilder::with_id("open", "Open").accelerator("CmdOrCtrl+O").build(app)?)
+        .separator()
+        .item(&MenuItemBuilder::with_id("close", "Close Window").accelerator("CmdOrCtrl+W").build(app)?)
+        .item(&MenuItemBuilder::with_id("quit", "Quit").accelerator("CmdOrCtrl+Q").build(app)?)
+        .build()?;
+
+    // Window menu (dynamic list of open windows)
+    let mut window_menu_builder = SubmenuBuilder::new(app, "Window")
+        .item(&MenuItemBuilder::with_id("new-window", "New Window").accelerator("CmdOrCtrl+N").build(app)?)
+        .separator();
+
+    for (label, window) in app.webview_windows() {
+        let title = window.title().unwrap_or_else(|_| "Untitled".to_string());
+        let window_id = format!("window-{}", label);
+        window_menu_builder = window_menu_builder.item(&MenuItemBuilder::with_id(&window_id, &title).build(app)?);
+    }
+    let window_menu = window_menu_builder.build()?;
+
+    // Help menu
+    let help_menu = SubmenuBuilder::new(app, "Help")
+        .item(&MenuItemBuilder::with_id("about", "About BoltPage").build(app)?)
+        .build()?;
+
+    // Build and set the menu
+    let menu = MenuBuilder::new(app)
+        .item(&file_menu)
+        .item(&window_menu)
+        .item(&help_menu)
+        .build()?;
+    app.set_menu(menu)?;
+    Ok(())
 }
 
 // Global file watchers storage with dedup by file path and debounced emits
@@ -598,6 +639,46 @@ fn get_file_path_from_window_label(window: tauri::Window) -> Result<Option<Strin
     }
 }
 
+#[derive(Debug, Serialize, Deserialize, Clone)]
+struct WindowInfo {
+    label: String,
+    title: String,
+    file_path: String,
+}
+
+#[tauri::command]
+fn get_all_windows(app: AppHandle) -> Result<Vec<WindowInfo>, String> {
+    let mut windows = Vec::new();
+    
+    for (label, window) in app.webview_windows() {
+        let title = window.title().unwrap_or_else(|_| "Untitled".to_string());
+        // For now, just show the window label as file path since we can't easily get the actual path
+        let file_path = if label.starts_with("markdown-file-") {
+            "File window".to_string()
+        } else {
+            "Empty window".to_string()
+        };
+        
+        windows.push(WindowInfo {
+            label: label.to_string(),
+            title,
+            file_path,
+        });
+    }
+    
+    Ok(windows)
+}
+
+#[tauri::command]
+fn focus_window(app: AppHandle, window_label: String) -> Result<(), String> {
+    if let Some(window) = app.get_webview_window(&window_label) {
+        window.set_focus().map_err(|e| format!("Failed to focus window: {}", e))?;
+        window.show().map_err(|e| format!("Failed to show window: {}", e))?;
+        Ok(())
+    } else {
+        Err("Window not found".to_string())
+    }
+}
 
 fn open_markdown_window(app: &AppHandle, file_path: Option<String>) -> Result<(), String> {
     let resolved_path = file_path.and_then(|p| resolve_file_path(&p));
@@ -647,36 +728,18 @@ pub fn run() {
             remove_window_from_tracking,
             debug_dump_state,
             get_file_path_from_window_label,
+            get_all_windows,
+            focus_window,
             get_syntax_css
         ])
         .setup(move |app| {
             // Initialize file watchers state only (app state already managed)
             app.manage(FileWatchers::default());
             
-            // Set up the menu
-            let file_menu = SubmenuBuilder::new(app, "File")
-                .item(&MenuItemBuilder::with_id("new-window", "New Window").accelerator("CmdOrCtrl+N").build(app)?)
-                .item(&MenuItemBuilder::with_id("open", "Open").accelerator("CmdOrCtrl+O").build(app)?)
-                .separator()
-                .item(&MenuItemBuilder::with_id("close", "Close Window").accelerator("CmdOrCtrl+W").build(app)?)
-                .item(&MenuItemBuilder::with_id("quit", "Quit").accelerator("CmdOrCtrl+Q").build(app)?)
-                .build()?;
+            // Set up the initial menu (dynamic Window submenu)
+            rebuild_app_menu(&app.handle())?;
             
-            let window_menu = SubmenuBuilder::new(app, "Window")
-                .item(&MenuItemBuilder::with_id("new-window", "New Window").accelerator("CmdOrCtrl+N").build(app)?)
-                .build()?;
-            
-            let help_menu = SubmenuBuilder::new(app, "Help")
-                .item(&MenuItemBuilder::with_id("about", "About BoltPage").build(app)?)
-                .build()?;
-            
-            let menu = MenuBuilder::new(app)
-                .item(&file_menu)
-                .item(&window_menu)
-                .item(&help_menu)
-                .build()?;
-            
-            app.set_menu(menu)?;
+
             
             // Handle menu events
             app.on_menu_event(|app, event| {
@@ -684,6 +747,15 @@ pub fn run() {
                     "new-window" => {
                         // Create a new empty window
                         let _ = create_new_window_command(app.clone(), None);
+                    }
+                    window_id if window_id.starts_with("window-") => {
+                        // Extract the actual window label from the menu item ID
+                        if let Some(label) = window_id.strip_prefix("window-") {
+                            if let Some(window) = app.get_webview_window(label) {
+                                let _ = window.set_focus();
+                                let _ = window.show();
+                            }
+                        }
                     }
                     "open" => {
                         // Create a new window and trigger open file dialog
@@ -699,13 +771,13 @@ pub fn run() {
                         app.exit(0);
                     }
                     "about" => {
-                        // Show about dialog - try to find any active window
+                        let version = env!("CARGO_PKG_VERSION");
+                        let msg = format!("alert('BoltPage v{}\\nA fast Markdown viewer and editor')", version);
                         if let Some(window) = app.get_webview_window("main") {
-                            let _ = window.eval("alert('BoltPage v0.1.0\\nA fast Markdown viewer and editor')");
+                            let _ = window.eval(&msg);
                         } else {
-                            // Try to find any window if main doesn't exist
                             for (_, window) in app.webview_windows() {
-                                let _ = window.eval("alert('BoltPage v0.1.0\\nA fast Markdown viewer and editor')");
+                                let _ = window.eval(&msg);
                                 break;
                             }
                         }
@@ -770,6 +842,8 @@ pub fn run() {
                     let window_label = window.label().to_string();
                     let _ = stop_file_watcher(app.clone(), window_label.clone());
                     let _ = remove_window_from_tracking(app.clone(), window_label);
+                    // Rebuild menu after a window closes
+                    let _ = rebuild_app_menu(&app);
                 }
                 _ => {}
             }
@@ -793,6 +867,8 @@ pub fn run() {
                                     eprintln!("Ignored non-file URL: {}", url);
                                 }
                             }
+                            // Rebuild menu after opening files
+                            let _ = rebuild_app_menu(&_app);
                         } else {
                             drop(setup_complete);
                             if let Ok(mut opened_files) = state.opened_files.try_lock() {

@@ -218,10 +218,31 @@ case "$OS_NAME" in
   Darwin)
     echo "🚀 Building BoltPage for macOS release..."
 
-    # Set notarization credentials
-    export APPLE_ID="igor@danceinpalemoonlight.com"
-    export APPLE_PASSWORD="ggsn-xche-bjzl-hzyh"
-    export APPLE_TEAM_ID="U59VVNHDJC"
+    # Load credentials from local env files if not already set
+    if [[ -z "${APPLE_ID:-}" || -z "${APPLE_PASSWORD:-}" || -z "${APPLE_TEAM_ID:-}" ]]; then
+      for f in ".env.local" ".env.release" ".env"; do
+        if [[ -f "$f" ]]; then
+          echo "🔐 Loading credentials from $f"
+          set -a
+          # shellcheck disable=SC1090
+          . "$f"
+          set +a
+          break
+        fi
+      done
+    fi
+
+    # Fallback to legacy in-script defaults (from previous script) if still unset
+    if [[ -z "${APPLE_ID:-}" ]]; then APPLE_ID="igor@danceinpalemoonlight.com"; fi
+    if [[ -z "${APPLE_PASSWORD:-}" ]]; then APPLE_PASSWORD="ggsn-xche-bjzl-hzyh"; fi
+    if [[ -z "${APPLE_TEAM_ID:-}" ]]; then APPLE_TEAM_ID="U59VVNHDJC"; fi
+
+    # Validate required credentials are available now
+    if [[ -z "${APPLE_ID:-}" || -z "${APPLE_PASSWORD:-}" || -z "${APPLE_TEAM_ID:-}" ]]; then
+      echo "❌ Missing notarization credentials. Provide them via environment or a local .env file." >&2
+      echo "   Required variables: APPLE_ID, APPLE_PASSWORD (app-specific), APPLE_TEAM_ID" >&2
+      exit 1
+    fi
 
     echo "📦 Building and signing application..."
     npm run tauri build

@@ -5,7 +5,11 @@
 ### THE CORRECT SEQUENCE:
 
 ### 1. BUILD FIRST (pollution will happen - that's expected):
-- Run: `APPLE_ID="igor@danceinpalemoonlight.com" APPLE_PASSWORD="ggsn-xche-bjzl-hzyh" APPLE_TEAM_ID="U59VVNHDJC" npm run tauri build`
+- Export secrets in your shell (or use a secrets manager):
+  - `export APPLE_ID="<your-apple-id>"`
+  - `export APPLE_PASSWORD="<app-specific-password>"`
+  - `export APPLE_TEAM_ID="<team-id>"`
+- Run: `npm run tauri build`
 - Build process will create pollution in Launch Services (target/release path + DMG mounts)
 - This pollution is unavoidable and expected
 

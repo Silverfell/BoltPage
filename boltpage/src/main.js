@@ -15,6 +15,8 @@ let scrollLinkEnabled = true;
 let findOverlay = null;
 let findInput = null;
 let findVisible = false;
+let windowListOverlay = null;
+let windowListVisible = false;
 
 // Suppress noisy [DEBUG] logs in production unless window.__DEV__ is true
 (function () {
