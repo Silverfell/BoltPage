@@ -41,41 +41,23 @@ jobs:
           key: ${{ runner.os }}-npm-${{ hashFiles('boltpage/package-lock.json') }}
           restore-keys: ${{ runner.os }}-npm-
 
-      - name: Install NSIS (with retries and fallbacks)
+      - name: Ensure NSIS is available (simple)
         run: |
-          $ErrorActionPreference = 'SilentlyContinue'
-          function Has-Makensis {
-            return [bool](Get-Command makensis -ErrorAction SilentlyContinue)
+          $ErrorActionPreference = 'Continue'
+          Write-Host "Installing NSIS via Chocolatey (idempotent)..."
+          choco install nsis -y --no-progress
+          if ($LASTEXITCODE -ne 0) { Write-Host "choco returned $LASTEXITCODE; continuing regardless" }
+          # Unconditionally add typical NSIS install paths to PATH for current + subsequent steps
+          $pf86 = [Environment]::GetFolderPath('ProgramFilesX86')
+          $pf64 = [Environment]::GetFolderPath('ProgramFiles')
+          $paths = @((Join-Path $pf86 'NSIS'), (Join-Path $pf64 'NSIS'))
+          foreach ($p in $paths) {
+            if (Test-Path $p) {
+              $env:Path = "$env:Path;$p"
+              "$p" | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
+            }
           }
-          if (Has-Makensis) {
-            Write-Host "NSIS already installed."
-            exit 0
-          }
-
-          Write-Host "Attempting Chocolatey install of NSIS..."
-          for ($i=1; $i -le 3; $i++) {
-            choco install nsis -y --no-progress
-            if ($LASTEXITCODE -eq 0 -and (Has-Makensis)) { break }
-            Start-Sleep -Seconds (10 * $i)
-          }
-
-          if (-not (Has-Makensis)) {
-            Write-Host "Chocolatey failed; attempting winget install of NSIS..."
-            winget install -e --id NSIS.NSIS -h --accept-source-agreements --accept-package-agreements
-          }
-
-          if (-not (Has-Makensis)) {
-            Write-Host "winget failed; downloading NSIS installer from SourceForge..."
-            $url = 'https://downloads.sourceforge.net/project/nsis/NSIS%203/3.10/nsis-3.10-setup.exe'
-            $tmp = "$env:TEMP\nsis-setup.exe"
-            Invoke-WebRequest $url -OutFile $tmp
-            Start-Process $tmp -ArgumentList '/S' -Wait
-          }
-
-          if (-not (Has-Makensis)) {
-            Write-Error "Failed to install NSIS (makensis not found)"
-            exit 1
-          }
+          Write-Host "NSIS path hints added; proceeding to build. If NSIS is actually missing, the build will fail clearly."
 
       - name: Install dependencies
         working-directory: boltpage
