@@ -1,10 +1,10 @@
 cask "boltpage" do
-  version "1.4.0"
+  version "1.4.2"
   sha256 :no_check # Replace with exact checksums per-arch below when URLs are final
 
   name "BoltPage"
-  desc "Fast Markdown viewer and editor"
-  homepage "https://github.com/markrust/markrust"
+  desc "Fast, lightweight Markdown viewer and editor"
+  homepage "https://github.com/markrust/boltpage"
 
   # Provide separate URLs and sha256 for each architecture once hosted
   on_arm do
@@ -39,4 +39,3 @@ cask "boltpage" do
     "~/Library/Logs/BoltPage",
   ]
 end
-

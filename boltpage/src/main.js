@@ -106,54 +106,64 @@ async function openFile(filePath) {
     }
     
     try {
-        console.log('[DEBUG] About to call read_file with path:', filePath);
-        const content = await invoke('read_file', { path: filePath });
-        console.log('[DEBUG] read_file returned content length:', content.length);
-
         const lowerPath = String(filePath).toLowerCase();
+        if (lowerPath.endsWith('.json')) currentKind = 'json';
+        else if (lowerPath.endsWith('.yaml') || lowerPath.endsWith('.yml')) currentKind = 'yaml';
+        else if (lowerPath.endsWith('.txt')) currentKind = 'txt';
+        else currentKind = 'markdown';
+
+        // Preserve scroll anchor if reloading same file
+        let anchor = null;
+        if (currentFilePath && currentFilePath === filePath && contentEl) {
+            anchor = getTopLineForPreview();
+        }
+
+        console.log('[DEBUG] About to call render_file_to_html with path:', filePath);
         let html;
-        if (lowerPath.endsWith('.json')) {
-            currentKind = 'json';
-            console.log('[DEBUG] About to call parse_json_with_theme');
-            try {
-                html = await invoke('parse_json_with_theme', { content, theme: currentTheme });
-                console.log('[DEBUG] parse_json_with_theme returned HTML length:', html.length);
-            } catch (e) {
-                console.error('[DEBUG] parse_json_with_theme failed:', e);
-                const msg = typeof e === 'string' ? e : (e && e.message) ? e.message : 'Invalid JSON';
-                html = `<div class="markdown-body"><pre style="color: var(--danger, #c00); white-space: pre-wrap;">JSON error: ${escapeHtml(String(msg))}</pre></div>`;
-            }
-        } else if (lowerPath.endsWith('.yaml') || lowerPath.endsWith('.yml')) {
-            currentKind = 'yaml';
-            console.log('[DEBUG] About to call parse_yaml_with_theme');
-            try {
-                html = await invoke('parse_yaml_with_theme', { content, theme: currentTheme });
-                console.log('[DEBUG] parse_yaml_with_theme returned HTML length:', html.length);
-            } catch (e) {
-                console.error('[DEBUG] parse_yaml_with_theme failed:', e);
-                const msg = typeof e === 'string' ? e : (e && e.message) ? e.message : 'Invalid YAML';
-                html = `<div class="markdown-body"><pre style="color: var(--danger, #c00); white-space: pre-wrap;">YAML error: ${escapeHtml(String(msg))}</pre></div>`;
-            }
-        } else if (lowerPath.endsWith('.txt')) {
-            currentKind = 'txt';
-            // Render plain text in a pre block with escaping
-            const escaped = escapeHtml(content);
-            html = `<div class="markdown-body"><pre class="plain-text">${escaped}</pre></div>`;
-        } else {
-            currentKind = 'markdown';
-            console.log('[DEBUG] About to call parse_markdown_with_theme');
-            html = await invoke('parse_markdown_with_theme', { content, theme: currentTheme });
-            console.log('[DEBUG] parse_markdown_with_theme returned HTML length:', html.length);
+        try {
+            html = await invoke('render_file_to_html', { path: filePath, theme: currentTheme });
+            console.log('[DEBUG] render_file_to_html returned HTML length:', html.length);
+        } catch (e) {
+            console.error('[DEBUG] render_file_to_html failed:', e);
+            const msg = typeof e === 'string' ? e : (e && e.message) ? e.message : 'Failed to render file';
+            html = `<div class="markdown-body"><pre style="color: var(--danger, #c00); white-space: pre-wrap;">${escapeHtml(String(msg))}</pre></div>`;
         }
 
         currentFilePath = filePath;
-        console.log('[DEBUG] About to set innerHTML');
-        document.getElementById('markdown-content').innerHTML = html;
-        console.log('[DEBUG] innerHTML set successfully');
+        console.log('[DEBUG] About to update DOM');
+        const container = document.getElementById('markdown-content');
+        if (container.innerHTML !== html) {
+            const range = document.createRange();
+            range.selectNodeContents(container);
+            const fragment = range.createContextualFragment(html);
+            container.replaceChildren(fragment);
+        }
+        console.log('[DEBUG] DOM updated');
         // Ensure link interception remains active after content swap
         attachLinkInterceptor();
         // Update edit button availability based on file writability
         updateEditButtonState();
+        // Restore scroll position if applicable
+        if (anchor) {
+            if ((anchor.kind === 'json' || anchor.kind === 'yaml' || anchor.kind === 'txt') && typeof anchor.line === 'number') {
+                scrollPreviewToLine(anchor.line);
+            } else if (typeof anchor.percent === 'number') {
+                const maxScroll = Math.max(1, contentEl.scrollHeight - contentEl.clientHeight);
+                isProgrammaticScroll = true;
+                contentEl.scrollTo({ top: anchor.percent * maxScroll, behavior: 'auto' });
+                setTimeout(() => { isProgrammaticScroll = false; }, 0);
+            }
+        }
+
+        // Ensure window title reflects the opened file (overrides default index.html title)
+        try {
+            const base = (String(currentFilePath).split(/[/\\\\]/).pop()) || '';
+            if (base) {
+                await appWindow.setTitle(`BoltPage - ${base}`);
+            }
+        } catch (e) {
+            console.warn('Failed to set window title:', e);
+        }
         
         // Title is already set during window creation - no need to set it again
         
@@ -291,7 +301,7 @@ async function updateEditButtonState() {
         editBtn.setAttribute('disabled', 'true');
         return;
     }
-    // Disable for non-editable types (e.g., pdf)
+    // Disable for non-editable types
     if (!isEditableType(currentFilePath)) {
         editBtn.setAttribute('disabled', 'true');
         return;

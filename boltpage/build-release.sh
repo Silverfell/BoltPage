@@ -244,6 +244,11 @@ case "$OS_NAME" in
       exit 1
     fi
 
+    # Export environment variables for Tauri build process
+    export APPLE_ID
+    export APPLE_PASSWORD
+    export APPLE_TEAM_ID
+
     echo "📦 Building and signing application..."
     npm run tauri build
 

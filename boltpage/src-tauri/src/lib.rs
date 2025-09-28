@@ -2,6 +2,7 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 use std::collections::HashMap;
+use std::num::NonZeroUsize;
 use base64::Engine;
 use tauri::{AppHandle, Manager, WebviewUrl, WebviewWindowBuilder, Emitter};
 use tauri_plugin_store::StoreExt;
@@ -10,6 +11,7 @@ use tauri::menu::{MenuBuilder, MenuItemBuilder, SubmenuBuilder};
 use notify::{Config, RecommendedWatcher, RecursiveMode, Watcher};
 use tokio::sync::mpsc;
 use url::Url;
+use lru::LruCache;
 // Simple debug macro to strip logs in release
 macro_rules! debug_log {
     ($($arg:tt)*) => {
@@ -218,7 +220,6 @@ impl Default for FileWatchers {
 }
 
 // AppState for managing opened files from macOS Launch Services
-#[derive(Default)]
 struct AppState {
     opened_files: Arc<Mutex<Vec<String>>>,
     open_windows: Arc<Mutex<HashMap<String, String>>>, // file_path -> window_label
@@ -227,6 +228,21 @@ struct AppState {
     resize_tasks: Arc<Mutex<HashMap<String, tauri::async_runtime::JoinHandle<()>>>>,
     // Latest logical sizes per window label
     latest_sizes: Arc<Mutex<HashMap<String, (u32, u32)>>>,
+    // HTML render cache (path, size, mtime_secs, theme) -> HTML
+    html_cache: Arc<Mutex<LruCache<CacheKey, String>>>,
+}
+
+impl Default for AppState {
+    fn default() -> Self {
+        Self {
+            opened_files: Arc::new(Mutex::new(Vec::new())),
+            open_windows: Arc::new(Mutex::new(HashMap::new())),
+            setup_complete: Arc::new(Mutex::new(false)),
+            resize_tasks: Arc::new(Mutex::new(HashMap::new())),
+            latest_sizes: Arc::new(Mutex::new(HashMap::new())),
+            html_cache: Arc::new(Mutex::new(LruCache::new(NonZeroUsize::new(50).unwrap()))),
+        }
+    }
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -248,6 +264,31 @@ impl Default for AppPreferences {
             font_size: None,
             word_wrap: None,
             show_line_numbers: None,
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+struct CacheKey {
+    path: String,
+    size: u64,
+    mtime_secs: u64,
+    theme: String,
+}
+
+fn invalidate_cache_for_path(app: &AppHandle, file_path: &str) {
+    if let Some(state) = app.try_state::<AppState>() {
+        if let Ok(mut cache) = state.html_cache.lock() {
+            // Collect matching keys first to avoid borrowing issues
+            let mut keys_to_remove: Vec<CacheKey> = Vec::new();
+            for (k, _) in cache.iter() {
+                if k.path == file_path {
+                    keys_to_remove.push(k.clone());
+                }
+            }
+            for k in keys_to_remove {
+                cache.pop(&k);
+            }
         }
     }
 }
@@ -308,6 +349,8 @@ async fn start_file_watcher(app: AppHandle, file_path: String, window_label: Str
                 let file2 = file_key.clone();
                 pending_task = Some(tauri::async_runtime::spawn(async move {
                     sleep(Duration::from_millis(250)).await;
+                    // Invalidate any cached HTML for this file
+                    invalidate_cache_for_path(&app2, &file2);
                     if let Some(state) = app2.try_state::<FileWatchers>() {
                         if let Ok(subs) = state.subs.lock() {
                             if let Some(labels) = subs.get(&file2) {
@@ -407,17 +450,27 @@ fn convert_to_logical(app: &AppHandle, width: u32, height: u32) -> (u32, u32) {
     }
 }
 
+fn escape_html(input: &str) -> String {
+    let mut out = String::with_capacity(input.len());
+    for ch in input.chars() {
+        match ch {
+            '&' => out.push_str("&amp;"),
+            '<' => out.push_str("&lt;"),
+            '>' => out.push_str("&gt;"),
+            '"' => out.push_str("&quot;"),
+            '\'' => out.push_str("&#039;"),
+            _ => out.push(ch),
+        }
+    }
+    out
+}
+
 #[tauri::command]
 fn read_file(path: String) -> Result<String, String> {
     fs::read_to_string(&path)
         .map_err(|e| format!("Failed to read file: {}", e))
 }
 
-#[tauri::command]
-fn read_pdf_file(path: String) -> Result<Vec<u8>, String> {
-    fs::read(&path)
-        .map_err(|e| format!("Failed to read PDF file: {}", e))
-}
 
 #[tauri::command]
 fn write_file(path: String, content: String) -> Result<(), String> {
@@ -482,6 +535,69 @@ fn get_syntax_css(theme: String) -> Result<String, String> {
 }
 
 #[tauri::command]
+async fn render_file_to_html(app: AppHandle, path: String, theme: String) -> Result<String, String> {
+    use std::time::{SystemTime, UNIX_EPOCH};
+
+    // Stat for cache key
+    let meta = fs::metadata(&path).map_err(|e| format!("Failed to stat file: {}", e))?;
+    let size = meta.len();
+    let mtime_secs = meta
+        .modified()
+        .ok()
+        .and_then(|t| t.duration_since(UNIX_EPOCH).ok())
+        .map(|d| d.as_secs())
+        .unwrap_or(0);
+
+    let key = CacheKey { path: path.clone(), size, mtime_secs, theme: theme.clone() };
+
+    // Try cache first
+    if let Some(state) = app.try_state::<AppState>() {
+        if let Ok(mut cache) = state.html_cache.lock() {
+            if let Some(cached) = cache.get(&key).cloned() {
+                return Ok(cached);
+            }
+        }
+    }
+
+    // Heavy work in blocking thread
+    let html = tauri::async_runtime::spawn_blocking(move || -> Result<String, String> {
+        // Determine kind by extension
+        let lower = Path::new(&path)
+            .extension()
+            .and_then(|s| s.to_str())
+            .map(|s| s.to_lowercase())
+            .unwrap_or_default();
+
+        if lower == "txt" {
+            let content = fs::read_to_string(&path).map_err(|e| format!("Failed to read file: {}", e))?;
+            let escaped = escape_html(&content);
+            Ok(format!("<div class=\"markdown-body\"><pre class=\"plain-text\">{}</pre></div>", escaped))
+        } else if lower == "json" {
+            let content = fs::read_to_string(&path).map_err(|e| format!("Failed to read file: {}", e))?;
+            markrust_core::parse_json_with_theme(&content, &theme)
+        } else if lower == "yaml" || lower == "yml" {
+            let content = fs::read_to_string(&path).map_err(|e| format!("Failed to read file: {}", e))?;
+            markrust_core::parse_yaml_with_theme(&content, &theme)
+        } else {
+            // default markdown
+            let content = fs::read_to_string(&path).map_err(|e| format!("Failed to read file: {}", e))?;
+            Ok(markrust_core::parse_markdown_with_theme(&content, &theme))
+        }
+    })
+    .await
+    .map_err(|e| format!("Join error: {}", e))??;
+
+    // Insert into cache
+    if let Some(state) = app.try_state::<AppState>() {
+        if let Ok(mut cache) = state.html_cache.lock() {
+            cache.put(key, html.clone());
+        }
+    }
+
+    Ok(html)
+}
+
+#[tauri::command]
 fn get_preferences(app: AppHandle) -> Result<AppPreferences, String> {
     let store = app.store(".boltpage.dat")
         .map_err(|e| format!("Failed to access store: {}", e))?;
@@ -511,13 +627,12 @@ async fn open_file_dialog(app: AppHandle) -> Result<Option<String>, String> {
     let file_path = app.dialog()
         .file()
         // Show a combined filter first for convenience
-        .add_filter("Supported", &["md", "markdown", "json", "yaml", "yml", "txt", "pdf"])
+        .add_filter("Supported", &["md", "markdown", "json", "yaml", "yml", "txt"])
         // Specific filters
         .add_filter("Markdown", &["md", "markdown"])
         .add_filter("JSON", &["json"])
         .add_filter("YAML", &["yaml", "yml"])
         .add_filter("Text", &["txt"])
-        .add_filter("PDF", &["pdf"])
         .blocking_pick_file();
     
     Ok(file_path.map(|p| p.to_string()))
@@ -702,7 +817,6 @@ pub fn run() {
         .plugin(tauri_plugin_dialog::init())
         .invoke_handler(tauri::generate_handler![
             read_file,
-            read_pdf_file,
             write_file,
             is_writable,
             parse_markdown,
@@ -730,7 +844,8 @@ pub fn run() {
             get_file_path_from_window_label,
             get_all_windows,
             focus_window,
-            get_syntax_css
+            get_syntax_css,
+            render_file_to_html
         ])
         .setup(move |app| {
             // Initialize file watchers state only (app state already managed)
