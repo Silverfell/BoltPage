@@ -41,8 +41,41 @@ jobs:
           key: ${{ runner.os }}-npm-${{ hashFiles('boltpage/package-lock.json') }}
           restore-keys: ${{ runner.os }}-npm-
 
-      - name: Install NSIS
-        run: choco install nsis -y
+      - name: Install NSIS (with retries and fallbacks)
+        run: |
+          $ErrorActionPreference = 'SilentlyContinue'
+          function Has-Makensis {
+            return [bool](Get-Command makensis -ErrorAction SilentlyContinue)
+          }
+          if (Has-Makensis) {
+            Write-Host "NSIS already installed."
+            exit 0
+          }
+
+          Write-Host "Attempting Chocolatey install of NSIS..."
+          for ($i=1; $i -le 3; $i++) {
+            choco install nsis -y --no-progress
+            if ($LASTEXITCODE -eq 0 -and (Has-Makensis)) { break }
+            Start-Sleep -Seconds (10 * $i)
+          }
+
+          if (-not (Has-Makensis)) {
+            Write-Host "Chocolatey failed; attempting winget install of NSIS..."
+            winget install -e --id NSIS.NSIS -h --accept-source-agreements --accept-package-agreements
+          }
+
+          if (-not (Has-Makensis)) {
+            Write-Host "winget failed; downloading NSIS installer from SourceForge..."
+            $url = 'https://downloads.sourceforge.net/project/nsis/NSIS%203/3.10/nsis-3.10-setup.exe'
+            $tmp = "$env:TEMP\nsis-setup.exe"
+            Invoke-WebRequest $url -OutFile $tmp
+            Start-Process $tmp -ArgumentList '/S' -Wait
+          }
+
+          if (-not (Has-Makensis)) {
+            Write-Error "Failed to install NSIS (makensis not found)"
+            exit 1
+          }
 
       - name: Install dependencies
         working-directory: boltpage
@@ -89,4 +122,3 @@ jobs:
   #       with:
   #         name: boltpage-msi
   #         path: boltpage/target/release/bundle/msi/*.msi
-

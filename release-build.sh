@@ -75,21 +75,61 @@ if [[ -z "$REPO_SLUG" ]]; then
 fi
 echo "==> Using repository: $REPO_SLUG"
 
-# Determine ref to build (current branch)
+# Determine ref to build (current branch) and repo default branch
 REF=$(git -C "$ROOT_DIR" rev-parse --abbrev-ref HEAD 2>/dev/null || echo "main")
-echo "==> Triggering workflow on ref: $REF"
+DEFAULT_REF=$(gh repo view -R "$REPO_SLUG" --json defaultBranchRef -q .defaultBranchRef.name 2>/dev/null || echo "main")
+echo "==> Triggering workflow on ref: $REF (repo default: $DEFAULT_REF)"
 
-# Trigger the workflow (uses the workflow file we added)
-gh workflow run -R "$REPO_SLUG" windows-build.yml --ref "$REF"
+# Ensure workflow exists on GitHub for this branch; if not, suggest pushing
+if ! gh workflow view -R "$REPO_SLUG" windows-build.yml >/dev/null 2>&1; then
+  echo "⚠️  Workflow windows-build.yml not found on GitHub for $REPO_SLUG." >&2
+  echo "   GitHub requires the workflow file to exist on the repository's DEFAULT branch ($DEFAULT_REF)." >&2
+  echo "   Ensure .github/workflows/windows-build.yml is pushed to $DEFAULT_REF." >&2
+  if [[ "${AUTO_GIT_PUSH:-0}" == "1" ]]; then
+    echo "==> AUTO_GIT_PUSH=1 set; pushing workflow to default branch ($DEFAULT_REF) ..."
+    # Push current branch to the repo's default branch, to ensure workflow presence
+    git -C "$ROOT_DIR" push origin "$REF":"$DEFAULT_REF"
+    # recheck
+    sleep 3
+    if ! gh workflow view -R "$REPO_SLUG" windows-build.yml >/dev/null 2>&1; then
+      echo "❌ Workflow still not visible on GitHub. Push may have failed or different default branch in repo." >&2
+      exit 1
+    fi
+  else
+    echo "👉 Tip: re-run with AUTO_GIT_PUSH=1 to push automatically: AUTO_GIT_PUSH=1 ./release-build.sh" >&2
+    echo "   Or push manually: git push origin $REF:$DEFAULT_REF" >&2
+    exit 1
+  fi
+fi
 
-# Find the latest run for this workflow on the selected branch
-sleep 2
+# Trigger the workflow (uses the workflow file we added). If dispatch fails (permissions),
+# fallback to pushing a temporary tag matching 'v*' to trigger the tag workflow automatically.
+if ! gh workflow run -R "$REPO_SLUG" windows-build.yml --ref "$REF" >/dev/null 2>&1; then
+  echo "⚠️  'gh workflow run' failed (likely missing 'workflow' scope or Actions disabled)."
+  echo "   Falling back to temporary tag push to trigger build on GitHub."
+  TEMP_TAG="v${VERSION}-ci-$(date +%s)"
+  echo "==> Creating temporary tag: $TEMP_TAG"
+  git -C "$ROOT_DIR" tag -f "$TEMP_TAG" "$REF"
+  git -C "$ROOT_DIR" push -f origin "refs/tags/$TEMP_TAG"
+  REF="$TEMP_TAG"
+fi
+
+# Find the latest run for this workflow on the selected ref
+sleep 3
+RUN_ID=""
+if [[ "$REF" == v* ]]; then
+  # For tag builds, match by head SHA of the tag
+  TAG_SHA=$(git -C "$ROOT_DIR" rev-list -n 1 "$REF")
+RUN_ID=$(gh run list -R "$REPO_SLUG" --workflow windows-build.yml --json databaseId,createdAt,headSha \
+    -q "[.[] | select(.headSha == '$TAG_SHA')] | sort_by(.createdAt) | reverse | .[0].databaseId" 2>/dev/null || echo "")
+else
 RUN_ID=$(gh run list -R "$REPO_SLUG" --workflow windows-build.yml --json databaseId,createdAt,headBranch \
-  -q "[.[] | select(.headBranch == '$REF')] | sort_by(.createdAt) | reverse | .[0].databaseId" 2>/dev/null || echo "")
+    -q "[.[] | select(.headBranch == '$REF')] | sort_by(.createdAt) | reverse | .[0].databaseId" 2>/dev/null || echo "")
+fi
 if [[ -z "$RUN_ID" ]]; then
   # Fallback: any latest run
   RUN_ID=$(gh run list -R "$REPO_SLUG" --workflow windows-build.yml --json databaseId,createdAt \
-    -q 'sort_by(.[]; .createdAt) | reverse | .[0].databaseId')
+    -q 'sort_by(.createdAt) | reverse | .[0].databaseId')
 fi
 if [[ -z "$RUN_ID" ]]; then
   echo "❌ Could not determine workflow run ID for windows-build.yml on $REPO_SLUG" >&2
@@ -112,6 +152,13 @@ fi
 WIN_OUT_NAME="BoltPage-${VERSION}-windows.exe"
 cp -f "$WIN_EXE" "$PUBLIC_DIR/$WIN_OUT_NAME"
 echo "✅ Copied Windows EXE to: $PUBLIC_DIR/$WIN_OUT_NAME"
+
+# Cleanup: delete temporary tag if used
+if [[ "${TEMP_TAG:-}" != "" ]]; then
+  echo "==> Cleaning up temporary tag $TEMP_TAG"
+  git -C "$ROOT_DIR" tag -d "$TEMP_TAG" >/dev/null 2>&1 || true
+  git -C "$ROOT_DIR" push origin ":refs/tags/$TEMP_TAG" >/dev/null 2>&1 || true
+fi
 
 ########################################
 # 3) Summary
