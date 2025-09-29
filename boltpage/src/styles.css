@@ -13,6 +13,14 @@
   --button-hover-bg: #e1e4e8;
   --kbd-bg: #fafbfc;
   --kbd-border: #d1d5da;
+
+  /* JSON syntax colors (light) */
+  --json-key: #a626a4;      /* purple-ish for keys */
+  --json-string: #50a14f;   /* green for strings */
+  --json-number: #986801;   /* brown/amber for numbers */
+  --json-bool: #4078f2;     /* blue for booleans */
+  --json-null: #c18401;     /* amber for null */
+  --json-punct: #8b949e;    /* subtle punctuation */
   
   font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Helvetica, Arial, sans-serif;
   font-size: 16px;
@@ -39,6 +47,14 @@
   --button-hover-bg: #30363d;
   --kbd-bg: #161b22;
   --kbd-border: #30363d;
+
+  /* JSON syntax colors (dark) */
+  --json-key: #c678dd;
+  --json-string: #98c379;
+  --json-number: #d19a66;
+  --json-bool: #61afef;
+  --json-null: #e5c07b;
+  --json-punct: #7d8590;
 }
 
 /* Drac theme (Dracula-inspired) */
@@ -56,6 +72,14 @@
   --button-hover-bg: #44475a;
   --kbd-bg: #44475a;
   --kbd-border: #6272a4;
+
+  /* JSON syntax colors (drac) */
+  --json-key: #bd93f9;
+  --json-string: #50fa7b;
+  --json-number: #ffb86c;
+  --json-bool: #8be9fd;
+  --json-null: #f1fa8c;
+  --json-punct: #6e7390;
 }
 
 /* System preference detection */
@@ -416,6 +440,43 @@ body {
   margin: 0 auto;
   padding: 0 16px;
 }
+
+/* --- JSON highlighting refinements (CSS-only) --- */
+/* Scope to syntect output: <code class="language-json"> ... spans with classed scopes */
+.markdown-body code.language-json {
+  /* make sure code inherits text color */
+  color: inherit;
+}
+
+/* General string values (double quoted) */
+.markdown-body code.language-json .string.quoted.double.json { color: var(--json-string); }
+
+/* Keys: strings within object key context (and common property-name class fallback) */
+.markdown-body code.language-json .meta.mapping.key.json .string.quoted.double.json { color: var(--json-key); }
+.markdown-body code.language-json .support.type.property-name.json { color: var(--json-key); }
+
+/* Numbers */
+.markdown-body code.language-json .constant.numeric.json { color: var(--json-number); }
+
+/* Booleans and null */
+.markdown-body code.language-json .constant.language.boolean.json { color: var(--json-bool); }
+.markdown-body code.language-json .constant.language.null.json { color: var(--json-null); }
+
+/* Dim quotes and punctuation to reduce noise */
+.markdown-body code.language-json .punctuation.definition.string.begin.json,
+.markdown-body code.language-json .punctuation.definition.string.end.json,
+.markdown-body code.language-json .punctuation.separator.key-value.json,   /* : */
+.markdown-body code.language-json .punctuation.separator.sequence.json,    /* , */
+.markdown-body code.language-json .punctuation.section.mapping.begin.json, /* { */
+.markdown-body code.language-json .punctuation.section.mapping.end.json,   /* } */
+.markdown-body code.language-json .punctuation.section.array.begin.json,   /* [ */
+.markdown-body code.language-json .punctuation.section.array.end.json {    /* ] */
+  color: var(--json-punct);
+}
+
+/* Optional: slightly emphasize keys */
+.markdown-body code.language-json .meta.mapping.key.json .string.quoted.double.json { font-weight: 600; }
+
 
 .markdown-body h1,
 .markdown-body h2,
