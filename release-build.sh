@@ -161,7 +161,41 @@ if [[ "${TEMP_TAG:-}" != "" ]]; then
 fi
 
 ########################################
-# 3) Summary
+# 3) Update website links and cleanup old binaries
+########################################
+INDEX_FILE="$ROOT_DIR/astrojs_website/src/pages/index.astro"
+if [[ -f "$INDEX_FILE" ]]; then
+  echo "==> Updating download links in $INDEX_FILE"
+  # Extract current linked filenames (first .exe and first .dmg)
+  OLD_EXE=$(grep -o 'href="[^"]*\.exe"' "$INDEX_FILE" | head -n1 | sed -E 's/^href="|"$//') || true
+  OLD_DMG=$(grep -o 'href="[^"]*\.dmg"' "$INDEX_FILE" | head -n1 | sed -E 's/^href="|"$//') || true
+
+  # Replace with new filenames (no path prefix, public is root)
+  if [[ -n "$OLD_EXE" ]]; then
+    echo "    Replacing Windows link: $OLD_EXE -> $WIN_OUT_NAME"
+    # macOS sed vs others handled earlier; here we only run on macOS
+    sed -i '' "s|href=\"${OLD_EXE}\"|href=\"${WIN_OUT_NAME}\"|" "$INDEX_FILE"
+  fi
+  if [[ -n "$OLD_DMG" ]]; then
+    echo "    Replacing macOS link: $OLD_DMG -> $MAC_OUT_NAME"
+    sed -i '' "s|href=\"${OLD_DMG}\"|href=\"${MAC_OUT_NAME}\"|" "$INDEX_FILE"
+  fi
+
+  # Remove old binaries from public if they differ
+  if [[ -n "${OLD_EXE:-}" && "$OLD_EXE" != "$WIN_OUT_NAME" && -f "$PUBLIC_DIR/$OLD_EXE" ]]; then
+    echo "    Deleting old Windows binary: $PUBLIC_DIR/$OLD_EXE"
+    rm -f "$PUBLIC_DIR/$OLD_EXE"
+  fi
+  if [[ -n "${OLD_DMG:-}" && "$OLD_DMG" != "$MAC_OUT_NAME" && -f "$PUBLIC_DIR/$OLD_DMG" ]]; then
+    echo "    Deleting old macOS binary: $PUBLIC_DIR/$OLD_DMG"
+    rm -f "$PUBLIC_DIR/$OLD_DMG"
+  fi
+else
+  echo "⚠️  $INDEX_FILE not found; skipping link update."
+fi
+
+########################################
+# 4) Summary
 ########################################
 echo ""
 echo "🎉 Release artifacts prepared in $PUBLIC_DIR:"
