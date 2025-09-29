@@ -403,6 +403,22 @@ function setupEventListeners() {
             // Redo on Windows/Linux
             e.preventDefault();
             performEditAction('redo');
+        } else if (ctrl && e.key.toLowerCase() === 'c') {
+            // Copy
+            e.preventDefault();
+            performEditAction('copy');
+        } else if (ctrl && e.key.toLowerCase() === 'x') {
+            // Cut
+            e.preventDefault();
+            performEditAction('cut');
+        } else if (ctrl && e.key.toLowerCase() === 'v') {
+            // Paste
+            e.preventDefault();
+            performEditAction('paste');
+        } else if (ctrl && e.key.toLowerCase() === 'a') {
+            // Select All
+            e.preventDefault();
+            performEditAction('select-all');
         } else if (ctrl && e.key === 'n') {
             e.preventDefault();
             // Create new window

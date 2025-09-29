@@ -164,9 +164,23 @@ fn rebuild_app_menu(app: &AppHandle) -> tauri::Result<()> {
     let file_menu = SubmenuBuilder::new(app, "File")
         .item(&MenuItemBuilder::with_id("new-window", "New Window").accelerator("CmdOrCtrl+N").build(app)?)
         .item(&MenuItemBuilder::with_id("open", "Open").accelerator("CmdOrCtrl+O").build(app)?)
+        .item(&MenuItemBuilder::with_id("print", "Print").accelerator("CmdOrCtrl+P").build(app)?)
         .separator()
         .item(&MenuItemBuilder::with_id("close", "Close Window").accelerator("CmdOrCtrl+W").build(app)?)
         .item(&MenuItemBuilder::with_id("quit", "Quit").accelerator("CmdOrCtrl+Q").build(app)?)
+        .build()?;
+
+    // Edit menu (native accelerators for copy/paste/etc.)
+    let edit_menu = SubmenuBuilder::new(app, "Edit")
+        .item(&MenuItemBuilder::with_id("undo", "Undo").accelerator("CmdOrCtrl+Z").build(app)?)
+        .item(&MenuItemBuilder::with_id("redo", "Redo").accelerator("Shift+CmdOrCtrl+Z").build(app)?)
+        .separator()
+        .item(&MenuItemBuilder::with_id("cut", "Cut").accelerator("CmdOrCtrl+X").build(app)?)
+        .item(&MenuItemBuilder::with_id("copy", "Copy").accelerator("CmdOrCtrl+C").build(app)?)
+        .item(&MenuItemBuilder::with_id("paste", "Paste").accelerator("CmdOrCtrl+V").build(app)?)
+        .item(&MenuItemBuilder::with_id("select-all", "Select All").accelerator("CmdOrCtrl+A").build(app)?)
+        .separator()
+        .item(&MenuItemBuilder::with_id("find", "Find...").accelerator("CmdOrCtrl+F").build(app)?)
         .build()?;
 
     // Window menu (dynamic list of open windows)
@@ -189,6 +203,7 @@ fn rebuild_app_menu(app: &AppHandle) -> tauri::Result<()> {
     // Build and set the menu
     let menu = MenuBuilder::new(app)
         .item(&file_menu)
+        .item(&edit_menu)
         .item(&window_menu)
         .item(&help_menu)
         .build()?;
@@ -878,12 +893,25 @@ pub fn run() {
                             // The new window will handle the open file dialog
                         }
                     }
+                    "print" => {
+                        // Forward to all windows; JS will handle based on focus
+                        let _ = app.emit("menu-print", &());
+                    }
                     "close" => {
                         // This will be handled by the window's menu directly
                         // Individual windows handle their own close events
                     }
                     "quit" => {
                         app.exit(0);
+                    }
+                    // Edit actions forwarded to webviews (focused window will act)
+                    "undo" | "redo" | "cut" | "copy" | "paste" | "select-all" => {
+                        let action = event.id().as_ref();
+                        let _ = app.emit("menu-edit", &action);
+                    }
+                    // Find action
+                    "find" => {
+                        let _ = app.emit("menu-find", &());
                     }
                     "about" => {
                         let version = env!("CARGO_PKG_VERSION");
