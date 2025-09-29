@@ -237,10 +237,11 @@ document.addEventListener('DOMContentLoaded', async () => {
         scrollDebounce = requestAnimationFrame(async () => {
             const lower = currentFilePath.toLowerCase();
             const isJson = lower.endsWith('.json');
+            const isYaml = lower.endsWith('.yaml') || lower.endsWith('.yml');
             let payload;
-            if (isJson) {
+            if (isJson || isYaml) {
                 const line = getTopLineForEditor();
-                payload = { source: appWindow.label, file_path: currentFilePath, kind: 'json', line, percent: null };
+                payload = { source: appWindow.label, file_path: currentFilePath, kind: isJson ? 'json' : 'yaml', line, percent: null };
             } else {
                 const ta = document.getElementById('editor-textarea');
                 const maxScroll = Math.max(1, ta.scrollHeight - ta.clientHeight);

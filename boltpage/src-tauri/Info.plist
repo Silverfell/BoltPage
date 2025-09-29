@@ -111,17 +111,21 @@
 				<array>
 					<string>pdf</string>
 				</array>
+				<key>CFBundleTypeMIMETypes</key>
+				<array>
+					<string>application/pdf</string>
+				</array>
 				<key>CFBundleTypeIconFile</key>
 				<string>icon</string>
 				<key>CFBundleTypeName</key>
 				<string>PDF Document</string>
 				<key>CFBundleTypeRole</key>
-				<string>Viewer</string>
+				<string>Editor</string>
 				<key>LSHandlerRank</key>
-				<string>Default</string>
+				<string>Owner</string>
 				<key>LSItemContentTypes</key>
 				<array>
-					<string>public.pdf</string>
+					<string>com.adobe.pdf</string>
 				</array>
 			</dict>
 		</array>
@@ -180,6 +184,29 @@
 					<string>text/yaml</string>
 					<string>text/x-yaml</string>
 					<string>application/x-yaml</string>
+				</array>
+			</dict>
+		</dict>
+		<!-- PDF UTI (in case the system needs explicit declaration) -->
+		<dict>
+			<key>UTTypeConformsTo</key>
+			<array>
+				<string>public.data</string>
+				<string>public.composite-content</string>
+			</array>
+			<key>UTTypeDescription</key>
+			<string>Portable Document Format (PDF)</string>
+			<key>UTTypeIdentifier</key>
+			<string>com.adobe.pdf</string>
+			<key>UTTypeTagSpecification</key>
+			<dict>
+				<key>public.filename-extension</key>
+				<array>
+					<string>pdf</string>
+				</array>
+				<key>public.mime-type</key>
+				<array>
+					<string>application/pdf</string>
 				</array>
 			</dict>
 		</dict>
@@ -266,7 +293,7 @@
 		<string>public.json</string>
 		<string>public.yaml</string>
 		<string>public.plain-text</string>
-		<string>public.pdf</string>
+		<string>com.adobe.pdf</string>
 	</array>
 </dict>
 </plist>
