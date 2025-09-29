@@ -298,6 +298,41 @@ body {
   padding: 32px;
 }
 
+/* PDF embed should fill the viewport area under the toolbar */
+.pdf-embed {
+  width: 100%;
+  height: 100%;
+  border: none;
+  display: block;
+}
+
+/* PDF mode: remove outer scrollbar and constraints */
+.pdf-mode .content-wrapper {
+  overflow: hidden;
+  padding: 0;
+  display: flex;            /* allow child to stretch */
+  flex: 1 1 auto;
+}
+
+.pdf-mode #markdown-content {
+  display: flex;            /* make the container a flex box */
+  flex: 1 1 auto;           /* take full remaining height */
+  height: auto;             /* avoid collapsing */
+}
+
+.pdf-mode .markdown-body {
+  max-width: none;
+  padding: 0;
+  margin: 0;
+  display: flex;            /* ensure the <embed> can flex */
+  flex: 1 1 auto;
+}
+
+.pdf-mode .markdown-body > .pdf-embed {
+  flex: 1 1 auto;           /* fill available space */
+  height: auto;             /* rely on flex height */
+}
+
 /* Cross-platform improvements */
 @media (max-width: 768px) {
   .content-wrapper {

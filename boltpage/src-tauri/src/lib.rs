@@ -486,6 +486,13 @@ fn read_file(path: String) -> Result<String, String> {
         .map_err(|e| format!("Failed to read file: {}", e))
 }
 
+#[tauri::command]
+fn read_file_bytes_b64(path: String) -> Result<String, String> {
+    fs::read(&path)
+        .map(|bytes| base64::engine::general_purpose::STANDARD.encode(bytes))
+        .map_err(|e| format!("Failed to read file bytes: {}", e))
+}
+
 
 #[tauri::command]
 fn write_file(path: String, content: String) -> Result<(), String> {
@@ -642,12 +649,13 @@ async fn open_file_dialog(app: AppHandle) -> Result<Option<String>, String> {
     let file_path = app.dialog()
         .file()
         // Show a combined filter first for convenience
-        .add_filter("Supported", &["md", "markdown", "json", "yaml", "yml", "txt"])
+        .add_filter("Supported", &["md", "markdown", "json", "yaml", "yml", "txt", "pdf"])
         // Specific filters
         .add_filter("Markdown", &["md", "markdown"])
         .add_filter("JSON", &["json"])
         .add_filter("YAML", &["yaml", "yml"])
         .add_filter("Text", &["txt"])
+        .add_filter("PDF", &["pdf"])
         .blocking_pick_file();
     
     Ok(file_path.map(|p| p.to_string()))
@@ -832,6 +840,7 @@ pub fn run() {
         .plugin(tauri_plugin_dialog::init())
         .invoke_handler(tauri::generate_handler![
             read_file,
+            read_file_bytes_b64,
             write_file,
             is_writable,
             parse_markdown,

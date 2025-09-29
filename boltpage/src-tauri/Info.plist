@@ -105,6 +105,25 @@
 					<string>public.plain-text</string>
 				</array>
 			</dict>
+			<!-- PDF Files -->
+			<dict>
+				<key>CFBundleTypeExtensions</key>
+				<array>
+					<string>pdf</string>
+				</array>
+				<key>CFBundleTypeIconFile</key>
+				<string>icon</string>
+				<key>CFBundleTypeName</key>
+				<string>PDF Document</string>
+				<key>CFBundleTypeRole</key>
+				<string>Viewer</string>
+				<key>LSHandlerRank</key>
+				<string>Default</string>
+				<key>LSItemContentTypes</key>
+				<array>
+					<string>public.pdf</string>
+				</array>
+			</dict>
 		</array>
 	
 	<!-- Imported Type Declarations -->
@@ -247,6 +266,7 @@
 		<string>public.json</string>
 		<string>public.yaml</string>
 		<string>public.plain-text</string>
+		<string>public.pdf</string>
 	</array>
 </dict>
 </plist>

@@ -7,7 +7,8 @@ const appWindow = getCurrentWindow();
 let currentFilePath = null;
 let fileWatcher = null;
 let currentTheme = 'system';
-let currentKind = 'markdown'; // 'json' | 'markdown' | 'txt'
+let currentKind = 'markdown'; // 'json' | 'markdown' | 'txt' | 'pdf'
+let currentPdfUrl = null;
 let isProgrammaticScroll = false;
 let scrollDebounce = null;
 let contentEl = null; // scrolling container (.content-wrapper)
@@ -107,26 +108,47 @@ async function openFile(filePath) {
     
     try {
         const lowerPath = String(filePath).toLowerCase();
-        if (lowerPath.endsWith('.json')) currentKind = 'json';
+        if (lowerPath.endsWith('.pdf')) currentKind = 'pdf';
+        else if (lowerPath.endsWith('.json')) currentKind = 'json';
         else if (lowerPath.endsWith('.yaml') || lowerPath.endsWith('.yml')) currentKind = 'yaml';
         else if (lowerPath.endsWith('.txt')) currentKind = 'txt';
         else currentKind = 'markdown';
 
         // Preserve scroll anchor if reloading same file
         let anchor = null;
-        if (currentFilePath && currentFilePath === filePath && contentEl) {
+        if (currentKind !== 'pdf' && currentFilePath && currentFilePath === filePath && contentEl) {
             anchor = getTopLineForPreview();
         }
-
-        console.log('[DEBUG] About to call render_file_to_html with path:', filePath);
+        console.log('[DEBUG] About to render file with path:', filePath);
         let html;
-        try {
-            html = await invoke('render_file_to_html', { path: filePath, theme: currentTheme });
-            console.log('[DEBUG] render_file_to_html returned HTML length:', html.length);
-        } catch (e) {
-            console.error('[DEBUG] render_file_to_html failed:', e);
-            const msg = typeof e === 'string' ? e : (e && e.message) ? e.message : 'Failed to render file';
-            html = `<div class="markdown-body"><pre style="color: var(--danger, #c00); white-space: pre-wrap;">${escapeHtml(String(msg))}</pre></div>`;
+        let usedPdf = false;
+        if (currentKind === 'pdf') {
+            try {
+                const b64 = await invoke('read_file_bytes_b64', { path: filePath });
+                const bytes = Uint8Array.from(atob(b64), c => c.charCodeAt(0));
+                const blob = new Blob([bytes], { type: 'application/pdf' });
+                if (currentPdfUrl) {
+                    try { URL.revokeObjectURL(currentPdfUrl); } catch {}
+                    currentPdfUrl = null;
+                }
+                const url = URL.createObjectURL(blob);
+                currentPdfUrl = url;
+                html = `<embed class="pdf-embed" src="${url}" type="application/pdf" />`;
+                usedPdf = true;
+            } catch (e) {
+                console.error('[DEBUG] Failed to load PDF bytes:', e);
+                const msg = typeof e === 'string' ? e : (e && e.message) ? e.message : 'Failed to open PDF';
+                html = `<div class="markdown-body"><pre style="color: var(--danger, #c00); white-space: pre-wrap;">${escapeHtml(String(msg))}</pre></div>`;
+            }
+        } else {
+            try {
+                html = await invoke('render_file_to_html', { path: filePath, theme: currentTheme });
+                console.log('[DEBUG] render_file_to_html returned HTML length:', html.length);
+            } catch (e) {
+                console.error('[DEBUG] render_file_to_html failed:', e);
+                const msg = typeof e === 'string' ? e : (e && e.message) ? e.message : 'Failed to render file';
+                html = `<div class="markdown-body"><pre style="color: var(--danger, #c00); white-space: pre-wrap;">${escapeHtml(String(msg))}</pre></div>`;
+            }
         }
 
         currentFilePath = filePath;
@@ -139,8 +161,14 @@ async function openFile(filePath) {
             container.replaceChildren(fragment);
         }
         console.log('[DEBUG] DOM updated');
-        // Ensure link interception remains active after content swap
-        attachLinkInterceptor();
+        // Toggle PDF layout mode
+        if (usedPdf) {
+            document.body.classList.add('pdf-mode');
+        } else {
+            document.body.classList.remove('pdf-mode');
+        }
+        // Ensure link interception remains active after content swap (non-PDF only)
+        if (!usedPdf) attachLinkInterceptor();
         // Update edit button availability based on file writability
         updateEditButtonState();
         // Restore scroll position if applicable
@@ -370,12 +398,16 @@ function setupEventListeners() {
         const ctrl = e.ctrlKey || e.metaKey;
         
         if (ctrl && e.key.toLowerCase() === 'f') {
-            e.preventDefault();
-            openFindOverlay();
+            if (currentKind !== 'pdf') {
+                e.preventDefault();
+                openFindOverlay();
+            }
         } else if (ctrl && e.key.toLowerCase() === 'p') {
-            e.preventDefault();
-            // Print the preview (this window)
-            window.print();
+            if (currentKind !== 'pdf') {
+                e.preventDefault();
+                // Print the preview (this window)
+                window.print();
+            }
         } else if (ctrl && e.key === 'o') {
             e.preventDefault();
             openFile();
@@ -405,20 +437,28 @@ function setupEventListeners() {
             performEditAction('redo');
         } else if (ctrl && e.key.toLowerCase() === 'c') {
             // Copy
-            e.preventDefault();
-            performEditAction('copy');
+            if (currentKind !== 'pdf') {
+                e.preventDefault();
+                performEditAction('copy');
+            }
         } else if (ctrl && e.key.toLowerCase() === 'x') {
             // Cut
-            e.preventDefault();
-            performEditAction('cut');
+            if (currentKind !== 'pdf') {
+                e.preventDefault();
+                performEditAction('cut');
+            }
         } else if (ctrl && e.key.toLowerCase() === 'v') {
             // Paste
-            e.preventDefault();
-            performEditAction('paste');
+            if (currentKind !== 'pdf') {
+                e.preventDefault();
+                performEditAction('paste');
+            }
         } else if (ctrl && e.key.toLowerCase() === 'a') {
             // Select All
-            e.preventDefault();
-            performEditAction('select-all');
+            if (currentKind !== 'pdf') {
+                e.preventDefault();
+                performEditAction('select-all');
+            }
         } else if (ctrl && e.key === 'n') {
             e.preventDefault();
             // Create new window
@@ -546,7 +586,7 @@ window.addEventListener('DOMContentLoaded', async () => {
 
         // Listen for menu find
         await listen('menu-find', () => {
-            openFindOverlay();
+            if (currentKind !== 'pdf') openFindOverlay();
         });
 
         // Listen for scroll sync events from other windows
@@ -643,13 +683,18 @@ window.addEventListener('DOMContentLoaded', async () => {
 // Clean up on window close
 window.addEventListener('beforeunload', () => {
     stopFileWatcher();
+    if (currentPdfUrl) {
+        try { URL.revokeObjectURL(currentPdfUrl); } catch {}
+        currentPdfUrl = null;
+    }
+    document.body.classList.remove('pdf-mode');
 });
 
 // Send scroll position changes to editor (or other listeners)
 function attachPreviewScrollSync() {
     if (!contentEl) return;
     contentEl.addEventListener('scroll', () => {
-        if (!currentFilePath || isProgrammaticScroll || !scrollLinkEnabled) return;
+        if (!currentFilePath || isProgrammaticScroll || !scrollLinkEnabled || currentKind === 'pdf') return;
         if (scrollDebounce) cancelAnimationFrame(scrollDebounce);
         scrollDebounce = requestAnimationFrame(async () => {
             const info = getTopLineForPreview();
