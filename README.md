@@ -60,9 +60,38 @@ npm install
 # Run in development mode
 npm run tauri dev
 
-# Build for production
+# Build for production (unsigned)
 npm run tauri build
+
+# For signed builds (macOS/Windows), configure credentials first:
+# 1. Copy the environment template
+cp .env.example .env
+
+# 2. Edit .env with your Apple/Windows signing credentials
+# 3. Then run the release build script
+./build-release.sh
 ```
+
+### Code Signing (Optional)
+
+For distributing signed applications:
+
+1. **Copy the environment template:**
+   ```bash
+   cp .env.example .env
+   ```
+
+2. **Edit `.env` with your credentials:**
+   - **macOS**: Requires Apple Developer account, signing certificate, and app-specific password
+   - **Windows**: Requires code signing certificate (optional but recommended)
+
+3. **Run the release build:**
+   ```bash
+   cd boltpage
+   ./build-release.sh
+   ```
+
+The `.env` file is gitignored and will never be committed. See `.env.example` for all required variables.
 
 For detailed build instructions, see:
 - [Setup Guide](boltpage/setup_readme.md)

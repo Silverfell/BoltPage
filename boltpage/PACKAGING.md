@@ -19,16 +19,31 @@ This document outlines the packaging and distribution process for BoltPage acros
 - **Output**: `target/release/bundle/nsis/BoltPage_1.0.0_x64-setup.exe`
 
 #### Code Signing Setup (Requires Certificate)
+
+**Recommended: Use `.env` file for credentials**
 ```bash
-# Set environment variables for code signing
+# 1. Copy the template
+cp .env.example .env
+
+# 2. Edit .env with your Windows certificate info
+# Required variables:
+#   TAURI_SIGNING_PRIVATE_KEY=path/to/certificate.pfx
+#   TAURI_SIGNING_PRIVATE_KEY_PASSWORD=your_certificate_password
+
+# 3. Build signed packages
+cargo tauri build --target x86_64-pc-windows-msvc
+```
+
+**Alternative: Set environment variables manually**
+```bash
 export TAURI_SIGNING_PRIVATE_KEY="path/to/certificate.p12"
 export TAURI_SIGNING_PRIVATE_KEY_PASSWORD="your_certificate_password"
 
 # Build signed packages
-cargo tauri build --target x86_64-pc-windows-msv
+cargo tauri build --target x86_64-pc-windows-msvc
 ```
 
-**Security Warning**: Never commit certificates or passwords to the repository. Use environment variables or secure secret management.
+**Security Warning**: Never commit certificates, passwords, or `.env` files to the repository. The `.env` file is gitignored by default.
 
 ### 2. macOS Packaging ✅
 
@@ -39,10 +54,24 @@ cargo tauri build --target x86_64-pc-windows-msv
 - **Output**: `target/release/bundle/dmg/BoltPage_1.0.0_x64.dmg`
 
 #### Code Signing and Notarization Setup (Requires Apple Developer Account)
+
+**Recommended: Use `.env` file for credentials**
 ```bash
-# Set environment variables for signing (use your own values)
-export APPLE_CERTIFICATE="Developer ID Application: Your Name (YOUR_TEAM_ID)"
-export APPLE_CERTIFICATE_PASSWORD="your_certificate_password"
+# 1. Copy the template
+cp .env.example .env
+
+# 2. Edit .env with your Apple Developer credentials
+# Required variables:
+#   APPLE_ID=your-apple-id@example.com
+#   APPLE_PASSWORD=xxxx-xxxx-xxxx-xxxx  (app-specific password)
+#   APPLE_TEAM_ID=XXXXXXXXXX
+
+# 3. Run the build script (automatically loads .env)
+./build-release.sh
+```
+
+**Alternative: Set environment variables manually**
+```bash
 export APPLE_ID="your-apple-id@example.com"
 export APPLE_PASSWORD="your_app_specific_password"
 export APPLE_TEAM_ID="YOUR_TEAM_ID"
