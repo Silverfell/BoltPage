@@ -232,11 +232,6 @@ case "$OS_NAME" in
       done
     fi
 
-    # Fallback to legacy in-script defaults (from previous script) if still unset
-    if [[ -z "${APPLE_ID:-}" ]]; then APPLE_ID="igor@danceinpalemoonlight.com"; fi
-    if [[ -z "${APPLE_PASSWORD:-}" ]]; then APPLE_PASSWORD="ggsn-xche-bjzl-hzyh"; fi
-    if [[ -z "${APPLE_TEAM_ID:-}" ]]; then APPLE_TEAM_ID="U59VVNHDJC"; fi
-
     # Validate required credentials are available now
     if [[ -z "${APPLE_ID:-}" || -z "${APPLE_PASSWORD:-}" || -z "${APPLE_TEAM_ID:-}" ]]; then
       echo "❌ Missing notarization credentials. Provide them via environment or a local .env file." >&2

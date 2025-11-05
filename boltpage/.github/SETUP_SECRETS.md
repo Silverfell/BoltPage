@@ -21,8 +21,8 @@ Go to your GitHub repository → Settings → Secrets and variables → Actions,
    - Found in your `tauri.conf.json` under `bundle.macOS.signingIdentity`
 
 4. **APPLE_TEAM_ID**
-   - Your Apple Developer Team ID (e.g., "U59VVNHDJC")
-   - Found in your `tauri.conf.json` under `bundle.macOS.providerShortName`
+   - Your Apple Developer Team ID (10 alphanumeric characters)
+   - Found in Apple Developer account or in your certificate
 
 5. **APPLE_ID**
    - Your Apple ID email address

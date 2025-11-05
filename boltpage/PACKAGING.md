@@ -22,11 +22,13 @@ This document outlines the packaging and distribution process for BoltPage acros
 ```bash
 # Set environment variables for code signing
 export TAURI_SIGNING_PRIVATE_KEY="path/to/certificate.p12"
-export TAURI_SIGNING_PRIVATE_KEY_PASSWORD="certificate_password"
+export TAURI_SIGNING_PRIVATE_KEY_PASSWORD="your_certificate_password"
 
 # Build signed packages
 cargo tauri build --target x86_64-pc-windows-msv
 ```
+
+**Security Warning**: Never commit certificates or passwords to the repository. Use environment variables or secure secret management.
 
 ### 2. macOS Packaging ✅
 
@@ -38,12 +40,12 @@ cargo tauri build --target x86_64-pc-windows-msv
 
 #### Code Signing and Notarization Setup (Requires Apple Developer Account)
 ```bash
-# Set environment variables for signing
-export APPLE_CERTIFICATE="Developer ID Application: Your Name (XXXXXXXXXX)"
-export APPLE_CERTIFICATE_PASSWORD="certificate_password"
+# Set environment variables for signing (use your own values)
+export APPLE_CERTIFICATE="Developer ID Application: Your Name (YOUR_TEAM_ID)"
+export APPLE_CERTIFICATE_PASSWORD="your_certificate_password"
 export APPLE_ID="your-apple-id@example.com"
-export APPLE_PASSWORD="app-specific-password"
-export APPLE_TEAM_ID="XXXXXXXXXX"
+export APPLE_PASSWORD="your_app_specific_password"
+export APPLE_TEAM_ID="YOUR_TEAM_ID"
 
 # Build signed and notarized package
 cargo tauri build --target x86_64-apple-darwin
