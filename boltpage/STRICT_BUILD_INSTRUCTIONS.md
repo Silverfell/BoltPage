@@ -4,25 +4,40 @@
 
 ### THE CORRECT SEQUENCE:
 
-### 1. BUILD FIRST (pollution will happen - that's expected):
-- Export secrets in your shell (or use a secrets manager/`.env` file):
-  - `export APPLE_ID="your-apple-id@example.com"`
-  - `export APPLE_PASSWORD="your-app-specific-password"`
-  - `export APPLE_TEAM_ID="YOUR_TEAM_ID"`
-- **Security Note**: Never commit these values. Use environment variables or `.env` files (which are gitignored).
-- Run: `npm run tauri build`
+### 1. CONFIGURE CREDENTIALS (FIRST TIME ONLY):
+- **Recommended**: Use the `.env` file approach:
+  ```bash
+  # Copy the template
+  cp .env.example .env
+
+  # Edit .env with your Apple Developer credentials:
+  # APPLE_ID=your-apple-id@example.com
+  # APPLE_PASSWORD=xxxx-xxxx-xxxx-xxxx
+  # APPLE_TEAM_ID=XXXXXXXXXX
+  ```
+- **Alternative**: Export environment variables in your shell:
+  ```bash
+  export APPLE_ID="your-apple-id@example.com"
+  export APPLE_PASSWORD="your-app-specific-password"
+  export APPLE_TEAM_ID="YOUR_TEAM_ID"
+  ```
+- **Security Note**: The `.env` file is gitignored and will never be committed.
+
+### 2. BUILD (pollution will happen - that's expected):
+- Run: `./build-release.sh` (automatically loads credentials from `.env`)
+- Or: `npm run tauri build`
 - Build process will create pollution in Launch Services (target/release path + DMG mounts)
 - This pollution is unavoidable and expected
 
-### 2. INSTALL TO APPLICATIONS:
+### 3. INSTALL TO APPLICATIONS:
 - Run: `rm -rf /Applications/BoltPage.app && cp -r target/release/bundle/macos/BoltPage.app /Applications/`
 
-### 3. CLEAN UP POLLUTION AFTER BUILD:
+### 4. CLEAN UP POLLUTION AFTER BUILD:
 - Clean ALL Launch Services: `lsregister -kill -r -domain local -domain system -domain user`
 - Register ONLY the Applications version: `lsregister -f /Applications/BoltPage.app`
 - Verify single registration: `lsregister -dump | grep -c "path.*BoltPage.app"` must equal 1
 
-### 4. VERIFICATION COMMANDS:
+### 5. VERIFICATION COMMANDS:
 ```bash
 # Check registrations (must be exactly 1):
 lsregister -dump | grep -c "path.*BoltPage.app"
