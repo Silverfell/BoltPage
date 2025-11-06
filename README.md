@@ -123,6 +123,19 @@ BoltPage is built with:
 - **[syntect](https://github.com/trishume/syntect)**: Syntax highlighting
 - **Vanilla JavaScript**: Frontend interface (no framework dependencies)
 
+### CI/CD
+
+BoltPage uses GitHub Actions for automated testing and releases:
+- **Pull Request Checks**: Automated linting, testing, and build verification
+- **Continuous Integration**: Validates all commits to main branch
+- **Release Builds**: Creates signed installers when version tags are pushed
+
+See [CI/CD Documentation](docs/release_CI.md) for complete details on:
+- Workflow triggers and jobs
+- Required GitHub secrets
+- Local testing procedures
+- Troubleshooting guide
+
 ### Project Structure
 
 ```
