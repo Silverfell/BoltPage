@@ -6,3 +6,4 @@
 2025-11-19: Refactor window event handlers to spawn async tasks for mutex operations
 2025-11-19: Remove unused SystemTime import in render_file_to_html
 2025-11-19: Fix CloseRequested handler lifetime error (clone AppHandle before moving into async task)
+2025-11-19: Fix Resized handler lifetime error (clone AppHandle before moving into async task)

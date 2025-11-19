@@ -885,7 +885,7 @@ pub fn run() {
             match event {
                 tauri::WindowEvent::Resized(size) => {
                     // Debounce saves and convert to logical pixels
-                    let app = window.app_handle();
+                    let app = window.app_handle().clone();
                     let label = window.label().to_string();
                     let (lw, lh) = convert_to_logical(&app, size.width, size.height);
 
