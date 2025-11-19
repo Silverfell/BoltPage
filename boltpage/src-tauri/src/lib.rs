@@ -918,7 +918,7 @@ pub fn run() {
                 }
                 tauri::WindowEvent::CloseRequested { .. } => {
                     // Clean up file watcher and window tracking
-                    let app = window.app_handle();
+                    let app = window.app_handle().clone();
                     let window_label = window.label().to_string();
 
                     // Spawn async task for cleanup
