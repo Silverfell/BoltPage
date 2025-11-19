@@ -9,3 +9,11 @@
 2025-11-19: Fix Resized handler lifetime error (clone AppHandle before moving into async task)
 2025-11-19: Fix formatting issues (return statements on same line as closing braces)
 2025-11-19: Fix Resized handler borrow checker error (extract Arc directly instead of cloning entire state)
+2025-11-19: Unify line height calculation (1.4 multiplier) across editor.js and main.js to eliminate vertical misalignment
+2025-11-19: Replace requestAnimationFrame with setTimeout (50ms) for scroll sync debouncing to reduce broadcast frequency
+2025-11-19: Increase programmatic scroll timeout (0ms to 100ms) to prevent echo loops between editor and viewer
+2025-11-19: Add scroll delta thresholds (0.5 lines, 1% for markdown) to filter micro-scroll events and eliminate jitter
+2025-11-19: Replace scrollTo with direct scrollTop assignment for consistent cross-browser scroll behavior
+2025-11-19: Fix percentage calculation edge case (check scrollableHeight > 0 before dividing)
+2025-11-19: Add offset calculation caching in main.js to avoid repeated DOM walking during scroll events
+2025-11-19: Add txt file type to scroll sync handlers (was missing from preview listener)
