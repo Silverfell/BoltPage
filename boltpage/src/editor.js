@@ -14,18 +14,6 @@ let findOverlay = null;
 let findInput = null;
 let findVisible = false;
 
-// Suppress noisy [DEBUG] logs in production unless window.__DEV__ is true
-(function () {
-  try {
-    const orig = console.log;
-    console.log = function (...args) {
-      if (!window.__DEV__ && String(args[0] || '').includes('[DEBUG]')) return;
-      return orig.apply(console, args);
-    };
-  } catch {}
-})();
-
-// Get file path from window
 async function initialize() {
     // Get file path from initialization script
     currentFilePath = window.__INITIAL_FILE_PATH__;
