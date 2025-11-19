@@ -19,18 +19,6 @@ let findVisible = false;
 let windowListOverlay = null;
 let windowListVisible = false;
 
-// Suppress noisy [DEBUG] logs in production unless window.__DEV__ is true
-(function () {
-  try {
-    const orig = console.log;
-    console.log = function (...args) {
-      if (!window.__DEV__ && String(args[0] || '').includes('[DEBUG]')) return;
-      return orig.apply(console, args);
-    };
-  } catch {}
-})();
-
-
 function escapeHtml(str) {
     return str
         .replace(/&/g, '&amp;')
@@ -100,7 +88,6 @@ async function ensureSyntaxCss(theme) {
 }
 
 async function openFile(filePath) {
-    console.log('[DEBUG] openFile called with:', filePath);
     if (!filePath) {
         filePath = await invoke('open_file_dialog');
         if (!filePath) return;
@@ -119,7 +106,6 @@ async function openFile(filePath) {
         if (currentKind !== 'pdf' && currentFilePath && currentFilePath === filePath && contentEl) {
             anchor = getTopLineForPreview();
         }
-        console.log('[DEBUG] About to render file with path:', filePath);
         let html;
         let usedPdf = false;
         if (currentKind === 'pdf') {
@@ -136,23 +122,21 @@ async function openFile(filePath) {
                 html = `<embed class="pdf-embed" src="${url}" type="application/pdf" />`;
                 usedPdf = true;
             } catch (e) {
-                console.error('[DEBUG] Failed to load PDF bytes:', e);
+                console.error('Failed to load PDF:', e);
                 const msg = typeof e === 'string' ? e : (e && e.message) ? e.message : 'Failed to open PDF';
                 html = `<div class="markdown-body"><pre style="color: var(--danger, #c00); white-space: pre-wrap;">${escapeHtml(String(msg))}</pre></div>`;
             }
         } else {
             try {
                 html = await invoke('render_file_to_html', { path: filePath, theme: currentTheme });
-                console.log('[DEBUG] render_file_to_html returned HTML length:', html.length);
             } catch (e) {
-                console.error('[DEBUG] render_file_to_html failed:', e);
+                console.error('Failed to render file:', e);
                 const msg = typeof e === 'string' ? e : (e && e.message) ? e.message : 'Failed to render file';
                 html = `<div class="markdown-body"><pre style="color: var(--danger, #c00); white-space: pre-wrap;">${escapeHtml(String(msg))}</pre></div>`;
             }
         }
 
         currentFilePath = filePath;
-        console.log('[DEBUG] About to update DOM');
         const container = document.getElementById('markdown-content');
         if (container.innerHTML !== html) {
             const range = document.createRange();
@@ -160,7 +144,6 @@ async function openFile(filePath) {
             const fragment = range.createContextualFragment(html);
             container.replaceChildren(fragment);
         }
-        console.log('[DEBUG] DOM updated');
         // Toggle PDF layout mode
         if (usedPdf) {
             document.body.classList.add('pdf-mode');
@@ -607,74 +590,21 @@ window.addEventListener('DOMContentLoaded', async () => {
             }
         });
         
-        // Check for file parameter in querystring (new approach for Opened event handling)
-        console.log('[DEBUG] window.location.search:', window.location.search);
-        const params = new URLSearchParams(window.location.search);
-        const fileParam = params.get('file');
-        console.log('[DEBUG] Raw fileParam:', fileParam);
+        // Get file path from window label (single source of truth)
         let filePath = null;
-        
-        if (fileParam) {
-            // Decode the file path from querystring
-            filePath = decodeURIComponent(fileParam);
-            console.log('[DEBUG] Decoded file path from querystring:', filePath);
-        } else {
-            console.log('[DEBUG] No file parameter found in querystring');
-        }
-        
-    
-    // Debug logging for file path initialization
-    console.log('[DEBUG] Window initialized. __INITIAL_FILE_PATH__:', window.__INITIAL_FILE_PATH__);
-    
-    // If no querystring file, try to get file path from window label (fallback method)
-    if (!filePath) {
         try {
             filePath = await invoke('get_file_path_from_window_label');
-            console.log('[DEBUG] File path from window label:', filePath);
         } catch (err) {
-            console.error('[DEBUG] Failed to get file path from window label:', err);
+            console.error('Failed to get file path from window label:', err);
         }
-    }
-    
-        // Use the querystring approach first, then window label, then legacy methods
+
         if (filePath) {
-            console.log('[DEBUG] About to call openFile with:', filePath);
             try {
                 await openFile(filePath);
-                console.log('[DEBUG] openFile completed successfully');
             } catch (error) {
-                console.error('[DEBUG] openFile failed:', error);
-            }
-        } else if (window.__INITIAL_FILE_PATH__) {
-        console.log('[DEBUG] Opening file from __INITIAL_FILE_PATH__ (legacy):', window.__INITIAL_FILE_PATH__);
-        await openFile(window.__INITIAL_FILE_PATH__);
-    } else {
-        console.log('[DEBUG] No file path found, trying opened files retry logic');
-        // Check for files opened via "Open With" or double-click
-        // Try multiple times in case RunEvent::Opened is still processing
-        let attempts = 0;
-        const maxAttempts = 10;
-        
-        while (attempts < maxAttempts) {
-            try {
-                const openedFiles = await invoke('get_opened_files');
-                if (openedFiles && openedFiles.length > 0) {
-                    // Open the first file in this window
-                    await openFile(openedFiles[0]);
-                    // Clear the opened files list
-                    await invoke('clear_opened_files');
-                    break;
-                }
-            } catch (err) {
-                console.error('Failed to check for opened files:', err);
-            }
-            
-            attempts++;
-            if (attempts < maxAttempts) {
-                await new Promise(resolve => setTimeout(resolve, 100));
+                console.error('Failed to open file:', error);
             }
         }
-    }
     } catch (error) {
         console.error('[CRITICAL ERROR] Initialization failed:', error);
     }
@@ -722,47 +652,52 @@ function updateLinkScrollButton() {
     btn.setAttribute('aria-pressed', String(scrollLinkEnabled));
 }
 
-// Edit command helpers
-async function tryPasteFallback() {
+// Edit command helpers using modern Clipboard API
+async function performEditAction(action) {
     try {
-        const text = await navigator.clipboard.readText();
-        const a = document.activeElement;
-        if (a && (a.tagName === 'TEXTAREA' || (a.tagName === 'INPUT' && /^(text|search|url|tel|password|email)$/i.test(a.type)))) {
-            const start = a.selectionStart ?? 0;
-            const end = a.selectionEnd ?? 0;
-            const val = a.value ?? '';
-            a.value = val.slice(0, start) + text + val.slice(end);
-            const pos = start + text.length;
-            a.setSelectionRange(pos, pos);
-            a.dispatchEvent(new Event('input', { bubbles: true }));
-        }
-    } catch {}
-}
+        const selection = window.getSelection();
+        const activeEl = document.activeElement;
 
-function performEditAction(action) {
-    try {
         switch (action) {
-            case 'undo':
-                document.execCommand('undo');
-                break;
-            case 'redo':
-                document.execCommand('redo');
-                break;
             case 'copy':
-                document.execCommand('copy');
+                if (selection && selection.toString()) {
+                    await navigator.clipboard.writeText(selection.toString());
+                }
                 break;
             case 'cut':
-                document.execCommand('cut');
+                if (selection && selection.toString()) {
+                    await navigator.clipboard.writeText(selection.toString());
+                    selection.deleteFromDocument();
+                }
                 break;
             case 'paste':
-                try { if (document.execCommand('paste')) break; } catch {}
-                tryPasteFallback();
+                try {
+                    const text = await navigator.clipboard.readText();
+                    if (activeEl && (activeEl.tagName === 'TEXTAREA' ||
+                        (activeEl.tagName === 'INPUT' && /^(text|search|url|tel|password|email)$/i.test(activeEl.type)))) {
+                        const start = activeEl.selectionStart ?? 0;
+                        const end = activeEl.selectionEnd ?? 0;
+                        const val = activeEl.value ?? '';
+                        activeEl.value = val.slice(0, start) + text + val.slice(end);
+                        const pos = start + text.length;
+                        activeEl.setSelectionRange(pos, pos);
+                        activeEl.dispatchEvent(new Event('input', { bubbles: true }));
+                    }
+                } catch (err) {
+                    console.error('Paste failed:', err);
+                }
                 break;
             case 'select-all':
-                document.execCommand('selectAll');
+                if (activeEl && (activeEl.tagName === 'TEXTAREA' || activeEl.tagName === 'INPUT')) {
+                    activeEl.select();
+                } else {
+                    selection.selectAllChildren(document.body);
+                }
                 break;
         }
-    } catch {}
+    } catch (err) {
+        console.error('Edit action failed:', err);
+    }
 }
 
 // --- Find overlay (preview) ---
