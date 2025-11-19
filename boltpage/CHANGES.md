@@ -8,3 +8,4 @@
 2025-11-19: Fix CloseRequested handler lifetime error (clone AppHandle before moving into async task)
 2025-11-19: Fix Resized handler lifetime error (clone AppHandle before moving into async task)
 2025-11-19: Fix formatting issues (return statements on same line as closing braces)
+2025-11-19: Fix Resized handler borrow checker error (extract state before spawning async task)

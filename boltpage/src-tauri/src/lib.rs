@@ -893,8 +893,10 @@ pub fn run() {
                     let label = window.label().to_string();
                     let (lw, lh) = convert_to_logical(&app, size.width, size.height);
 
-                    if let Some(state) = app.try_state::<AppState>() {
-                        let state_clone = state.inner().clone();
+                    // Extract state before spawning to avoid lifetime issues
+                    let state_opt = app.try_state::<AppState>().map(|s| s.inner().clone());
+
+                    if let Some(state_clone) = state_opt {
                         let app_clone = app.clone();
                         tauri::async_runtime::spawn(async move {
                             let mut tasks = state_clone.resize_tasks.lock().await;
