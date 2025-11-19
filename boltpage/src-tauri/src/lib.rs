@@ -58,9 +58,10 @@ fn resolve_file_path(input: &str) -> Option<PathBuf> {
 fn calculate_window_size(app: &AppHandle, prefs: &AppPreferences) -> tauri::Result<(f64, f64)> {    
     // If user has resized windows (preferences were saved), use those dimensions
     // Check if these are reasonable user-resized values (not corrupted massive values)
-    if prefs.window_width > 200 && prefs.window_width < 5000 && 
+    if prefs.window_width > 200 && prefs.window_width < 5000 &&
        prefs.window_height > 200 && prefs.window_height < 5000 &&
-       (prefs.window_width != 900 || prefs.window_height != 800) {        return Ok((prefs.window_width as f64, prefs.window_height as f64));
+       (prefs.window_width != 900 || prefs.window_height != 800) {
+        return Ok((prefs.window_width as f64, prefs.window_height as f64));
     }
     
     // Otherwise, calculate default page-like proportions using monitor size  
@@ -80,7 +81,8 @@ fn calculate_window_size(app: &AppHandle, prefs: &AppPreferences) -> tauri::Resu
                  _logical_width, logical_height, scale_factor, page_width, page_height);
         
         Ok((page_width, page_height))
-    } else {        Ok((900.0, 800.0))
+    } else {
+        Ok((900.0, 800.0))
     }
 }
 
@@ -435,7 +437,8 @@ fn save_window_size(app: AppHandle, width: u32, height: u32) -> Result<(), Strin
     let mut prefs = get_preferences(app.clone()).unwrap_or_default();
     prefs.window_width = lw;
     prefs.window_height = lh;
-    save_preferences(app, prefs)?;    Ok(())
+    save_preferences(app, prefs)?;
+    Ok(())
 }
 
 fn convert_to_logical(app: &AppHandle, width: u32, height: u32) -> (u32, u32) {
@@ -703,7 +706,8 @@ fn get_file_path_from_window_label(window: tauri::Window) -> Result<Option<Strin
         match base64::engine::general_purpose::URL_SAFE_NO_PAD.decode(encoded_path) {
             Ok(decoded_bytes) => {
                 match String::from_utf8(decoded_bytes) {
-                    Ok(file_path) => {                        Ok(Some(file_path))
+                    Ok(file_path) => {
+                        Ok(Some(file_path))
                     }
                     Err(e) => Err(format!("Failed to decode UTF-8: {}", e))
                 }
