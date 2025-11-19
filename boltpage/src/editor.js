@@ -14,6 +14,17 @@ let findOverlay = null;
 let findInput = null;
 let findVisible = false;
 
+// Scroll sync configuration constants
+const SCROLL_SYNC_DEBOUNCE_MS = 50;
+const PROGRAMMATIC_SCROLL_TIMEOUT_MS = 100;
+const MIN_SCROLL_DELTA_LINES = 0.5;
+const MIN_SCROLL_DELTA_PERCENT = 0.01;
+const LINE_HEIGHT_FALLBACK_MULTIPLIER = 1.4;
+
+// Track last synced position to filter micro-scrolls
+let lastSyncedLine = null;
+let lastSyncedPercent = null;
+
 async function initialize() {
     // Get file path from initialization script
     currentFilePath = window.__INITIAL_FILE_PATH__;
@@ -112,7 +123,7 @@ function getEditorLineHeight() {
     const ta = document.getElementById('editor-textarea');
     const cs = window.getComputedStyle(ta);
     let lh = parsePx(cs.lineHeight);
-    if (!lh) lh = 1.4 * parsePx(cs.fontSize || '14');
+    if (!lh) lh = LINE_HEIGHT_FALLBACK_MULTIPLIER * parsePx(cs.fontSize || '14');
     return lh || 18;
 }
 
@@ -128,7 +139,7 @@ function scrollEditorToLine(line) {
     const lh = getEditorLineHeight();
     isProgrammaticScroll = true;
     ta.scrollTop = (Math.max(1, line) - 1) * lh;
-    setTimeout(() => { isProgrammaticScroll = false; }, 0);
+    setTimeout(() => { isProgrammaticScroll = false; }, PROGRAMMATIC_SCROLL_TIMEOUT_MS);
 }
 
 function scheduleAutoSave() {
@@ -221,19 +232,35 @@ document.addEventListener('DOMContentLoaded', async () => {
     // Sync: send scroll position to preview
     textarea.addEventListener('scroll', () => {
         if (!currentFilePath || isProgrammaticScroll || !scrollLinkEnabled) return;
-        if (scrollDebounce) cancelAnimationFrame(scrollDebounce);
-        scrollDebounce = requestAnimationFrame(async () => {
+        if (scrollDebounce) clearTimeout(scrollDebounce);
+        scrollDebounce = setTimeout(async () => {
             const lower = currentFilePath.toLowerCase();
             const isJson = lower.endsWith('.json');
             const isYaml = lower.endsWith('.yaml') || lower.endsWith('.yml');
+            const isTxt = lower.endsWith('.txt');
             let payload;
-            if (isJson || isYaml) {
+            if (isJson || isYaml || isTxt) {
                 const line = getTopLineForEditor();
-                payload = { source: appWindow.label, file_path: currentFilePath, kind: isJson ? 'json' : 'yaml', line, percent: null };
+                // Filter micro-scrolls: only broadcast if line changed significantly
+                if (lastSyncedLine !== null && Math.abs(line - lastSyncedLine) < MIN_SCROLL_DELTA_LINES) {
+                    return;
+                }
+                lastSyncedLine = line;
+                const kind = isJson ? 'json' : (isYaml ? 'yaml' : 'txt');
+                payload = { source: appWindow.label, file_path: currentFilePath, kind, line, percent: null };
             } else {
                 const ta = document.getElementById('editor-textarea');
-                const maxScroll = Math.max(1, ta.scrollHeight - ta.clientHeight);
-                const percent = Math.max(0, Math.min(1, ta.scrollTop / maxScroll));
+                const scrollableHeight = ta.scrollHeight - ta.clientHeight;
+                if (scrollableHeight <= 0) {
+                    // Content fits in viewport, no scroll sync needed
+                    return;
+                }
+                const percent = Math.max(0, Math.min(1, ta.scrollTop / scrollableHeight));
+                // Filter micro-scrolls: only broadcast if percent changed significantly
+                if (lastSyncedPercent !== null && Math.abs(percent - lastSyncedPercent) < MIN_SCROLL_DELTA_PERCENT) {
+                    return;
+                }
+                lastSyncedPercent = percent;
                 payload = { source: appWindow.label, file_path: currentFilePath, kind: 'markdown', line: null, percent };
             }
             try {
@@ -241,7 +268,7 @@ document.addEventListener('DOMContentLoaded', async () => {
             } catch (e) {
                 // ignore
             }
-        });
+        }, SCROLL_SYNC_DEBOUNCE_MS);
     });
 
     // Listen for scroll sync events
@@ -252,13 +279,16 @@ document.addEventListener('DOMContentLoaded', async () => {
         if (p.file_path !== currentFilePath) return;
         if (typeof p.line === 'number') {
             scrollEditorToLine(p.line);
+            lastSyncedLine = p.line;
         } else if (typeof p.percent === 'number') {
-            // Map percent to line based on total scroll height
+            // Map percent to scroll position
             const ta = document.getElementById('editor-textarea');
-            const maxScroll = Math.max(1, ta.scrollHeight - ta.clientHeight);
+            const scrollableHeight = ta.scrollHeight - ta.clientHeight;
+            if (scrollableHeight <= 0) return;
             isProgrammaticScroll = true;
-            ta.scrollTop = p.percent * maxScroll;
-            setTimeout(() => { isProgrammaticScroll = false; }, 0);
+            ta.scrollTop = p.percent * scrollableHeight;
+            lastSyncedPercent = p.percent;
+            setTimeout(() => { isProgrammaticScroll = false; }, PROGRAMMATIC_SCROLL_TIMEOUT_MS);
         }
     });
 
@@ -493,7 +523,7 @@ function highlightCurrentFind() {
     const line = (before.match(/\n/g) || []).length + 1;
     isProgrammaticScroll = true;
     ta.scrollTop = Math.max(0, (line - 1) * lh - ta.clientHeight / 2);
-    setTimeout(() => { isProgrammaticScroll = false; }, 0);
+    setTimeout(() => { isProgrammaticScroll = false; }, PROGRAMMATIC_SCROLL_TIMEOUT_MS);
 }
 
 function clearFindResults() {

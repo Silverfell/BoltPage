@@ -19,6 +19,19 @@ let findVisible = false;
 let windowListOverlay = null;
 let windowListVisible = false;
 
+// Scroll sync configuration constants
+const SCROLL_SYNC_DEBOUNCE_MS = 50;
+const PROGRAMMATIC_SCROLL_TIMEOUT_MS = 100;
+const MIN_SCROLL_DELTA_LINES = 0.5;
+const MIN_SCROLL_DELTA_PERCENT = 0.01;
+const LINE_HEIGHT_FALLBACK_MULTIPLIER = 1.4;
+
+// Track last synced position to filter micro-scrolls
+let lastSyncedLine = null;
+let lastSyncedPercent = null;
+// Cache offset calculations to avoid repeated DOM walking
+let cachedPreMetrics = null;
+
 function escapeHtml(str) {
     return str
         .replace(/&/g, '&amp;')
@@ -143,6 +156,8 @@ async function openFile(filePath) {
             range.selectNodeContents(container);
             const fragment = range.createContextualFragment(html);
             container.replaceChildren(fragment);
+            // Invalidate cached metrics after DOM change
+            cachedPreMetrics = null;
         }
         // Toggle PDF layout mode
         if (usedPdf) {
@@ -159,10 +174,12 @@ async function openFile(filePath) {
             if ((anchor.kind === 'json' || anchor.kind === 'yaml' || anchor.kind === 'txt') && typeof anchor.line === 'number') {
                 scrollPreviewToLine(anchor.line);
             } else if (typeof anchor.percent === 'number') {
-                const maxScroll = Math.max(1, contentEl.scrollHeight - contentEl.clientHeight);
-                isProgrammaticScroll = true;
-                contentEl.scrollTo({ top: anchor.percent * maxScroll, behavior: 'auto' });
-                setTimeout(() => { isProgrammaticScroll = false; }, 0);
+                const scrollableHeight = contentEl.scrollHeight - contentEl.clientHeight;
+                if (scrollableHeight > 0) {
+                    isProgrammaticScroll = true;
+                    contentEl.scrollTop = anchor.percent * scrollableHeight;
+                    setTimeout(() => { isProgrammaticScroll = false; }, PROGRAMMATIC_SCROLL_TIMEOUT_MS);
+                }
             }
         }
 
@@ -204,22 +221,30 @@ function parsePx(v) {
 }
 
 function getPreAndMetrics() {
+    // Return cached metrics if available and DOM hasn't changed
+    if (cachedPreMetrics && cachedPreMetrics.pre && cachedPreMetrics.pre.isConnected) {
+        return cachedPreMetrics;
+    }
+
     let pre = null;
     if (currentKind === 'json' || currentKind === 'yaml') {
         pre = document.querySelector('#markdown-content .highlight pre');
     } else if (currentKind === 'txt') {
         pre = document.querySelector('#markdown-content pre.plain-text');
     }
-    if (!pre) return null;
+    if (!pre) {
+        cachedPreMetrics = null;
+        return null;
+    }
     const cs = window.getComputedStyle(pre);
     let lh = parsePx(cs.lineHeight);
     if (!lh) {
-        // fallback: 1.2 * font-size
-        lh = 1.2 * parsePx(cs.fontSize || '16');
+        lh = LINE_HEIGHT_FALLBACK_MULTIPLIER * parsePx(cs.fontSize || '16');
     }
     // compute pre's top relative to the scrolling container
     const preTop = offsetTopWithin(contentEl, pre);
-    return { pre, lineHeight: lh, preTop };
+    cachedPreMetrics = { pre, lineHeight: lh, preTop };
+    return cachedPreMetrics;
 }
 
 function getTopLineForPreview() {
@@ -241,8 +266,8 @@ function scrollPreviewToLine(line) {
     if (!m) return;
     const y = m.preTop + (Math.max(1, line) - 1) * m.lineHeight;
     isProgrammaticScroll = true;
-    contentEl.scrollTo({ top: y, behavior: 'auto' });
-    setTimeout(() => { isProgrammaticScroll = false; }, 0);
+    contentEl.scrollTop = y;
+    setTimeout(() => { isProgrammaticScroll = false; }, PROGRAMMATIC_SCROLL_TIMEOUT_MS);
 }
 
 function offsetTopWithin(container, el) {
@@ -578,15 +603,18 @@ window.addEventListener('DOMContentLoaded', async () => {
             if (!currentFilePath || !scrollLinkEnabled) return;
             if (payload.source === appWindow.label) return; // ignore self
             if (payload.file_path !== currentFilePath) return;
-            if ((payload.kind === 'json' || payload.kind === 'yaml') && typeof payload.line === 'number') {
+            if ((payload.kind === 'json' || payload.kind === 'yaml' || payload.kind === 'txt') && typeof payload.line === 'number') {
                 // Scroll preview to the requested line
                 scrollPreviewToLine(payload.line);
+                lastSyncedLine = payload.line;
             } else if (typeof payload.percent === 'number') {
                 // Apply percentage scroll for markdown or others
-                const maxScroll = Math.max(1, contentEl.scrollHeight - contentEl.clientHeight);
+                const scrollableHeight = contentEl.scrollHeight - contentEl.clientHeight;
+                if (scrollableHeight <= 0) return;
                 isProgrammaticScroll = true;
-                contentEl.scrollTo({ top: payload.percent * maxScroll, behavior: 'auto' });
-                setTimeout(() => { isProgrammaticScroll = false; }, 0);
+                contentEl.scrollTop = payload.percent * scrollableHeight;
+                lastSyncedPercent = payload.percent;
+                setTimeout(() => { isProgrammaticScroll = false; }, PROGRAMMATIC_SCROLL_TIMEOUT_MS);
             }
         });
         
@@ -625,10 +653,24 @@ function attachPreviewScrollSync() {
     if (!contentEl) return;
     contentEl.addEventListener('scroll', () => {
         if (!currentFilePath || isProgrammaticScroll || !scrollLinkEnabled || currentKind === 'pdf') return;
-        if (scrollDebounce) cancelAnimationFrame(scrollDebounce);
-        scrollDebounce = requestAnimationFrame(async () => {
+        if (scrollDebounce) clearTimeout(scrollDebounce);
+        scrollDebounce = setTimeout(async () => {
             const info = getTopLineForPreview();
             if (!info) return;
+
+            // Filter micro-scrolls
+            if (typeof info.line === 'number') {
+                if (lastSyncedLine !== null && Math.abs(info.line - lastSyncedLine) < MIN_SCROLL_DELTA_LINES) {
+                    return;
+                }
+                lastSyncedLine = info.line;
+            } else if (typeof info.percent === 'number') {
+                if (lastSyncedPercent !== null && Math.abs(info.percent - lastSyncedPercent) < MIN_SCROLL_DELTA_PERCENT) {
+                    return;
+                }
+                lastSyncedPercent = info.percent;
+            }
+
             const payload = {
                 source: appWindow.label,
                 file_path: currentFilePath,
@@ -641,7 +683,7 @@ function attachPreviewScrollSync() {
             } catch (e) {
                 console.warn('Failed to broadcast scroll sync:', e);
             }
-        });
+        }, SCROLL_SYNC_DEBOUNCE_MS);
     });
 }
 

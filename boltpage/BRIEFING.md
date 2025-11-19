@@ -26,8 +26,9 @@ BoltPage is a fast Markdown viewer and editor built with Rust and Tauri. It rend
 ## Critical Decisions
 1. **Async Mutex**: Uses tokio::sync::Mutex throughout for consistency with async runtime. All .lock() calls require .await.
 2. **No hardcoded paths**: File paths resolved via resolve_file_path to handle URLs, relative, and absolute paths uniformly.
-3. **Debouncing**: File change notifications (250ms) and window resize saves (450ms) to reduce I/O and state updates.
+3. **Debouncing**: File change notifications (250ms), window resize saves (450ms), and scroll sync broadcasts (50ms) to reduce I/O and state updates.
 4. **Cache invalidation**: File watchers invalidate HTML cache entries on modification to ensure fresh renders.
+5. **Scroll Sync Parameters**: Line height fallback (1.4x font-size), programmatic scroll timeout (100ms), delta thresholds (0.5 lines or 1% for markdown) prevent jitter and echo loops between editor and viewer windows.
 
 ## Known Constraints
 - macOS 10.13+ required for builds
