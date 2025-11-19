@@ -316,47 +316,50 @@ document.addEventListener('DOMContentLoaded', () => {
     if (findBtn) findBtn.addEventListener('click', toggleFindOverlay);
 });
 
-// Edit command helpers
-async function tryPasteFallback() {
+// Edit command helpers using modern Clipboard API
+async function performEditAction(action) {
     try {
-        const text = await navigator.clipboard.readText();
-        const a = document.activeElement;
-        if (a && (a.tagName === 'TEXTAREA' || (a.tagName === 'INPUT' && /^(text|search|url|tel|password|email)$/i.test(a.type)))) {
-            const start = a.selectionStart ?? 0;
-            const end = a.selectionEnd ?? 0;
-            const val = a.value ?? '';
-            a.value = val.slice(0, start) + text + val.slice(end);
-            const pos = start + text.length;
-            a.setSelectionRange(pos, pos);
-            a.dispatchEvent(new Event('input', { bubbles: true }));
-        }
-    } catch {}
-}
+        const textarea = document.getElementById('editor-textarea');
+        if (!textarea) return;
 
-function performEditAction(action) {
-    try {
         switch (action) {
-            case 'undo':
-                document.execCommand('undo');
-                break;
-            case 'redo':
-                document.execCommand('redo');
-                break;
             case 'copy':
-                document.execCommand('copy');
+                if (textarea.selectionStart !== textarea.selectionEnd) {
+                    const text = textarea.value.substring(textarea.selectionStart, textarea.selectionEnd);
+                    await navigator.clipboard.writeText(text);
+                }
                 break;
             case 'cut':
-                document.execCommand('cut');
+                if (textarea.selectionStart !== textarea.selectionEnd) {
+                    const text = textarea.value.substring(textarea.selectionStart, textarea.selectionEnd);
+                    await navigator.clipboard.writeText(text);
+                    const start = textarea.selectionStart;
+                    const end = textarea.selectionEnd;
+                    textarea.value = textarea.value.substring(0, start) + textarea.value.substring(end);
+                    textarea.selectionStart = textarea.selectionEnd = start;
+                    textarea.dispatchEvent(new Event('input', { bubbles: true }));
+                }
                 break;
             case 'paste':
-                try { if (document.execCommand('paste')) break; } catch {}
-                tryPasteFallback();
+                try {
+                    const text = await navigator.clipboard.readText();
+                    const start = textarea.selectionStart;
+                    const end = textarea.selectionEnd;
+                    textarea.value = textarea.value.substring(0, start) + text + textarea.value.substring(end);
+                    const pos = start + text.length;
+                    textarea.selectionStart = textarea.selectionEnd = pos;
+                    textarea.dispatchEvent(new Event('input', { bubbles: true }));
+                } catch (err) {
+                    console.error('Paste failed:', err);
+                }
                 break;
             case 'select-all':
-                document.execCommand('selectAll');
+                textarea.select();
                 break;
         }
-    } catch {}
+    } catch (err) {
+        console.error('Edit action failed:', err);
+    }
 }
 
 // --- Find overlay (editor) ---

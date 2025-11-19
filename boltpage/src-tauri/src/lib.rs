@@ -52,16 +52,12 @@ fn resolve_file_path(input: &str) -> Option<PathBuf> {
 }
 
 // Calculate appropriate window size with page-like proportions
-fn calculate_window_size(app: &AppHandle, prefs: &AppPreferences) -> tauri::Result<(f64, f64)> {
-    debug_log!("[DEBUG] Current preferences: {}x{}", prefs.window_width, prefs.window_height);
-    
+fn calculate_window_size(app: &AppHandle, prefs: &AppPreferences) -> tauri::Result<(f64, f64)> {    
     // If user has resized windows (preferences were saved), use those dimensions
     // Check if these are reasonable user-resized values (not corrupted massive values)
     if prefs.window_width > 200 && prefs.window_width < 5000 && 
        prefs.window_height > 200 && prefs.window_height < 5000 &&
-       (prefs.window_width != 900 || prefs.window_height != 800) {
-        debug_log!("[DEBUG] Using saved custom window size: {}x{}", prefs.window_width, prefs.window_height);
-        return Ok((prefs.window_width as f64, prefs.window_height as f64));
+       (prefs.window_width != 900 || prefs.window_height != 800) {        return Ok((prefs.window_width as f64, prefs.window_height as f64));
     }
     
     // Otherwise, calculate default page-like proportions using monitor size  
@@ -81,16 +77,12 @@ fn calculate_window_size(app: &AppHandle, prefs: &AppPreferences) -> tauri::Resu
                  _logical_width, logical_height, scale_factor, page_width, page_height);
         
         Ok((page_width, page_height))
-    } else {
-        debug_log!("[DEBUG] Could not get monitor info, using fallback");
-        Ok((900.0, 800.0))
+    } else {        Ok((900.0, 800.0))
     }
 }
 
 // UNIFIED WINDOW CREATION - Single source of truth for all window creation
-fn create_window_with_file(app: &AppHandle, file_path: Option<PathBuf>) -> tauri::Result<String> {
-    debug_log!("[DEBUG] create_window_with_file called with: {:?}", file_path);
-    let prefs = get_preferences(app.clone()).unwrap_or_default();
+fn create_window_with_file(app: &AppHandle, file_path: Option<PathBuf>) -> tauri::Result<String> {    let prefs = get_preferences(app.clone()).unwrap_or_default();
     
     // Generate consistent window label and URL
     let (window_label, url, title) = if let Some(ref path) = file_path {
@@ -100,21 +92,15 @@ fn create_window_with_file(app: &AppHandle, file_path: Option<PathBuf>) -> tauri
         // Use standard URI encoding compatible with JavaScript's decodeURIComponent
         // Reserve: available string path if needed for future query encoding
         // Tauri might not handle querystrings in App URLs correctly, so let's use the base64 label approach that was working
-        let url = WebviewUrl::App("index.html".into());
-        debug_log!("[DEBUG] Using window label approach instead of querystring");
-        let title = path.file_name()
+        let url = WebviewUrl::App("index.html".into());        let title = path.file_name()
             .and_then(|n| n.to_str())
             .map(|n| format!("BoltPage - {}", n))
-            .unwrap_or_else(|| "BoltPage".to_string());
-        debug_log!("[DEBUG] File window - label: {}, url: {:?}, title: {}", label, url, title);
-        (label, url, title)
+            .unwrap_or_else(|| "BoltPage".to_string());        (label, url, title)
     } else {
         // Empty window
         let label = format!("markdown-{}", uuid::Uuid::new_v4());
         let url = WebviewUrl::App("index.html".into());
-        let title = "BoltPage".to_string();
-        debug_log!("[DEBUG] Empty window - label: {}, url: {:?}, title: {}", label, url, title);
-        (label, url, title)
+        let title = "BoltPage".to_string();        (label, url, title)
     };
     
     // Check if file window already exists and focus it instead
@@ -235,11 +221,7 @@ impl Default for FileWatchers {
 }
 
 // AppState for managing opened files from macOS Launch Services
-struct AppState {
-    opened_files: Arc<Mutex<Vec<String>>>,
-    open_windows: Arc<Mutex<HashMap<String, String>>>, // file_path -> window_label
-    setup_complete: Arc<Mutex<bool>>, // Track if setup is complete
-    // Debounced window resize save tasks per window label
+struct AppState {    open_windows: Arc<Mutex<HashMap<String, String>>>, // file_path -> window_label    // Debounced window resize save tasks per window label
     resize_tasks: Arc<Mutex<HashMap<String, tauri::async_runtime::JoinHandle<()>>>>,
     // Latest logical sizes per window label
     latest_sizes: Arc<Mutex<HashMap<String, (u32, u32)>>>,
@@ -249,11 +231,7 @@ struct AppState {
 
 impl Default for AppState {
     fn default() -> Self {
-        Self {
-            opened_files: Arc::new(Mutex::new(Vec::new())),
-            open_windows: Arc::new(Mutex::new(HashMap::new())),
-            setup_complete: Arc::new(Mutex::new(false)),
-            resize_tasks: Arc::new(Mutex::new(HashMap::new())),
+        Self {            open_windows: Arc::new(Mutex::new(HashMap::new())),            resize_tasks: Arc::new(Mutex::new(HashMap::new())),
             latest_sizes: Arc::new(Mutex::new(HashMap::new())),
             html_cache: Arc::new(Mutex::new(LruCache::new(NonZeroUsize::new(50).unwrap()))),
         }
@@ -445,9 +423,7 @@ fn save_window_size(app: AppHandle, width: u32, height: u32) -> Result<(), Strin
     let mut prefs = get_preferences(app.clone()).unwrap_or_default();
     prefs.window_width = lw;
     prefs.window_height = lh;
-    save_preferences(app, prefs)?;
-    debug_log!("Saved new window size: {}x{}", lw, lh);
-    Ok(())
+    save_preferences(app, prefs)?;    Ok(())
 }
 
 fn convert_to_logical(app: &AppHandle, width: u32, height: u32) -> (u32, u32) {
@@ -683,31 +659,6 @@ async fn open_editor_window(app: AppHandle, file_path: String, preview_window: S
     Ok(())
 }
 
-
-#[tauri::command]
-fn get_opened_files(app: AppHandle) -> Result<Vec<String>, String> {
-    let state = app.state::<AppState>();
-    let opened_files = state.opened_files.lock()
-        .map_err(|e| format!("Failed to lock opened files: {}", e))?;
-    
-    // Convert file:// URLs to file paths
-    let file_paths: Vec<String> = opened_files
-        .iter()
-        .map(|url| url.replace("file://", ""))
-        .collect();
-    
-    Ok(file_paths)
-}
-
-#[tauri::command]
-fn clear_opened_files(app: AppHandle) -> Result<(), String> {
-    let state = app.state::<AppState>();
-    let mut opened_files = state.opened_files.lock()
-        .map_err(|e| format!("Failed to lock opened files: {}", e))?;
-    opened_files.clear();
-    Ok(())
-}
-
 #[tauri::command]
 fn create_new_window_command(app: AppHandle, file_path: Option<String>) -> Result<String, String> {
     let resolved_path = file_path.and_then(|p| resolve_file_path(&p));
@@ -735,25 +686,6 @@ fn refresh_preview(app: AppHandle, window: String) -> Result<(), String> {
 }
 
 #[tauri::command]
-fn debug_dump_state(app: AppHandle) -> Result<String, String> {
-    let state = app.state::<AppState>();
-    let opened_files = state.opened_files.lock()
-        .map_err(|e| format!("Failed to lock opened files: {}", e))?;
-    let open_windows = state.open_windows.lock()
-        .map_err(|e| format!("Failed to lock open windows: {}", e))?;
-    let setup_complete = state.setup_complete.lock()
-        .map_err(|e| format!("Failed to lock setup_complete: {}", e))?;
-    
-    let debug_info = format!(
-        "AppState Debug:\n- setup_complete: {}\n- opened_files: {:?}\n- open_windows: {:?}",
-        *setup_complete, *opened_files, *open_windows
-    );
-    
-    debug_log!("[RUST DEBUG] State dump: {}", debug_info);
-    Ok(debug_info)
-}
-
-#[tauri::command]
 fn get_file_path_from_window_label(window: tauri::Window) -> Result<Option<String>, String> {
     let window_label = window.label();
     
@@ -762,9 +694,7 @@ fn get_file_path_from_window_label(window: tauri::Window) -> Result<Option<Strin
         match base64::engine::general_purpose::URL_SAFE_NO_PAD.decode(encoded_path) {
             Ok(decoded_bytes) => {
                 match String::from_utf8(decoded_bytes) {
-                    Ok(file_path) => {
-                        debug_log!("[RUST DEBUG] Decoded file path from window label: {}", file_path);
-                        Ok(Some(file_path))
+                    Ok(file_path) => {                        Ok(Some(file_path))
                     }
                     Err(e) => Err(format!("Failed to decode UTF-8: {}", e))
                 }
@@ -860,11 +790,8 @@ pub fn run() {
             broadcast_scroll_link,
             show_window,
             save_window_size,
-            get_opened_files,
-            clear_opened_files,
             create_new_window_command,
             remove_window_from_tracking,
-            debug_dump_state,
             get_file_path_from_window_label,
             get_all_windows,
             focus_window,
@@ -937,16 +864,9 @@ pub fn run() {
                     _ => {}
                 }
             });
-            
-            // Always create initial window - RunEvent::Opened handles additional files
-            // For CLI args, open the specified file; otherwise create empty window
+
+            // Create initial window (CLI args or empty)
             open_markdown_window(&app.handle(), file_path)?;
-            
-            // Mark setup as complete
-            let state = app.state::<AppState>();
-            if let Ok(mut setup_complete) = state.setup_complete.lock() {
-                *setup_complete = true;
-            }
             
             Ok(())
         })
@@ -978,9 +898,7 @@ pub fn run() {
                                             let mut prefs = get_preferences(app_clone.clone()).unwrap_or_default();
                                             prefs.window_width = *w;
                                             prefs.window_height = *h;
-                                            let _ = save_preferences(app_clone.clone(), prefs);
-                                            debug_log!("Debounced save window size: {}x{} for {}", w, h, label_clone);
-                                        }
+                                            let _ = save_preferences(app_clone.clone(), prefs);                                        }
                                     }
                                 }
                             });
@@ -1003,32 +921,18 @@ pub fn run() {
         .build(tauri::generate_context!())
         .expect("error while building tauri application")
         .run(|_app, _event| {
-            // Handle file opening via Launch Services only on Apple platforms
-            #[cfg(any(target_os = "macos", target_os = "ios"))]
+            // Handle file opening via Launch Services on macOS
+            #[cfg(target_os = "macos")]
             if let tauri::RunEvent::Opened { urls } = _event {
-                if let Some(state) = _app.try_state::<AppState>() {
-                    if let Ok(setup_complete) = state.setup_complete.try_lock() {
-                        if *setup_complete {
-                            drop(setup_complete);
-                            for url in urls {
-                                if let Some(path) = resolve_file_path(&url.to_string()) {
-                                    if let Err(e) = create_window_with_file(&_app, Some(path.clone())) {
-                                        eprintln!("Failed to open window for {:?}: {}", path, e);
-                                    }
-                                } else {
-                                    eprintln!("Ignored non-file URL: {}", url);
-                                }
-                            }
-                            // Rebuild menu after opening files
-                            let _ = rebuild_app_menu(&_app);
-                        } else {
-                            drop(setup_complete);
-                            if let Ok(mut opened_files) = state.opened_files.try_lock() {
-                                *opened_files = urls.iter().map(|url| url.to_string()).collect();
-                            }
+                for url in urls {
+                    if let Some(path) = resolve_file_path(&url.to_string()) {
+                        if let Err(e) = create_window_with_file(&_app, Some(path.clone())) {
+                            eprintln!("Failed to open window for {:?}: {}", path, e);
                         }
                     }
                 }
+                // Rebuild menu after opening files
+                let _ = rebuild_app_menu(&_app);
             }
         });
 }

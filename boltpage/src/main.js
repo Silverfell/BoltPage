@@ -652,47 +652,52 @@ function updateLinkScrollButton() {
     btn.setAttribute('aria-pressed', String(scrollLinkEnabled));
 }
 
-// Edit command helpers
-async function tryPasteFallback() {
+// Edit command helpers using modern Clipboard API
+async function performEditAction(action) {
     try {
-        const text = await navigator.clipboard.readText();
-        const a = document.activeElement;
-        if (a && (a.tagName === 'TEXTAREA' || (a.tagName === 'INPUT' && /^(text|search|url|tel|password|email)$/i.test(a.type)))) {
-            const start = a.selectionStart ?? 0;
-            const end = a.selectionEnd ?? 0;
-            const val = a.value ?? '';
-            a.value = val.slice(0, start) + text + val.slice(end);
-            const pos = start + text.length;
-            a.setSelectionRange(pos, pos);
-            a.dispatchEvent(new Event('input', { bubbles: true }));
-        }
-    } catch {}
-}
+        const selection = window.getSelection();
+        const activeEl = document.activeElement;
 
-function performEditAction(action) {
-    try {
         switch (action) {
-            case 'undo':
-                document.execCommand('undo');
-                break;
-            case 'redo':
-                document.execCommand('redo');
-                break;
             case 'copy':
-                document.execCommand('copy');
+                if (selection && selection.toString()) {
+                    await navigator.clipboard.writeText(selection.toString());
+                }
                 break;
             case 'cut':
-                document.execCommand('cut');
+                if (selection && selection.toString()) {
+                    await navigator.clipboard.writeText(selection.toString());
+                    selection.deleteFromDocument();
+                }
                 break;
             case 'paste':
-                try { if (document.execCommand('paste')) break; } catch {}
-                tryPasteFallback();
+                try {
+                    const text = await navigator.clipboard.readText();
+                    if (activeEl && (activeEl.tagName === 'TEXTAREA' ||
+                        (activeEl.tagName === 'INPUT' && /^(text|search|url|tel|password|email)$/i.test(activeEl.type)))) {
+                        const start = activeEl.selectionStart ?? 0;
+                        const end = activeEl.selectionEnd ?? 0;
+                        const val = activeEl.value ?? '';
+                        activeEl.value = val.slice(0, start) + text + val.slice(end);
+                        const pos = start + text.length;
+                        activeEl.setSelectionRange(pos, pos);
+                        activeEl.dispatchEvent(new Event('input', { bubbles: true }));
+                    }
+                } catch (err) {
+                    console.error('Paste failed:', err);
+                }
                 break;
             case 'select-all':
-                document.execCommand('selectAll');
+                if (activeEl && (activeEl.tagName === 'TEXTAREA' || activeEl.tagName === 'INPUT')) {
+                    activeEl.select();
+                } else {
+                    selection.selectAllChildren(document.body);
+                }
                 break;
         }
-    } catch {}
+    } catch (err) {
+        console.error('Edit action failed:', err);
+    }
 }
 
 // --- Find overlay (preview) ---
