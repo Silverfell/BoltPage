@@ -14,6 +14,19 @@ use url::Url;
 use lru::LruCache;
 use tokio::time::{sleep, Duration};
 
+// Conditional debug logging (only in debug builds)
+#[cfg(debug_assertions)]
+macro_rules! debug_log {
+    ($($arg:tt)*) => {
+        eprintln!($($arg)*);
+    };
+}
+
+#[cfg(not(debug_assertions))]
+macro_rules! debug_log {
+    ($($arg:tt)*) => {};
+}
+
 // Convert file:// URL to filesystem path
 fn file_url_to_path(s: &str) -> Option<PathBuf> {
     let url = Url::parse(s).ok()?;
@@ -285,7 +298,7 @@ async fn start_file_watcher(app: AppHandle, file_path: String, window_label: Str
 
     // Register subscription
     {
-        let mut subs = watchers.subs.lock().map_err(|e| e.to_string())?;
+        let mut subs = watchers.subs.lock().await;
         let entry = subs.entry(file_path.clone()).or_default();
         if !entry.iter().any(|w| w == &window_label) {
             entry.push(window_label.clone());
@@ -294,7 +307,7 @@ async fn start_file_watcher(app: AppHandle, file_path: String, window_label: Str
 
     // Ensure a single watcher exists for this file path
     let need_create = {
-        let map = watchers.watchers.lock().map_err(|e| e.to_string())?;
+        let map = watchers.watchers.lock().await;
         !map.contains_key(&file_path)
     };
 
@@ -320,8 +333,8 @@ async fn start_file_watcher(app: AppHandle, file_path: String, window_label: Str
             .map_err(|e| format!("Failed to watch file: {}", e))?;
 
         // Store watcher and sender
-        watchers.watchers.lock().map_err(|e| e.to_string())?.insert(file_path.clone(), watcher);
-        watchers.senders.lock().map_err(|e| e.to_string())?.insert(file_path.clone(), tx);
+        watchers.watchers.lock().await.insert(file_path.clone(), watcher);
+        watchers.senders.lock().await.insert(file_path.clone(), tx);
 
         // Spawn a debounced notifier for this file path
         let app_clone = app.clone();
@@ -338,12 +351,11 @@ async fn start_file_watcher(app: AppHandle, file_path: String, window_label: Str
                     // Invalidate any cached HTML for this file
                     invalidate_cache_for_path(&app2, &file2).await;
                     if let Some(state) = app2.try_state::<FileWatchers>() {
-                        if let Ok(subs) = state.subs.lock() {
-                            if let Some(labels) = subs.get(&file2) {
-                                for label in labels.iter() {
-                                    if let Some(win) = app2.get_webview_window(label) {
-                                        let _ = win.emit("file-changed", ());
-                                    }
+                        let subs = state.subs.lock().await;
+                        if let Some(labels) = subs.get(&file2) {
+                            for label in labels.iter() {
+                                if let Some(win) = app2.get_webview_window(label) {
+                                    let _ = win.emit("file-changed", ());
                                 }
                             }
                         }
@@ -351,19 +363,19 @@ async fn start_file_watcher(app: AppHandle, file_path: String, window_label: Str
                 }));
             }
         });
-        watchers.debounce_tasks.lock().map_err(|e| e.to_string())?.insert(file_path.clone(), handle);
+        watchers.debounce_tasks.lock().await.insert(file_path.clone(), handle);
     }
 
     Ok(())
 }
 
 #[tauri::command]
-fn stop_file_watcher(app: AppHandle, window_label: String) -> Result<(), String> {
+async fn stop_file_watcher(app: AppHandle, window_label: String) -> Result<(), String> {
     let watchers = app.state::<FileWatchers>();
     // Remove the window from all subscriptions and clean up any orphaned watchers
     let mut to_remove: Vec<String> = Vec::new();
     {
-        let mut subs = watchers.subs.lock().map_err(|e| e.to_string())?;
+        let mut subs = watchers.subs.lock().await;
         for (file, labels) in subs.iter_mut() {
             labels.retain(|l| l != &window_label);
             if labels.is_empty() {
@@ -376,10 +388,17 @@ fn stop_file_watcher(app: AppHandle, window_label: String) -> Result<(), String>
 
     // Stop watchers for files with no subscribers
     for f in to_remove.iter() {
-        if let Ok(mut map) = watchers.watchers.lock() { map.remove(f); }
-        if let Ok(mut txs) = watchers.senders.lock() { txs.remove(f); }
-        if let Ok(mut tasks) = watchers.debounce_tasks.lock() {
-            if let Some(h) = tasks.remove(f) { h.abort(); }
+        let mut map = watchers.watchers.lock().await;
+        map.remove(f);
+        drop(map);
+
+        let mut txs = watchers.senders.lock().await;
+        txs.remove(f);
+        drop(txs);
+
+        let mut tasks = watchers.debounce_tasks.lock().await;
+        if let Some(h) = tasks.remove(f) {
+            h.abort();
         }
     }
 
@@ -527,7 +546,7 @@ fn get_syntax_css(theme: String) -> Result<String, String> {
 
 #[tauri::command]
 async fn render_file_to_html(app: AppHandle, path: String, theme: String) -> Result<String, String> {
-    use std::time::{SystemTime, UNIX_EPOCH};
+    use std::time::UNIX_EPOCH;
 
     // Stat for cache key
     let meta = fs::metadata(&path).map_err(|e| format!("Failed to stat file: {}", e))?;
@@ -816,9 +835,10 @@ pub fn run() {
                     }
                     "open" => {
                         // Create a new window and trigger open file dialog
-                        if let Ok(_) = create_new_window_command(app.clone(), None) {
-                            // The new window will handle the open file dialog
-                        }
+                        let app_clone = app.clone();
+                        tauri::async_runtime::spawn(async move {
+                            let _ = create_new_window_command(app_clone, None).await;
+                        });
                     }
                     "print" => {
                         // Forward to all windows; JS will handle based on focus
@@ -870,41 +890,42 @@ pub fn run() {
                     let (lw, lh) = convert_to_logical(&app, size.width, size.height);
 
                     if let Some(state) = app.try_state::<AppState>() {
-                        let mut tasks = state.resize_tasks.lock().unwrap();
-
-                        // Cancel previous debounce task if any
-                        if let Some((handle, _, _)) = tasks.remove(&label) {
-                            handle.abort();
-                        }
-
-                        // Spawn new debounced save task
+                        let state_clone = state.inner().clone();
                         let app_clone = app.clone();
-                        let label_clone = label.clone();
-                        let handle = tauri::async_runtime::spawn(async move {
-                            sleep(Duration::from_millis(450)).await;
+                        tauri::async_runtime::spawn(async move {
+                            let mut tasks = state_clone.resize_tasks.lock().await;
 
-                            // Save the size that was captured at spawn time
-                            let mut prefs = get_preferences(app_clone.clone()).unwrap_or_default();
-                            prefs.window_width = lw;
-                            prefs.window_height = lh;
-                            let _ = save_preferences(app_clone, prefs);
+                            // Cancel previous debounce task if any
+                            if let Some((handle, _, _)) = tasks.remove(&label) {
+                                handle.abort();
+                            }
+
+                            // Spawn new debounced save task
+                            let app_clone2 = app_clone.clone();
+                            let handle = tauri::async_runtime::spawn(async move {
+                                sleep(Duration::from_millis(450)).await;
+
+                                // Save the size that was captured at spawn time
+                                let mut prefs = get_preferences(app_clone2.clone()).unwrap_or_default();
+                                prefs.window_width = lw;
+                                prefs.window_height = lh;
+                                let _ = save_preferences(app_clone2, prefs);
+                            });
+
+                            tasks.insert(label, (handle, lw, lh));
                         });
-
-                        tasks.insert(label, (handle, lw, lh));
                     }
                 }
                 tauri::WindowEvent::CloseRequested { .. } => {
                     // Clean up file watcher and window tracking
                     let app = window.app_handle();
                     let window_label = window.label().to_string();
-                    let _ = stop_file_watcher(app.clone(), window_label.clone());
 
-                    // Remove from tracking (spawn async task)
-                    let app_clone = app.clone();
-                    let label_clone = window_label.clone();
+                    // Spawn async task for cleanup
                     tauri::async_runtime::spawn(async move {
-                        let _ = remove_window_from_tracking(app_clone.clone(), label_clone).await;
-                        let _ = rebuild_app_menu(&app_clone);
+                        let _ = stop_file_watcher(app.clone(), window_label.clone()).await;
+                        let _ = remove_window_from_tracking(app.clone(), window_label).await;
+                        let _ = rebuild_app_menu(&app);
                     });
                 }
                 _ => {}
