@@ -1,6 +1,6 @@
 use std::fs;
 use std::path::{Path, PathBuf};
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 use std::collections::HashMap;
 use std::num::NonZeroUsize;
 use base64::Engine;
@@ -9,19 +9,9 @@ use tauri_plugin_store::StoreExt;
 use serde::{Deserialize, Serialize};
 use tauri::menu::{MenuBuilder, MenuItemBuilder, SubmenuBuilder};
 use notify::{Config, RecommendedWatcher, RecursiveMode, Watcher};
-use tokio::sync::mpsc;
+use tokio::sync::{mpsc, RwLock, Mutex};
 use url::Url;
 use lru::LruCache;
-// Simple debug macro to strip logs in release
-macro_rules! debug_log {
-    ($($arg:tt)*) => {
-        #[cfg(debug_assertions)]
-        {
-            println!($($arg)*);
-        }
-    }
-}
-// removed unused percent_encoding imports
 use tokio::time::{sleep, Duration};
 
 // Convert file:// URL to filesystem path
@@ -82,40 +72,37 @@ fn calculate_window_size(app: &AppHandle, prefs: &AppPreferences) -> tauri::Resu
 }
 
 // UNIFIED WINDOW CREATION - Single source of truth for all window creation
-fn create_window_with_file(app: &AppHandle, file_path: Option<PathBuf>) -> tauri::Result<String> {    let prefs = get_preferences(app.clone()).unwrap_or_default();
-    
+async fn create_window_with_file(app: &AppHandle, file_path: Option<PathBuf>) -> tauri::Result<String> {
+    let prefs = get_preferences(app.clone()).unwrap_or_default();
+
     // Generate consistent window label and URL
     let (window_label, url, title) = if let Some(ref path) = file_path {
-        // File window: use both querystring AND base64 label for compatibility
         let encoded_path = base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(path.to_string_lossy().as_bytes());
         let label = format!("markdown-file-{}", encoded_path);
-        // Use standard URI encoding compatible with JavaScript's decodeURIComponent
-        // Reserve: available string path if needed for future query encoding
-        // Tauri might not handle querystrings in App URLs correctly, so let's use the base64 label approach that was working
-        let url = WebviewUrl::App("index.html".into());        let title = path.file_name()
+        let url = WebviewUrl::App("index.html".into());
+        let title = path.file_name()
             .and_then(|n| n.to_str())
             .map(|n| format!("BoltPage - {}", n))
-            .unwrap_or_else(|| "BoltPage".to_string());        (label, url, title)
+            .unwrap_or_else(|| "BoltPage".to_string());
+        (label, url, title)
     } else {
-        // Empty window
         let label = format!("markdown-{}", uuid::Uuid::new_v4());
         let url = WebviewUrl::App("index.html".into());
-        let title = "BoltPage".to_string();        (label, url, title)
+        let title = "BoltPage".to_string();
+        (label, url, title)
     };
-    
+
     // Check if file window already exists and focus it instead
     if let Some(ref path) = file_path {
         let app_state = app.state::<AppState>();
-        {
-            if let Ok(open_windows) = app_state.open_windows.lock() {
-                if let Some(existing_label) = open_windows.get(&path.to_string_lossy().to_string()) {
-                    if let Some(window) = app.get_webview_window(existing_label) {
-                        let _ = window.set_focus();
-                        return Ok(existing_label.to_string());
-                    }
-                }
-            };
-        } // Lock dropped here
+        let open_windows = app_state.open_windows.read().await;
+        if let Some(existing_label) = open_windows.get(&path.to_string_lossy().to_string()) {
+            if let Some(window) = app.get_webview_window(existing_label) {
+                let _ = window.set_focus();
+                return Ok(existing_label.to_string());
+            }
+        }
+        drop(open_windows); // Explicitly release read lock
     }
     
     // Calculate appropriate window size (page-like proportions)
@@ -134,13 +121,10 @@ fn create_window_with_file(app: &AppHandle, file_path: Option<PathBuf>) -> tauri
     // Track file windows
     if let Some(path) = file_path {
         let app_state = app.state::<AppState>();
-        {
-            if let Ok(mut open_windows) = app_state.open_windows.lock() {
-                open_windows.insert(path.to_string_lossy().to_string(), window_label.clone());
-            };
-        } // Lock dropped here
+        let mut open_windows = app_state.open_windows.write().await;
+        open_windows.insert(path.to_string_lossy().to_string(), window_label.clone());
     }
-    
+
     Ok(window_label)
 }
 
@@ -220,20 +204,30 @@ impl Default for FileWatchers {
     }
 }
 
-// AppState for managing opened files from macOS Launch Services
-struct AppState {    open_windows: Arc<Mutex<HashMap<String, String>>>, // file_path -> window_label    // Debounced window resize save tasks per window label
-    resize_tasks: Arc<Mutex<HashMap<String, tauri::async_runtime::JoinHandle<()>>>>,
-    // Latest logical sizes per window label
-    latest_sizes: Arc<Mutex<HashMap<String, (u32, u32)>>>,
-    // HTML render cache (path, size, mtime_secs, theme) -> HTML
-    html_cache: Arc<Mutex<LruCache<CacheKey, String>>>,
+/// Application state with optimized concurrency patterns
+///
+/// Uses RwLock for read-heavy operations (open_windows, html_cache)
+/// Uses Mutex only where writes are frequent or exclusive access needed
+struct AppState {
+    /// Maps file_path -> window_label for tracking open windows
+    /// Read-heavy workload (many lookups, few inserts/removes)
+    open_windows: Arc<RwLock<HashMap<String, String>>>,
+
+    /// Debounced resize tasks per window label
+    /// Writes on every resize event, so Mutex is appropriate
+    resize_tasks: Arc<Mutex<HashMap<String, (tauri::async_runtime::JoinHandle<()>, u32, u32)>>>,
+
+    /// HTML render cache: (path, size, mtime_secs, theme) -> HTML
+    /// Read-heavy workload with LRU eviction
+    html_cache: Arc<RwLock<LruCache<CacheKey, String>>>,
 }
 
 impl Default for AppState {
     fn default() -> Self {
-        Self {            open_windows: Arc::new(Mutex::new(HashMap::new())),            resize_tasks: Arc::new(Mutex::new(HashMap::new())),
-            latest_sizes: Arc::new(Mutex::new(HashMap::new())),
-            html_cache: Arc::new(Mutex::new(LruCache::new(NonZeroUsize::new(50).unwrap()))),
+        Self {
+            open_windows: Arc::new(RwLock::new(HashMap::new())),
+            resize_tasks: Arc::new(Mutex::new(HashMap::new())),
+            html_cache: Arc::new(RwLock::new(LruCache::new(NonZeroUsize::new(50).unwrap()))),
         }
     }
 }
@@ -269,19 +263,18 @@ struct CacheKey {
     theme: String,
 }
 
-fn invalidate_cache_for_path(app: &AppHandle, file_path: &str) {
+async fn invalidate_cache_for_path(app: &AppHandle, file_path: &str) {
     if let Some(state) = app.try_state::<AppState>() {
-        if let Ok(mut cache) = state.html_cache.lock() {
-            // Collect matching keys first to avoid borrowing issues
-            let mut keys_to_remove: Vec<CacheKey> = Vec::new();
-            for (k, _) in cache.iter() {
-                if k.path == file_path {
-                    keys_to_remove.push(k.clone());
-                }
-            }
-            for k in keys_to_remove {
-                cache.pop(&k);
-            }
+        let mut cache = state.html_cache.write().await;
+        // Collect matching keys first to avoid borrowing issues
+        let keys_to_remove: Vec<CacheKey> = cache
+            .iter()
+            .filter(|(k, _)| k.path == file_path)
+            .map(|(k, _)| k.clone())
+            .collect();
+
+        for k in keys_to_remove {
+            cache.pop(&k);
         }
     }
 }
@@ -343,7 +336,7 @@ async fn start_file_watcher(app: AppHandle, file_path: String, window_label: Str
                 pending_task = Some(tauri::async_runtime::spawn(async move {
                     sleep(Duration::from_millis(250)).await;
                     // Invalidate any cached HTML for this file
-                    invalidate_cache_for_path(&app2, &file2);
+                    invalidate_cache_for_path(&app2, &file2).await;
                     if let Some(state) = app2.try_state::<FileWatchers>() {
                         if let Ok(subs) = state.subs.lock() {
                             if let Some(labels) = subs.get(&file2) {
@@ -548,12 +541,11 @@ async fn render_file_to_html(app: AppHandle, path: String, theme: String) -> Res
 
     let key = CacheKey { path: path.clone(), size, mtime_secs, theme: theme.clone() };
 
-    // Try cache first
+    // Try cache first (write lock needed because LRU get() updates internal state)
     if let Some(state) = app.try_state::<AppState>() {
-        if let Ok(mut cache) = state.html_cache.lock() {
-            if let Some(cached) = cache.get(&key).cloned() {
-                return Ok(cached);
-            }
+        let mut cache = state.html_cache.write().await;
+        if let Some(cached) = cache.get(&key).cloned() {
+            return Ok(cached);
         }
     }
 
@@ -587,9 +579,8 @@ async fn render_file_to_html(app: AppHandle, path: String, theme: String) -> Res
 
     // Insert into cache
     if let Some(state) = app.try_state::<AppState>() {
-        if let Ok(mut cache) = state.html_cache.lock() {
-            cache.put(key, html.clone());
-        }
+        let mut cache = state.html_cache.write().await;
+        cache.put(key, html.clone());
     }
 
     Ok(html)
@@ -660,18 +651,17 @@ async fn open_editor_window(app: AppHandle, file_path: String, preview_window: S
 }
 
 #[tauri::command]
-fn create_new_window_command(app: AppHandle, file_path: Option<String>) -> Result<String, String> {
+async fn create_new_window_command(app: AppHandle, file_path: Option<String>) -> Result<String, String> {
     let resolved_path = file_path.and_then(|p| resolve_file_path(&p));
-    create_window_with_file(&app, resolved_path)
+    create_window_with_file(&app, resolved_path).await
         .map_err(|e| format!("Failed to create window: {}", e))
 }
 
 #[tauri::command]
-fn remove_window_from_tracking(app: AppHandle, window_label: String) -> Result<(), String> {
+async fn remove_window_from_tracking(app: AppHandle, window_label: String) -> Result<(), String> {
     let state = app.state::<AppState>();
-    let mut open_windows = state.open_windows.lock()
-        .map_err(|e| format!("Failed to lock open windows: {}", e))?;
-    
+    let mut open_windows = state.open_windows.write().await;
+
     // Find and remove the window by label
     open_windows.retain(|_, label| label != &window_label);
     Ok(())
@@ -748,11 +738,11 @@ fn focus_window(app: AppHandle, window_label: String) -> Result<(), String> {
     }
 }
 
-fn open_markdown_window(app: &AppHandle, file_path: Option<String>) -> Result<(), String> {
+async fn open_markdown_window(app: &AppHandle, file_path: Option<String>) -> Result<(), String> {
     let resolved_path = file_path.and_then(|p| resolve_file_path(&p));
-    create_window_with_file(app, resolved_path)
+    create_window_with_file(app, resolved_path).await
         .map_err(|e| format!("Failed to create window: {}", e))
-        .map(|_| ()) // Convert Result<String, String> to Result<(), String>
+        .map(|_| ())
 }
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
@@ -801,18 +791,19 @@ pub fn run() {
         .setup(move |app| {
             // Initialize file watchers state only (app state already managed)
             app.manage(FileWatchers::default());
-            
+
             // Set up the initial menu (dynamic Window submenu)
             rebuild_app_menu(&app.handle())?;
-            
 
-            
             // Handle menu events
             app.on_menu_event(|app, event| {
                 match event.id().as_ref() {
                     "new-window" => {
-                        // Create a new empty window
-                        let _ = create_new_window_command(app.clone(), None);
+                        // Create a new empty window (spawn async)
+                        let app_clone = app.clone();
+                        tauri::async_runtime::spawn(async move {
+                            let _ = create_new_window_command(app_clone, None).await;
+                        });
                     }
                     window_id if window_id.starts_with("window-") => {
                         // Extract the actual window label from the menu item ID
@@ -866,44 +857,40 @@ pub fn run() {
             });
 
             // Create initial window (CLI args or empty)
-            open_markdown_window(&app.handle(), file_path)?;
-            
+            tauri::async_runtime::block_on(open_markdown_window(&app.handle(), file_path))?;
+
             Ok(())
         })
         .on_window_event(|window, event| {
             match event {
                 tauri::WindowEvent::Resized(size) => {
-                    // Debounce saves on the Rust side and convert to logical pixels
+                    // Debounce saves and convert to logical pixels
                     let app = window.app_handle();
                     let label = window.label().to_string();
                     let (lw, lh) = convert_to_logical(&app, size.width, size.height);
 
-                    // update latest size
                     if let Some(state) = app.try_state::<AppState>() {
-                        if let Ok(mut latest) = state.latest_sizes.lock() {
-                            latest.insert(label.clone(), (lw, lh));
+                        let mut tasks = state.resize_tasks.lock().unwrap();
+
+                        // Cancel previous debounce task if any
+                        if let Some((handle, _, _)) = tasks.remove(&label) {
+                            handle.abort();
                         }
-                        // cancel previous task if any
-                        if let Ok(mut tasks) = state.resize_tasks.lock() {
-                            if let Some(handle) = tasks.remove(&label) {
-                                handle.abort();
-                            }
-                            let app_clone = app.clone();
-                            let label_clone = label.clone();
-                            let handle = tauri::async_runtime::spawn(async move {
-                                sleep(Duration::from_millis(450)).await;
-                                if let Some(state2) = app_clone.try_state::<AppState>() {
-                                    if let Ok(latest2) = state2.latest_sizes.lock() {
-                                        if let Some((w, h)) = latest2.get(&label_clone) {
-                                            let mut prefs = get_preferences(app_clone.clone()).unwrap_or_default();
-                                            prefs.window_width = *w;
-                                            prefs.window_height = *h;
-                                            let _ = save_preferences(app_clone.clone(), prefs);                                        }
-                                    }
-                                }
-                            });
-                            tasks.insert(label, handle);
-                        }
+
+                        // Spawn new debounced save task
+                        let app_clone = app.clone();
+                        let label_clone = label.clone();
+                        let handle = tauri::async_runtime::spawn(async move {
+                            sleep(Duration::from_millis(450)).await;
+
+                            // Save the size that was captured at spawn time
+                            let mut prefs = get_preferences(app_clone.clone()).unwrap_or_default();
+                            prefs.window_width = lw;
+                            prefs.window_height = lh;
+                            let _ = save_preferences(app_clone, prefs);
+                        });
+
+                        tasks.insert(label, (handle, lw, lh));
                     }
                 }
                 tauri::WindowEvent::CloseRequested { .. } => {
@@ -911,9 +898,14 @@ pub fn run() {
                     let app = window.app_handle();
                     let window_label = window.label().to_string();
                     let _ = stop_file_watcher(app.clone(), window_label.clone());
-                    let _ = remove_window_from_tracking(app.clone(), window_label);
-                    // Rebuild menu after a window closes
-                    let _ = rebuild_app_menu(&app);
+
+                    // Remove from tracking (spawn async task)
+                    let app_clone = app.clone();
+                    let label_clone = window_label.clone();
+                    tauri::async_runtime::spawn(async move {
+                        let _ = remove_window_from_tracking(app_clone.clone(), label_clone).await;
+                        let _ = rebuild_app_menu(&app_clone);
+                    });
                 }
                 _ => {}
             }
@@ -924,15 +916,18 @@ pub fn run() {
             // Handle file opening via Launch Services on macOS
             #[cfg(target_os = "macos")]
             if let tauri::RunEvent::Opened { urls } = _event {
-                for url in urls {
-                    if let Some(path) = resolve_file_path(&url.to_string()) {
-                        if let Err(e) = create_window_with_file(&_app, Some(path.clone())) {
-                            eprintln!("Failed to open window for {:?}: {}", path, e);
+                let app_clone = _app.clone();
+                tauri::async_runtime::spawn(async move {
+                    for url in urls {
+                        if let Some(path) = resolve_file_path(&url.to_string()) {
+                            if let Err(e) = create_window_with_file(&app_clone, Some(path.clone())).await {
+                                eprintln!("Failed to open window for {:?}: {}", path, e);
+                            }
                         }
                     }
-                }
-                // Rebuild menu after opening files
-                let _ = rebuild_app_menu(&_app);
+                    // Rebuild menu after opening files
+                    let _ = rebuild_app_menu(&app_clone);
+                });
             }
         });
 }
