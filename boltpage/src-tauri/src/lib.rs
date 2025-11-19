@@ -893,13 +893,14 @@ pub fn run() {
                     let label = window.label().to_string();
                     let (lw, lh) = convert_to_logical(&app, size.width, size.height);
 
-                    // Extract state before spawning to avoid lifetime issues
-                    let state_opt = app.try_state::<AppState>().map(|s| s.inner().clone());
+                    // Extract only the Arc<Mutex> we need (not a borrow)
+                    let resize_tasks_arc = app.try_state::<AppState>()
+                        .map(|state| state.inner().resize_tasks.clone());
 
-                    if let Some(state_clone) = state_opt {
+                    if let Some(resize_tasks) = resize_tasks_arc {
                         let app_clone = app.clone();
                         tauri::async_runtime::spawn(async move {
-                            let mut tasks = state_clone.resize_tasks.lock().await;
+                            let mut tasks = resize_tasks.lock().await;
 
                             // Cancel previous debounce task if any
                             if let Some((handle, _, _)) = tasks.remove(&label) {
