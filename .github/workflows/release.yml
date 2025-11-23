@@ -47,8 +47,21 @@ jobs:
         security unlock-keychain -p "$APPLE_CERTIFICATE_PASSWORD" build.keychain
         security set-keychain-settings -t 3600 -u build.keychain
         
-        # Import certificate
-        echo "$APPLE_CERTIFICATE" | base64 --decode > certificate.p12
+        # Import certificate (robust base64 decode to avoid newline/whitespace issues)
+        python - <<'PY'
+import base64, os, sys
+data = os.environ.get("APPLE_CERTIFICATE", "").strip()
+if not data:
+    sys.exit("APPLE_CERTIFICATE is empty or missing")
+try:
+    decoded = base64.b64decode(data)
+except Exception as e:
+    sys.exit(f"Failed to base64 decode APPLE_CERTIFICATE: {e}")
+with open("certificate.p12", "wb") as f:
+    f.write(decoded)
+if os.path.getsize("certificate.p12") == 0:
+    sys.exit("Decoded certificate is empty")
+PY
         security import certificate.p12 -k build.keychain -P "$APPLE_CERTIFICATE_PASSWORD" -T /usr/bin/codesign
         
         # Set partition list
@@ -124,12 +137,23 @@ jobs:
       env:
         WINDOWS_CERTIFICATE: ${{ secrets.WINDOWS_CERTIFICATE }}
         WINDOWS_CERTIFICATE_PASSWORD: ${{ secrets.WINDOWS_CERTIFICATE_PASSWORD }}
+      shell: pwsh
       run: |
-        # Create certificate file
-        echo "$WINDOWS_CERTIFICATE" | base64 --decode > certificate.pfx
-        
-        # Import certificate to Windows certificate store
-        certutil -user -p "$WINDOWS_CERTIFICATE_PASSWORD" -importPFX certificate.pfx
+        if (-not $Env:WINDOWS_CERTIFICATE) {
+          Write-Error "WINDOWS_CERTIFICATE is empty or missing"
+          exit 1
+        }
+        try {
+          [IO.File]::WriteAllBytes("certificate.pfx", [Convert]::FromBase64String($Env:WINDOWS_CERTIFICATE))
+        } catch {
+          Write-Error "Failed to decode WINDOWS_CERTIFICATE: $($_.Exception.Message)"
+          exit 1
+        }
+        if ((Get-Item certificate.pfx).Length -le 0) {
+          Write-Error "Decoded certificate is empty"
+          exit 1
+        }
+        certutil -user -p "$Env:WINDOWS_CERTIFICATE_PASSWORD" -importPFX certificate.pfx
         
     - name: Build Windows app
       run: |
@@ -185,4 +209,3 @@ jobs:
         prerelease: false
       env:
         GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-
