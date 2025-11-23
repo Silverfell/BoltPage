@@ -812,7 +812,26 @@ async fn open_markdown_window(app: &AppHandle, file_path: Option<String>) -> Res
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     let args: Vec<String> = std::env::args().collect();
-    let file_path = args.get(1).cloned();
+    let mut file_path = args.get(1).cloned();
+    // If a CLI path was provided, ensure it exists (create empty file) and normalize to absolute
+    if let Some(ref path_str) = file_path {
+        if let Some(pathbuf) = resolve_file_path(path_str) {
+            if !pathbuf.exists() {
+                if let Some(parent) = pathbuf.parent() {
+                    let _ = fs::create_dir_all(parent);
+                }
+                if let Err(e) = fs::OpenOptions::new()
+                    .write(true)
+                    .create(true)
+                    .truncate(true)
+                    .open(&pathbuf)
+                {
+                    eprintln!("Failed to create file from CLI arg {:?}: {}", pathbuf, e);
+                }
+            }
+            file_path = Some(pathbuf.to_string_lossy().to_string());
+        }
+    }
     
     // Initialize app state before building to avoid race condition
     let app_state = AppState::default();
