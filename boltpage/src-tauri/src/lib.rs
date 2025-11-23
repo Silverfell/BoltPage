@@ -147,7 +147,8 @@ async fn create_window_with_file(app: &AppHandle, file_path: Option<PathBuf>) ->
 fn rebuild_app_menu(app: &AppHandle) -> tauri::Result<()> {
     // File menu
     let file_menu = SubmenuBuilder::new(app, "File")
-        .item(&MenuItemBuilder::with_id("new-window", "New Window").accelerator("CmdOrCtrl+N").build(app)?)
+        .item(&MenuItemBuilder::with_id("new-file", "New File").accelerator("CmdOrCtrl+N").build(app)?)
+        .item(&MenuItemBuilder::with_id("new-window", "New Window").accelerator("CmdOrCtrl+Shift+N").build(app)?)
         .item(&MenuItemBuilder::with_id("open", "Open").accelerator("CmdOrCtrl+O").build(app)?)
         .item(&MenuItemBuilder::with_id("print", "Print").accelerator("CmdOrCtrl+P").build(app)?)
         .separator()
@@ -170,7 +171,7 @@ fn rebuild_app_menu(app: &AppHandle) -> tauri::Result<()> {
 
     // Window menu (dynamic list of open windows)
     let mut window_menu_builder = SubmenuBuilder::new(app, "Window")
-        .item(&MenuItemBuilder::with_id("new-window", "New Window").accelerator("CmdOrCtrl+N").build(app)?)
+        .item(&MenuItemBuilder::with_id("new-window", "New Window").accelerator("CmdOrCtrl+Shift+N").build(app)?)
         .separator();
 
     for (label, window) in app.webview_windows() {
@@ -651,6 +652,46 @@ async fn open_file_dialog(app: AppHandle) -> Result<Option<String>, String> {
 }
 
 #[tauri::command]
+async fn create_new_markdown_file(app: AppHandle) -> Result<Option<String>, String> {
+    use tauri_plugin_dialog::DialogExt;
+
+    let selection = app.dialog()
+        .file()
+        .add_filter("Markdown", &["md", "markdown"])
+        .add_filter("All Files", &["*"])
+        .blocking_save_file();
+
+    let Some(selection) = selection else {
+        return Ok(None);
+    };
+
+    let mut path = selection
+        .into_path()
+        .map_err(|e| format!("Failed to resolve path: {}", e))?;
+
+    if path.extension().is_none() {
+        path.set_extension("md");
+    }
+
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent).map_err(|e| format!("Failed to create directories: {}", e))?;
+    }
+
+    fs::OpenOptions::new()
+        .write(true)
+        .create(true)
+        .truncate(true)
+        .open(&path)
+        .map_err(|e| format!("Failed to create file: {}", e))?;
+
+    let window_label = create_window_with_file(&app, Some(path))
+        .await
+        .map_err(|e| format!("Failed to open window: {}", e))?;
+
+    Ok(Some(window_label))
+}
+
+#[tauri::command]
 async fn open_editor_window(app: AppHandle, file_path: String, preview_window: String) -> Result<(), String> {
     let editor_label = format!("editor-{}", uuid::Uuid::new_v4());
     
@@ -795,6 +836,7 @@ pub fn run() {
             get_preferences,
             save_preferences,
             open_file_dialog,
+            create_new_markdown_file,
             open_editor_window,
             refresh_preview,
             start_file_watcher,
@@ -821,6 +863,14 @@ pub fn run() {
             // Handle menu events
             app.on_menu_event(|app, event| {
                 match event.id().as_ref() {
+                    "new-file" => {
+                        let app_clone = app.clone();
+                        tauri::async_runtime::spawn(async move {
+                            if let Err(e) = create_new_markdown_file(app_clone).await {
+                                eprintln!("Failed to create new file: {}", e);
+                            }
+                        });
+                    }
                     "new-window" => {
                         // Create a new empty window (spawn async)
                         let app_clone = app.clone();

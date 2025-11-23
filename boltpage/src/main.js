@@ -330,6 +330,17 @@ async function openEditor() {
     }
 }
 
+async function createNewMarkdownFile() {
+    try {
+        const windowLabel = await invoke('create_new_markdown_file');
+        return windowLabel || null;
+    } catch (err) {
+        console.error('Failed to create new file:', err);
+        alert('Failed to create new file: ' + err);
+        return null;
+    }
+}
+
 async function updateEditButtonState() {
     const editBtn = document.getElementById('edit-btn');
     if (!editBtn) return;
@@ -467,7 +478,7 @@ function setupEventListeners() {
                 e.preventDefault();
                 performEditAction('select-all');
             }
-        } else if (ctrl && e.key === 'n') {
+        } else if (ctrl && e.shiftKey && e.key.toLowerCase() === 'n') {
             e.preventDefault();
             // Create new window
             try {
@@ -475,6 +486,9 @@ function setupEventListeners() {
             } catch (err) {
                 console.error('Failed to create new window:', err);
             }
+        } else if (ctrl && e.key.toLowerCase() === 'n') {
+            e.preventDefault();
+            await createNewMarkdownFile();
         } else if (ctrl && e.key === 'w') {
             e.preventDefault();
             // Close current window
