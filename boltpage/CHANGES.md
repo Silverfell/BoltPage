@@ -2,6 +2,7 @@
 
 2025-11-23: Allow CLI invocation with a new file path to auto-create and open the file
 2025-11-23: Add File -> New menu to create empty markdown files immediately and open them; bump version to 1.6.1
+2025-11-23: Harden release workflow certificate decoding/import for macOS and Windows
 2025-11-19: Fix async Mutex usage throughout lib.rs (tokio::sync::Mutex requires .await on .lock())
 2025-11-19: Add debug_log macro for conditional debug output (eprintln in debug builds, no-op in release)
 2025-11-19: Make stop_file_watcher async to properly await mutex locks
