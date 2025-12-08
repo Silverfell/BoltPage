@@ -1,18 +1,18 @@
+use base64::Engine;
+use lru::LruCache;
+use notify::{Config, RecommendedWatcher, RecursiveMode, Watcher};
+use serde::{Deserialize, Serialize};
+use std::collections::HashMap;
 use std::fs;
+use std::num::NonZeroUsize;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
-use std::collections::HashMap;
-use std::num::NonZeroUsize;
-use base64::Engine;
-use tauri::{AppHandle, Manager, WebviewUrl, WebviewWindowBuilder, Emitter};
-use tauri_plugin_store::StoreExt;
-use serde::{Deserialize, Serialize};
 use tauri::menu::{MenuBuilder, MenuItemBuilder, SubmenuBuilder};
-use notify::{Config, RecommendedWatcher, RecursiveMode, Watcher};
-use tokio::sync::{mpsc, RwLock, Mutex};
-use url::Url;
-use lru::LruCache;
+use tauri::{AppHandle, Emitter, Manager, WebviewUrl, WebviewWindowBuilder};
+use tauri_plugin_store::StoreExt;
+use tokio::sync::{mpsc, Mutex, RwLock};
 use tokio::time::{sleep, Duration};
+use url::Url;
 
 // Conditional debug logging (only in debug builds)
 #[cfg(debug_assertions)]
@@ -43,7 +43,7 @@ fn resolve_file_path(input: &str) -> Option<PathBuf> {
     if let Some(path) = file_url_to_path(input) {
         return Some(path);
     }
-    
+
     // Then try as regular path and convert to absolute
     let path = PathBuf::from(input);
     if path.is_absolute() {
@@ -55,31 +55,40 @@ fn resolve_file_path(input: &str) -> Option<PathBuf> {
 }
 
 // Calculate appropriate window size with page-like proportions
-fn calculate_window_size(app: &AppHandle, prefs: &AppPreferences) -> tauri::Result<(f64, f64)> {    
+fn calculate_window_size(app: &AppHandle, prefs: &AppPreferences) -> tauri::Result<(f64, f64)> {
     // If user has resized windows (preferences were saved), use those dimensions
     // Check if these are reasonable user-resized values (not corrupted massive values)
-    if prefs.window_width > 200 && prefs.window_width < 5000 &&
-       prefs.window_height > 200 && prefs.window_height < 5000 &&
-       (prefs.window_width != 900 || prefs.window_height != 800) {
+    if prefs.window_width > 200
+        && prefs.window_width < 5000
+        && prefs.window_height > 200
+        && prefs.window_height < 5000
+        && (prefs.window_width != 900 || prefs.window_height != 800)
+    {
         return Ok((prefs.window_width as f64, prefs.window_height as f64));
     }
-    
-    // Otherwise, calculate default page-like proportions using monitor size  
+
+    // Otherwise, calculate default page-like proportions using monitor size
     if let Ok(Some(monitor)) = app.primary_monitor() {
         let monitor_size = monitor.size();
         let scale_factor = monitor.scale_factor();
-        
+
         // Convert physical pixels to logical pixels
         let _logical_width = monitor_size.width as f64 / scale_factor;
         let logical_height = monitor_size.height as f64 / scale_factor;
-        
+
         // Page-like proportions: reasonable reading width, full screen height
         let page_width = 900.0;
         let page_height = logical_height;
-        
-        debug_log!("[DEBUG] Monitor size: {}x{} (scale: {}), Using calculated window size: {}x{}", 
-                 _logical_width, logical_height, scale_factor, page_width, page_height);
-        
+
+        debug_log!(
+            "[DEBUG] Monitor size: {}x{} (scale: {}), Using calculated window size: {}x{}",
+            _logical_width,
+            logical_height,
+            scale_factor,
+            page_width,
+            page_height
+        );
+
         Ok((page_width, page_height))
     } else {
         Ok((900.0, 800.0))
@@ -87,15 +96,20 @@ fn calculate_window_size(app: &AppHandle, prefs: &AppPreferences) -> tauri::Resu
 }
 
 // UNIFIED WINDOW CREATION - Single source of truth for all window creation
-async fn create_window_with_file(app: &AppHandle, file_path: Option<PathBuf>) -> tauri::Result<String> {
+async fn create_window_with_file(
+    app: &AppHandle,
+    file_path: Option<PathBuf>,
+) -> tauri::Result<String> {
     let prefs = get_preferences(app.clone()).unwrap_or_default();
 
     // Generate consistent window label and URL
     let (window_label, url, title) = if let Some(ref path) = file_path {
-        let encoded_path = base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(path.to_string_lossy().as_bytes());
+        let encoded_path = base64::engine::general_purpose::URL_SAFE_NO_PAD
+            .encode(path.to_string_lossy().as_bytes());
         let label = format!("markdown-file-{}", encoded_path);
         let url = WebviewUrl::App("index.html".into());
-        let title = path.file_name()
+        let title = path
+            .file_name()
             .and_then(|n| n.to_str())
             .map(|n| format!("BoltPage - {}", n))
             .unwrap_or_else(|| "BoltPage".to_string());
@@ -119,20 +133,20 @@ async fn create_window_with_file(app: &AppHandle, file_path: Option<PathBuf>) ->
         }
         drop(open_windows); // Explicitly release read lock
     }
-    
+
     // Calculate appropriate window size (page-like proportions)
     let (width, height) = calculate_window_size(app, &prefs)?;
-    
+
     // Create the window (hidden initially for file windows to prevent flash)
     let _window = WebviewWindowBuilder::new(app, &window_label, url)
         .title(&title)
         .inner_size(width, height)
         .visible(file_path.is_none()) // Only show empty windows immediately
         .build()?;
-    
+
     // Rebuild the application menu to include this window in the Window menu
     let _ = rebuild_app_menu(app);
-    
+
     // Track file windows
     if let Some(path) = file_path {
         let app_state = app.state::<AppState>();
@@ -147,37 +161,94 @@ async fn create_window_with_file(app: &AppHandle, file_path: Option<PathBuf>) ->
 fn rebuild_app_menu(app: &AppHandle) -> tauri::Result<()> {
     // File menu
     let file_menu = SubmenuBuilder::new(app, "File")
-        .item(&MenuItemBuilder::with_id("new-file", "New File").accelerator("CmdOrCtrl+N").build(app)?)
-        .item(&MenuItemBuilder::with_id("new-window", "New Window").accelerator("CmdOrCtrl+Shift+N").build(app)?)
-        .item(&MenuItemBuilder::with_id("open", "Open").accelerator("CmdOrCtrl+O").build(app)?)
-        .item(&MenuItemBuilder::with_id("print", "Print").accelerator("CmdOrCtrl+P").build(app)?)
+        .item(
+            &MenuItemBuilder::with_id("new-file", "New File")
+                .accelerator("CmdOrCtrl+N")
+                .build(app)?,
+        )
+        .item(
+            &MenuItemBuilder::with_id("new-window", "New Window")
+                .accelerator("CmdOrCtrl+Shift+N")
+                .build(app)?,
+        )
+        .item(
+            &MenuItemBuilder::with_id("open", "Open")
+                .accelerator("CmdOrCtrl+O")
+                .build(app)?,
+        )
+        .item(
+            &MenuItemBuilder::with_id("print", "Print")
+                .accelerator("CmdOrCtrl+P")
+                .build(app)?,
+        )
         .separator()
-        .item(&MenuItemBuilder::with_id("close", "Close Window").accelerator("CmdOrCtrl+W").build(app)?)
-        .item(&MenuItemBuilder::with_id("quit", "Quit").accelerator("CmdOrCtrl+Q").build(app)?)
+        .item(
+            &MenuItemBuilder::with_id("close", "Close Window")
+                .accelerator("CmdOrCtrl+W")
+                .build(app)?,
+        )
+        .item(
+            &MenuItemBuilder::with_id("quit", "Quit")
+                .accelerator("CmdOrCtrl+Q")
+                .build(app)?,
+        )
         .build()?;
 
     // Edit menu (native accelerators for copy/paste/etc.)
     let edit_menu = SubmenuBuilder::new(app, "Edit")
-        .item(&MenuItemBuilder::with_id("undo", "Undo").accelerator("CmdOrCtrl+Z").build(app)?)
-        .item(&MenuItemBuilder::with_id("redo", "Redo").accelerator("Shift+CmdOrCtrl+Z").build(app)?)
+        .item(
+            &MenuItemBuilder::with_id("undo", "Undo")
+                .accelerator("CmdOrCtrl+Z")
+                .build(app)?,
+        )
+        .item(
+            &MenuItemBuilder::with_id("redo", "Redo")
+                .accelerator("Shift+CmdOrCtrl+Z")
+                .build(app)?,
+        )
         .separator()
-        .item(&MenuItemBuilder::with_id("cut", "Cut").accelerator("CmdOrCtrl+X").build(app)?)
-        .item(&MenuItemBuilder::with_id("copy", "Copy").accelerator("CmdOrCtrl+C").build(app)?)
-        .item(&MenuItemBuilder::with_id("paste", "Paste").accelerator("CmdOrCtrl+V").build(app)?)
-        .item(&MenuItemBuilder::with_id("select-all", "Select All").accelerator("CmdOrCtrl+A").build(app)?)
+        .item(
+            &MenuItemBuilder::with_id("cut", "Cut")
+                .accelerator("CmdOrCtrl+X")
+                .build(app)?,
+        )
+        .item(
+            &MenuItemBuilder::with_id("copy", "Copy")
+                .accelerator("CmdOrCtrl+C")
+                .build(app)?,
+        )
+        .item(
+            &MenuItemBuilder::with_id("paste", "Paste")
+                .accelerator("CmdOrCtrl+V")
+                .build(app)?,
+        )
+        .item(
+            &MenuItemBuilder::with_id("select-all", "Select All")
+                .accelerator("CmdOrCtrl+A")
+                .build(app)?,
+        )
         .separator()
-        .item(&MenuItemBuilder::with_id("find", "Find...").accelerator("CmdOrCtrl+F").build(app)?)
+        .item(
+            &MenuItemBuilder::with_id("find", "Find...")
+                .accelerator("CmdOrCtrl+F")
+                .build(app)?,
+        )
         .build()?;
 
     // Window menu (dynamic list of open windows)
     let mut window_menu_builder = SubmenuBuilder::new(app, "Window")
-        .item(&MenuItemBuilder::with_id("new-window", "New Window").accelerator("CmdOrCtrl+Shift+N").build(app)?)
+        .item(
+            &MenuItemBuilder::with_id("new-window", "New Window")
+                .accelerator("CmdOrCtrl+Shift+N")
+                .build(app)?,
+        )
         .separator();
 
     for (label, window) in app.webview_windows() {
         let title = window.title().unwrap_or_else(|_| "Untitled".to_string());
         let window_id = format!("window-{}", label);
-        window_menu_builder = window_menu_builder.item(&MenuItemBuilder::with_id(&window_id, &title).build(app)?);
+        window_menu_builder =
+            window_menu_builder.item(&MenuItemBuilder::with_id(&window_id, &title).build(app)?);
     }
     let window_menu = window_menu_builder.build()?;
 
@@ -296,7 +367,11 @@ async fn invalidate_cache_for_path(app: &AppHandle, file_path: &str) {
 }
 
 #[tauri::command]
-async fn start_file_watcher(app: AppHandle, file_path: String, window_label: String) -> Result<(), String> {
+async fn start_file_watcher(
+    app: AppHandle,
+    file_path: String,
+    window_label: String,
+) -> Result<(), String> {
     let watchers = app.state::<FileWatchers>();
 
     // Register subscription
@@ -329,14 +404,20 @@ async fn start_file_watcher(app: AppHandle, file_path: String, window_label: Str
                 }
             },
             Config::default(),
-        ).map_err(|e| format!("Failed to create watcher: {}", e))?;
+        )
+        .map_err(|e| format!("Failed to create watcher: {}", e))?;
 
         // Watch the file
-        watcher.watch(Path::new(&file_path), RecursiveMode::NonRecursive)
+        watcher
+            .watch(Path::new(&file_path), RecursiveMode::NonRecursive)
             .map_err(|e| format!("Failed to watch file: {}", e))?;
 
         // Store watcher and sender
-        watchers.watchers.lock().await.insert(file_path.clone(), watcher);
+        watchers
+            .watchers
+            .lock()
+            .await
+            .insert(file_path.clone(), watcher);
         watchers.senders.lock().await.insert(file_path.clone(), tx);
 
         // Spawn a debounced notifier for this file path
@@ -346,7 +427,9 @@ async fn start_file_watcher(app: AppHandle, file_path: String, window_label: Str
             let mut pending_task: Option<tauri::async_runtime::JoinHandle<()>> = None;
             while let Some(_) = rx.recv().await {
                 // Reset debounce timer
-                if let Some(h) = pending_task.take() { h.abort(); }
+                if let Some(h) = pending_task.take() {
+                    h.abort();
+                }
                 let app2 = app_clone.clone();
                 let file2 = file_key.clone();
                 pending_task = Some(tauri::async_runtime::spawn(async move {
@@ -366,7 +449,11 @@ async fn start_file_watcher(app: AppHandle, file_path: String, window_label: Str
                 }));
             }
         });
-        watchers.debounce_tasks.lock().await.insert(file_path.clone(), handle);
+        watchers
+            .debounce_tasks
+            .lock()
+            .await
+            .insert(file_path.clone(), handle);
     }
 
     Ok(())
@@ -386,7 +473,9 @@ async fn stop_file_watcher(app: AppHandle, window_label: String) -> Result<(), S
             }
         }
         // Actually remove empty entries
-        for f in to_remove.iter() { subs.remove(f); }
+        for f in to_remove.iter() {
+            subs.remove(f);
+        }
     }
 
     // Stop watchers for files with no subscribers
@@ -426,7 +515,9 @@ fn broadcast_scroll_link(app: AppHandle, enabled: bool) -> Result<(), String> {
 #[tauri::command]
 fn show_window(app: AppHandle, window_label: String) -> Result<(), String> {
     if let Some(window) = app.get_webview_window(&window_label) {
-        window.show().map_err(|e| format!("Failed to show window: {}", e))?;
+        window
+            .show()
+            .map_err(|e| format!("Failed to show window: {}", e))?;
     }
     Ok(())
 }
@@ -449,7 +540,11 @@ fn convert_to_logical(app: &AppHandle, width: u32, height: u32) -> (u32, u32) {
         let logical_height = (height as f64 / scale_factor).round() as u32;
         debug_log!(
             "Converting physical {}x{} to logical {}x{} (scale: {})",
-            width, height, logical_width, logical_height, scale_factor
+            width,
+            height,
+            logical_width,
+            logical_height,
+            scale_factor
         );
         (logical_width, logical_height)
     } else {
@@ -474,8 +569,7 @@ fn escape_html(input: &str) -> String {
 
 #[tauri::command]
 fn read_file(path: String) -> Result<String, String> {
-    fs::read_to_string(&path)
-        .map_err(|e| format!("Failed to read file: {}", e))
+    fs::read_to_string(&path).map_err(|e| format!("Failed to read file: {}", e))
 }
 
 #[tauri::command]
@@ -485,11 +579,9 @@ fn read_file_bytes_b64(path: String) -> Result<String, String> {
         .map_err(|e| format!("Failed to read file bytes: {}", e))
 }
 
-
 #[tauri::command]
 fn write_file(path: String, content: String) -> Result<(), String> {
-    fs::write(&path, content)
-        .map_err(|e| format!("Failed to write file: {}", e))
+    fs::write(&path, content).map_err(|e| format!("Failed to write file: {}", e))
 }
 
 #[tauri::command]
@@ -523,8 +615,8 @@ fn parse_yaml_with_theme(content: String, theme: String) -> Result<String, Strin
 #[tauri::command]
 fn format_json_pretty(content: String) -> Result<String, String> {
     // Pretty-print JSON using serde_json with default map ordering (sorted keys)
-    let value: serde_json::Value = serde_json::from_str(&content)
-        .map_err(|e| format!("Invalid JSON: {}", e))?;
+    let value: serde_json::Value =
+        serde_json::from_str(&content).map_err(|e| format!("Invalid JSON: {}", e))?;
     serde_json::to_string_pretty(&value).map_err(|e| format!("Failed to pretty-print JSON: {}", e))
 }
 
@@ -532,9 +624,9 @@ fn format_json_pretty(content: String) -> Result<String, String> {
 struct ScrollSyncPayload {
     source: String,
     file_path: String,
-    kind: String,              // e.g., "json", "markdown", "txt"
-    line: Option<u32>,         // topmost line (1-based) when applicable
-    percent: Option<f64>,      // fallback scroll percent [0.0, 1.0]
+    kind: String,         // e.g., "json", "markdown", "txt"
+    line: Option<u32>,    // topmost line (1-based) when applicable
+    percent: Option<f64>, // fallback scroll percent [0.0, 1.0]
 }
 
 #[tauri::command]
@@ -545,11 +637,16 @@ fn broadcast_scroll_sync(app: AppHandle, payload: ScrollSyncPayload) -> Result<(
 
 #[tauri::command]
 fn get_syntax_css(theme: String) -> Result<String, String> {
-    markrust_core::get_syntax_theme_css(&theme).ok_or_else(|| "Failed to generate syntax CSS".to_string())
+    markrust_core::get_syntax_theme_css(&theme)
+        .ok_or_else(|| "Failed to generate syntax CSS".to_string())
 }
 
 #[tauri::command]
-async fn render_file_to_html(app: AppHandle, path: String, theme: String) -> Result<String, String> {
+async fn render_file_to_html(
+    app: AppHandle,
+    path: String,
+    theme: String,
+) -> Result<String, String> {
     use std::time::UNIX_EPOCH;
 
     // Stat for cache key
@@ -562,7 +659,12 @@ async fn render_file_to_html(app: AppHandle, path: String, theme: String) -> Res
         .map(|d| d.as_secs())
         .unwrap_or(0);
 
-    let key = CacheKey { path: path.clone(), size, mtime_secs, theme: theme.clone() };
+    let key = CacheKey {
+        path: path.clone(),
+        size,
+        mtime_secs,
+        theme: theme.clone(),
+    };
 
     // Try cache first (write lock needed because LRU get() updates internal state)
     if let Some(state) = app.try_state::<AppState>() {
@@ -582,18 +684,25 @@ async fn render_file_to_html(app: AppHandle, path: String, theme: String) -> Res
             .unwrap_or_default();
 
         if lower == "txt" {
-            let content = fs::read_to_string(&path).map_err(|e| format!("Failed to read file: {}", e))?;
+            let content =
+                fs::read_to_string(&path).map_err(|e| format!("Failed to read file: {}", e))?;
             let escaped = escape_html(&content);
-            Ok(format!("<div class=\"markdown-body\"><pre class=\"plain-text\">{}</pre></div>", escaped))
+            Ok(format!(
+                "<div class=\"markdown-body\"><pre class=\"plain-text\">{}</pre></div>",
+                escaped
+            ))
         } else if lower == "json" {
-            let content = fs::read_to_string(&path).map_err(|e| format!("Failed to read file: {}", e))?;
+            let content =
+                fs::read_to_string(&path).map_err(|e| format!("Failed to read file: {}", e))?;
             markrust_core::parse_json_with_theme(&content, &theme)
         } else if lower == "yaml" || lower == "yml" {
-            let content = fs::read_to_string(&path).map_err(|e| format!("Failed to read file: {}", e))?;
+            let content =
+                fs::read_to_string(&path).map_err(|e| format!("Failed to read file: {}", e))?;
             markrust_core::parse_yaml_with_theme(&content, &theme)
         } else {
             // default markdown
-            let content = fs::read_to_string(&path).map_err(|e| format!("Failed to read file: {}", e))?;
+            let content =
+                fs::read_to_string(&path).map_err(|e| format!("Failed to read file: {}", e))?;
             Ok(markrust_core::parse_markdown_with_theme(&content, &theme))
         }
     })
@@ -611,35 +720,44 @@ async fn render_file_to_html(app: AppHandle, path: String, theme: String) -> Res
 
 #[tauri::command]
 fn get_preferences(app: AppHandle) -> Result<AppPreferences, String> {
-    let store = app.store(".boltpage.dat")
+    let store = app
+        .store(".boltpage.dat")
         .map_err(|e| format!("Failed to access store: {}", e))?;
-    
-    let prefs = store.get("preferences")
+
+    let prefs = store
+        .get("preferences")
         .and_then(|v| serde_json::from_value::<AppPreferences>(v.clone()).ok())
         .unwrap_or_default();
-    
+
     Ok(prefs)
 }
 
 #[tauri::command]
 fn save_preferences(app: AppHandle, preferences: AppPreferences) -> Result<(), String> {
-    let store = app.store(".boltpage.dat")
+    let store = app
+        .store(".boltpage.dat")
         .map_err(|e| format!("Failed to access store: {}", e))?;
-    
+
     store.set("preferences", serde_json::to_value(&preferences).unwrap());
-    store.save().map_err(|e| format!("Failed to save preferences: {}", e))?;
-    
+    store
+        .save()
+        .map_err(|e| format!("Failed to save preferences: {}", e))?;
+
     Ok(())
 }
 
 #[tauri::command]
 async fn open_file_dialog(app: AppHandle) -> Result<Option<String>, String> {
     use tauri_plugin_dialog::DialogExt;
-    
-    let file_path = app.dialog()
+
+    let file_path = app
+        .dialog()
         .file()
         // Show a combined filter first for convenience
-        .add_filter("Supported", &["md", "markdown", "json", "yaml", "yml", "txt", "pdf"])
+        .add_filter(
+            "Supported",
+            &["md", "markdown", "json", "yaml", "yml", "txt", "pdf"],
+        )
         // Specific filters
         .add_filter("Markdown", &["md", "markdown"])
         .add_filter("JSON", &["json"])
@@ -647,7 +765,7 @@ async fn open_file_dialog(app: AppHandle) -> Result<Option<String>, String> {
         .add_filter("Text", &["txt"])
         .add_filter("PDF", &["pdf"])
         .blocking_pick_file();
-    
+
     Ok(file_path.map(|p| p.to_string()))
 }
 
@@ -655,7 +773,8 @@ async fn open_file_dialog(app: AppHandle) -> Result<Option<String>, String> {
 async fn create_new_markdown_file(app: AppHandle) -> Result<Option<String>, String> {
     use tauri_plugin_dialog::DialogExt;
 
-    let selection = app.dialog()
+    let selection = app
+        .dialog()
         .file()
         .add_filter("Markdown", &["md", "markdown"])
         .add_filter("All Files", &["*"])
@@ -692,31 +811,39 @@ async fn create_new_markdown_file(app: AppHandle) -> Result<Option<String>, Stri
 }
 
 #[tauri::command]
-async fn open_editor_window(app: AppHandle, file_path: String, preview_window: String) -> Result<(), String> {
+async fn open_editor_window(
+    app: AppHandle,
+    file_path: String,
+    preview_window: String,
+) -> Result<(), String> {
     let editor_label = format!("editor-{}", uuid::Uuid::new_v4());
-    
-    let _editor_window = WebviewWindowBuilder::new(
-        &app,
-        &editor_label,
-        WebviewUrl::App("editor.html".into())
-    )
-    .title(format!("BoltPage Editor - {}", file_path.split('/').last().unwrap_or("Untitled")))
-    .inner_size(800.0, 600.0)
-    .initialization_script(&format!(
-        "window.__INITIAL_FILE_PATH__ = {}; window.__PREVIEW_WINDOW__ = {};",
-        serde_json::to_string(&file_path).unwrap(),
-        serde_json::to_string(&preview_window).unwrap()
-    ))
-    .build()
-    .map_err(|e| format!("Failed to create editor window: {}", e))?;
-    
+
+    let _editor_window =
+        WebviewWindowBuilder::new(&app, &editor_label, WebviewUrl::App("editor.html".into()))
+            .title(format!(
+                "BoltPage Editor - {}",
+                file_path.split('/').last().unwrap_or("Untitled")
+            ))
+            .inner_size(800.0, 600.0)
+            .initialization_script(&format!(
+                "window.__INITIAL_FILE_PATH__ = {}; window.__PREVIEW_WINDOW__ = {};",
+                serde_json::to_string(&file_path).unwrap(),
+                serde_json::to_string(&preview_window).unwrap()
+            ))
+            .build()
+            .map_err(|e| format!("Failed to create editor window: {}", e))?;
+
     Ok(())
 }
 
 #[tauri::command]
-async fn create_new_window_command(app: AppHandle, file_path: Option<String>) -> Result<String, String> {
+async fn create_new_window_command(
+    app: AppHandle,
+    file_path: Option<String>,
+) -> Result<String, String> {
     let resolved_path = file_path.and_then(|p| resolve_file_path(&p));
-    create_window_with_file(&app, resolved_path).await
+    create_window_with_file(&app, resolved_path)
+        .await
         .map_err(|e| format!("Failed to create window: {}", e))
 }
 
@@ -733,7 +860,9 @@ async fn remove_window_from_tracking(app: AppHandle, window_label: String) -> Re
 #[tauri::command]
 fn refresh_preview(app: AppHandle, window: String) -> Result<(), String> {
     if let Some(preview_window) = app.get_webview_window(&window) {
-        preview_window.eval("refreshFile()").map_err(|e| format!("Failed to refresh preview: {}", e))?;
+        preview_window
+            .eval("refreshFile()")
+            .map_err(|e| format!("Failed to refresh preview: {}", e))?;
     }
     Ok(())
 }
@@ -741,19 +870,15 @@ fn refresh_preview(app: AppHandle, window: String) -> Result<(), String> {
 #[tauri::command]
 fn get_file_path_from_window_label(window: tauri::Window) -> Result<Option<String>, String> {
     let window_label = window.label();
-    
+
     // Check if this is a file window (starts with "markdown-file-")
     if let Some(encoded_path) = window_label.strip_prefix("markdown-file-") {
         match base64::engine::general_purpose::URL_SAFE_NO_PAD.decode(encoded_path) {
-            Ok(decoded_bytes) => {
-                match String::from_utf8(decoded_bytes) {
-                    Ok(file_path) => {
-                        Ok(Some(file_path))
-                    }
-                    Err(e) => Err(format!("Failed to decode UTF-8: {}", e))
-                }
-            }
-            Err(e) => Err(format!("Failed to decode base64: {}", e))
+            Ok(decoded_bytes) => match String::from_utf8(decoded_bytes) {
+                Ok(file_path) => Ok(Some(file_path)),
+                Err(e) => Err(format!("Failed to decode UTF-8: {}", e)),
+            },
+            Err(e) => Err(format!("Failed to decode base64: {}", e)),
         }
     } else {
         // Not a file window, return None
@@ -771,7 +896,7 @@ struct WindowInfo {
 #[tauri::command]
 fn get_all_windows(app: AppHandle) -> Result<Vec<WindowInfo>, String> {
     let mut windows = Vec::new();
-    
+
     for (label, window) in app.webview_windows() {
         let title = window.title().unwrap_or_else(|_| "Untitled".to_string());
         // For now, just show the window label as file path since we can't easily get the actual path
@@ -780,22 +905,26 @@ fn get_all_windows(app: AppHandle) -> Result<Vec<WindowInfo>, String> {
         } else {
             "Empty window".to_string()
         };
-        
+
         windows.push(WindowInfo {
             label: label.to_string(),
             title,
             file_path,
         });
     }
-    
+
     Ok(windows)
 }
 
 #[tauri::command]
 fn focus_window(app: AppHandle, window_label: String) -> Result<(), String> {
     if let Some(window) = app.get_webview_window(&window_label) {
-        window.set_focus().map_err(|e| format!("Failed to focus window: {}", e))?;
-        window.show().map_err(|e| format!("Failed to show window: {}", e))?;
+        window
+            .set_focus()
+            .map_err(|e| format!("Failed to focus window: {}", e))?;
+        window
+            .show()
+            .map_err(|e| format!("Failed to show window: {}", e))?;
         Ok(())
     } else {
         Err("Window not found".to_string())
@@ -804,7 +933,8 @@ fn focus_window(app: AppHandle, window_label: String) -> Result<(), String> {
 
 async fn open_markdown_window(app: &AppHandle, file_path: Option<String>) -> Result<(), String> {
     let resolved_path = file_path.and_then(|p| resolve_file_path(&p));
-    create_window_with_file(app, resolved_path).await
+    create_window_with_file(app, resolved_path)
+        .await
         .map_err(|e| format!("Failed to create window: {}", e))
         .map(|_| ())
 }
@@ -832,10 +962,10 @@ pub fn run() {
             file_path = Some(pathbuf.to_string_lossy().to_string());
         }
     }
-    
+
     // Initialize app state before building to avoid race condition
     let app_state = AppState::default();
-    
+
     tauri::Builder::default()
         .manage(app_state)
         .plugin(tauri_plugin_opener::init())
@@ -935,7 +1065,10 @@ pub fn run() {
                     }
                     "about" => {
                         let version = env!("CARGO_PKG_VERSION");
-                        let msg = format!("alert('BoltPage v{}\\nA fast Markdown viewer and editor')", version);
+                        let msg = format!(
+                            "alert('BoltPage v{}\\nA fast Markdown viewer and editor')",
+                            version
+                        );
                         if let Some(window) = app.get_webview_window("main") {
                             let _ = window.eval(&msg);
                         } else {
@@ -978,7 +1111,8 @@ pub fn run() {
                     let (lw, lh) = convert_to_logical(&app, size.width, size.height);
 
                     // Extract only the Arc<Mutex> we need (not a borrow)
-                    let resize_tasks_arc = app.try_state::<AppState>()
+                    let resize_tasks_arc = app
+                        .try_state::<AppState>()
                         .map(|state| state.inner().resize_tasks.clone());
 
                     if let Some(resize_tasks) = resize_tasks_arc {
@@ -997,7 +1131,8 @@ pub fn run() {
                                 sleep(Duration::from_millis(450)).await;
 
                                 // Save the size that was captured at spawn time
-                                let mut prefs = get_preferences(app_clone2.clone()).unwrap_or_default();
+                                let mut prefs =
+                                    get_preferences(app_clone2.clone()).unwrap_or_default();
                                 prefs.window_width = lw;
                                 prefs.window_height = lh;
                                 let _ = save_preferences(app_clone2, prefs);
@@ -1032,7 +1167,9 @@ pub fn run() {
                 tauri::async_runtime::spawn(async move {
                     for url in urls {
                         if let Some(path) = resolve_file_path(&url.to_string()) {
-                            if let Err(e) = create_window_with_file(&app_clone, Some(path.clone())).await {
+                            if let Err(e) =
+                                create_window_with_file(&app_clone, Some(path.clone())).await
+                            {
                                 eprintln!("Failed to open window for {:?}: {}", path, e);
                             }
                         }
