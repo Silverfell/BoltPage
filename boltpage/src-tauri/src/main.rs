@@ -5,7 +5,7 @@ use std::env;
 
 fn main() {
     let args: Vec<String> = env::args().collect();
-    
+
     // Handle help and version flags only if arguments are provided
     if args.len() > 1 {
         match args[1].as_str() {
@@ -31,7 +31,7 @@ fn main() {
             _ => {}
         }
     }
-    
+
     // Launch the Tauri application (with or without file argument)
     boltpage::run();
 }
