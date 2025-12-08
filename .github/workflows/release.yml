@@ -8,25 +8,27 @@ on:
 
 jobs:
   build-macos:
-    runs-on: macos-latest
-    
+    runs-on: macos-14
+
     steps:
     - name: Checkout repository
       uses: actions/checkout@v4
-      
+
     - name: Setup Node.js
       uses: actions/setup-node@v4
       with:
-        node-version: '18'
+        node-version: '20'
         cache: 'npm'
         cache-dependency-path: 'boltpage/package-lock.json'
-        
+
     - name: Setup Rust
       uses: dtolnay/rust-toolchain@stable
-        
+      with:
+        targets: aarch64-apple-darwin,x86_64-apple-darwin
+
     - name: Install Tauri CLI
       run: npm install -g @tauri-apps/cli
-      
+
     - name: Install dependencies
       run: |
         cd boltpage
@@ -70,7 +72,7 @@ PY
         # Verify certificate
         security find-identity -v -p codesigning build.keychain
         
-    - name: Build macOS app
+    - name: Build macOS app (ARM64)
       env:
         APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
         APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
@@ -78,27 +80,63 @@ PY
         APPLE_PASSWORD: ${{ secrets.APPLE_PASSWORD }}
       run: |
         cd boltpage
-        npx tauri build
+        npx tauri build --target aarch64-apple-darwin
+
+    - name: Build macOS app (x86_64)
+      env:
+        APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
+        APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+        APPLE_ID: ${{ secrets.APPLE_ID }}
+        APPLE_PASSWORD: ${{ secrets.APPLE_PASSWORD }}
+      run: |
+        cd boltpage
+        npx tauri build --target x86_64-apple-darwin
         
-    - name: Notarize macOS app
+    - name: Notarize macOS ARM64 app
       env:
         APPLE_ID: ${{ secrets.APPLE_ID }}
         APPLE_PASSWORD: ${{ secrets.APPLE_PASSWORD }}
         APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
       run: |
-        cd boltpage/src-tauri/target/release/bundle/dmg
-        xcrun notarytool submit BoltPage_*.dmg --apple-id "$APPLE_ID" --password "$APPLE_PASSWORD" --team-id "$APPLE_TEAM_ID" --wait
-        
+        cd boltpage/src-tauri/target/aarch64-apple-darwin/release/bundle/dmg
+        for dmg in BoltPage_*.dmg; do
+          xcrun notarytool submit "$dmg" --apple-id "$APPLE_ID" --password "$APPLE_PASSWORD" --team-id "$APPLE_TEAM_ID" --wait
+        done
+
+    - name: Notarize macOS x86_64 app
+      env:
+        APPLE_ID: ${{ secrets.APPLE_ID }}
+        APPLE_PASSWORD: ${{ secrets.APPLE_PASSWORD }}
+        APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+      run: |
+        cd boltpage/src-tauri/target/x86_64-apple-darwin/release/bundle/dmg
+        for dmg in BoltPage_*.dmg; do
+          xcrun notarytool submit "$dmg" --apple-id "$APPLE_ID" --password "$APPLE_PASSWORD" --team-id "$APPLE_TEAM_ID" --wait
+        done
+
     - name: Staple notarization
       run: |
-        cd boltpage/src-tauri/target/release/bundle/dmg
-        xcrun stapler staple BoltPage_*.dmg
-        
-    - name: Upload macOS artifacts
+        cd boltpage/src-tauri/target/aarch64-apple-darwin/release/bundle/dmg
+        for dmg in BoltPage_*.dmg; do
+          xcrun stapler staple "$dmg"
+        done
+        cd ../../../../../x86_64-apple-darwin/release/bundle/dmg
+        for dmg in BoltPage_*.dmg; do
+          xcrun stapler staple "$dmg"
+        done
+
+    - name: Upload macOS ARM64 artifacts
       uses: actions/upload-artifact@v4
       with:
-        name: macos-build
-        path: boltpage/src-tauri/target/release/bundle/dmg/
+        name: macos-arm64-build
+        path: boltpage/src-tauri/target/aarch64-apple-darwin/release/bundle/dmg/
+        retention-days: 30
+
+    - name: Upload macOS x86_64 artifacts
+      uses: actions/upload-artifact@v4
+      with:
+        name: macos-x64-build
+        path: boltpage/src-tauri/target/x86_64-apple-darwin/release/bundle/dmg/
         retention-days: 30
         
     - name: Clean up keychain
@@ -116,10 +154,10 @@ PY
     - name: Setup Node.js
       uses: actions/setup-node@v4
       with:
-        node-version: '18'
+        node-version: '20'
         cache: 'npm'
         cache-dependency-path: 'boltpage/package-lock.json'
-        
+
     - name: Setup Rust
       uses: dtolnay/rust-toolchain@stable
       with:
@@ -171,23 +209,29 @@ PY
     needs: [build-macos, build-windows]
     runs-on: ubuntu-latest
     if: startsWith(github.ref, 'refs/tags/')
-    
+
     steps:
     - name: Checkout repository
       uses: actions/checkout@v4
-      
-    - name: Download macOS artifacts
+
+    - name: Download macOS ARM64 artifacts
       uses: actions/download-artifact@v4
       with:
-        name: macos-build
-        path: ./macos-build
-        
+        name: macos-arm64-build
+        path: ./macos-arm64-build
+
+    - name: Download macOS x86_64 artifacts
+      uses: actions/download-artifact@v4
+      with:
+        name: macos-x64-build
+        path: ./macos-x64-build
+
     - name: Download Windows artifacts
       uses: actions/download-artifact@v4
       with:
         name: windows-build
         path: ./windows-build
-        
+
     - name: Create Release
       uses: softprops/action-gh-release@v1
       with:
@@ -195,15 +239,17 @@ PY
         name: BoltPage ${{ github.ref_name }}
         body: |
           ## BoltPage ${{ github.ref_name }}
-          
+
           ### Downloads
-          - **macOS**: Download the `.dmg` file below
+          - **macOS (Apple Silicon)**: Download the `*_aarch64.dmg` file below
+          - **macOS (Intel)**: Download the `*_x64.dmg` file below
           - **Windows**: Download the `.exe` installer below
-          
+
           ### Changes
           See the commit history for detailed changes.
         files: |
-          ./macos-build/*.dmg
+          ./macos-arm64-build/*.dmg
+          ./macos-x64-build/*.dmg
           ./windows-build/nsis/*.exe
         draft: false
         prerelease: false
