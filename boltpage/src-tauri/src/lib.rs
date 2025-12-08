@@ -291,6 +291,9 @@ impl Default for FileWatchers {
     }
 }
 
+/// Type alias for resize task map to reduce complexity
+type ResizeTaskMap = HashMap<String, (tauri::async_runtime::JoinHandle<()>, u32, u32)>;
+
 /// Application state with optimized concurrency patterns
 ///
 /// Uses RwLock for read-heavy operations (open_windows, html_cache)
@@ -302,7 +305,7 @@ struct AppState {
 
     /// Debounced resize tasks per window label
     /// Writes on every resize event, so Mutex is appropriate
-    resize_tasks: Arc<Mutex<HashMap<String, (tauri::async_runtime::JoinHandle<()>, u32, u32)>>>,
+    resize_tasks: Arc<Mutex<ResizeTaskMap>>,
 
     /// HTML render cache: (path, size, mtime_secs, theme) -> HTML
     /// Read-heavy workload with LRU eviction
@@ -425,7 +428,7 @@ async fn start_file_watcher(
         let file_key = file_path.clone();
         let handle = tauri::async_runtime::spawn(async move {
             let mut pending_task: Option<tauri::async_runtime::JoinHandle<()>> = None;
-            while let Some(_) = rx.recv().await {
+            while rx.recv().await.is_some() {
                 // Reset debounce timer
                 if let Some(h) = pending_task.take() {
                     h.abort();
@@ -822,10 +825,10 @@ async fn open_editor_window(
         WebviewWindowBuilder::new(&app, &editor_label, WebviewUrl::App("editor.html".into()))
             .title(format!(
                 "BoltPage Editor - {}",
-                file_path.split('/').last().unwrap_or("Untitled")
+                file_path.split('/').next_back().unwrap_or("Untitled")
             ))
             .inner_size(800.0, 600.0)
-            .initialization_script(&format!(
+            .initialization_script(format!(
                 "window.__INITIAL_FILE_PATH__ = {}; window.__PREVIEW_WINDOW__ = {};",
                 serde_json::to_string(&file_path).unwrap(),
                 serde_json::to_string(&preview_window).unwrap()
@@ -1007,7 +1010,7 @@ pub fn run() {
             app.manage(FileWatchers::default());
 
             // Set up the initial menu (dynamic Window submenu)
-            rebuild_app_menu(&app.handle())?;
+            rebuild_app_menu(app.handle())?;
 
             // Handle menu events
             app.on_menu_event(|app, event| {
@@ -1072,9 +1075,8 @@ pub fn run() {
                         if let Some(window) = app.get_webview_window("main") {
                             let _ = window.eval(&msg);
                         } else {
-                            for (_, window) in app.webview_windows() {
+                            if let Some((_, window)) = app.webview_windows().into_iter().next() {
                                 let _ = window.eval(&msg);
-                                break;
                             }
                         }
                     }
@@ -1089,7 +1091,7 @@ pub fn run() {
             {
                 if file_path.is_some() {
                     // Explicit CLI argument (e.g., from terminal) - create window
-                    tauri::async_runtime::block_on(open_markdown_window(&app.handle(), file_path))?;
+                    tauri::async_runtime::block_on(open_markdown_window(app.handle(), file_path))?;
                 }
                 // Otherwise, wait for Opened event or user menu action (don't create empty window)
             }
