@@ -48,27 +48,18 @@ jobs:
         security default-keychain -s build.keychain
         security unlock-keychain -p "$APPLE_CERTIFICATE_PASSWORD" build.keychain
         security set-keychain-settings -t 3600 -u build.keychain
-        
-        # Import certificate (robust base64 decode to avoid newline/whitespace issues)
-        python - <<'PY'
-import base64, os, sys
-data = os.environ.get("APPLE_CERTIFICATE", "").strip()
-if not data:
-    sys.exit("APPLE_CERTIFICATE is empty or missing")
-try:
-    decoded = base64.b64decode(data)
-except Exception as e:
-    sys.exit(f"Failed to base64 decode APPLE_CERTIFICATE: {e}")
-with open("certificate.p12", "wb") as f:
-    f.write(decoded)
-if os.path.getsize("certificate.p12") == 0:
-    sys.exit("Decoded certificate is empty")
-PY
+
+        # Import certificate (decode base64)
+        echo "$APPLE_CERTIFICATE" | base64 --decode > certificate.p12
+        if [ ! -s certificate.p12 ]; then
+          echo "Error: Decoded certificate is empty"
+          exit 1
+        fi
         security import certificate.p12 -k build.keychain -P "$APPLE_CERTIFICATE_PASSWORD" -T /usr/bin/codesign
-        
+
         # Set partition list
         security set-key-partition-list -S apple-tool:,apple: -s -k "$APPLE_CERTIFICATE_PASSWORD" build.keychain
-        
+
         # Verify certificate
         security find-identity -v -p codesigning build.keychain
         
