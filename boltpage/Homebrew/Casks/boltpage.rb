@@ -1,5 +1,5 @@
 cask "boltpage" do
-  version "1.6.0"
+  version "1.6.2"
   sha256 :no_check # Replace with exact checksums per-arch below when URLs are final
 
   name "BoltPage"
