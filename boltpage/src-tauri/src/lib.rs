@@ -950,7 +950,22 @@ pub fn run() {
             });
 
             // Create initial window (CLI args or empty)
-            tauri::async_runtime::block_on(open_markdown_window(&app.handle(), file_path))?;
+            // On macOS, skip creating an empty window if no CLI args were provided,
+            // because double-clicking a file sends an Opened event instead of CLI args
+            #[cfg(target_os = "macos")]
+            {
+                if file_path.is_some() {
+                    // Explicit CLI argument (e.g., from terminal) - create window
+                    tauri::async_runtime::block_on(open_markdown_window(&app.handle(), file_path))?;
+                }
+                // Otherwise, wait for Opened event or user menu action (don't create empty window)
+            }
+
+            #[cfg(not(target_os = "macos"))]
+            {
+                // On other platforms, always create initial window
+                tauri::async_runtime::block_on(open_markdown_window(&app.handle(), file_path))?;
+            }
 
             Ok(())
         })
