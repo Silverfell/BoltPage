@@ -163,12 +163,16 @@ jobs:
         npm install
         
     - name: Setup Windows code signing
-      if: ${{ secrets.WINDOWS_CERTIFICATE != '' }}
       env:
         WINDOWS_CERTIFICATE: ${{ secrets.WINDOWS_CERTIFICATE }}
         WINDOWS_CERTIFICATE_PASSWORD: ${{ secrets.WINDOWS_CERTIFICATE_PASSWORD }}
       shell: pwsh
       run: |
+        if ([string]::IsNullOrEmpty($Env:WINDOWS_CERTIFICATE)) {
+          Write-Host "::warning::WINDOWS_CERTIFICATE not configured - Windows build will not be code signed"
+          Write-Host "Users may see 'unknown publisher' warnings when installing the app"
+          exit 0
+        }
         Write-Host "Setting up Windows code signing..."
         try {
           [IO.File]::WriteAllBytes("certificate.pfx", [Convert]::FromBase64String($Env:WINDOWS_CERTIFICATE))
@@ -182,13 +186,6 @@ jobs:
         }
         certutil -user -p "$Env:WINDOWS_CERTIFICATE_PASSWORD" -importPFX certificate.pfx
         Write-Host "Windows code signing certificate installed successfully"
-
-    - name: Skip Windows code signing (no certificate)
-      if: ${{ secrets.WINDOWS_CERTIFICATE == '' }}
-      shell: pwsh
-      run: |
-        Write-Host "::warning::WINDOWS_CERTIFICATE not configured - Windows build will not be code signed"
-        Write-Host "Users may see 'unknown publisher' warnings when installing the app"
         
     - name: Build Windows app
       run: |
