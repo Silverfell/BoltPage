@@ -1074,10 +1074,8 @@ pub fn run() {
                         );
                         if let Some(window) = app.get_webview_window("main") {
                             let _ = window.eval(&msg);
-                        } else {
-                            if let Some((_, window)) = app.webview_windows().into_iter().next() {
-                                let _ = window.eval(&msg);
-                            }
+                        } else if let Some((_, window)) = app.webview_windows().into_iter().next() {
+                            let _ = window.eval(&msg);
                         }
                     }
                     _ => {}
@@ -1099,7 +1097,7 @@ pub fn run() {
             #[cfg(not(target_os = "macos"))]
             {
                 // On other platforms, always create initial window
-                tauri::async_runtime::block_on(open_markdown_window(&app.handle(), file_path))?;
+                tauri::async_runtime::block_on(open_markdown_window(app.handle(), file_path))?;
             }
 
             Ok(())
