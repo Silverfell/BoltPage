@@ -2,7 +2,7 @@
 
 A fast, lightweight Markdown viewer and editor built with Rust and Tauri. BoltPage supports GitHub-flavored Markdown with syntax highlighting, multiple themes, and a multi-window interface.
 
-![BoltPage Screenshot](boltpage_icon.png)
+![BoltPage Screenshot](BoltPage_screenshot.png)
 
 ## Foreword
 
