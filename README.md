@@ -28,19 +28,19 @@ BoldPage works, very well, for my use case. It's fast, lightweight, and does eve
 ### macOS
 
 #### Direct Download
-Download the latest `.dmg` file from the [Releases](https://github.com/YOUR_USERNAME/BoltPage/releases) page.
+Download the latest `.dmg` file from the [Releases](https://github.com/Silverfell/BoltPage/releases) page.
 
 ### Windows
 
 Windows builds are currently not signed. Will have to fix that if more than three of us use this.
 
-Download the latest `.exe` installer from the [Releases](https://github.com/YOUR_USERNAME/BoltPage/releases) page.
+Download the latest `.exe` installer from the [Releases](https://github.com/Silverfell/BoltPage/releases) page.
 
 ### Linux
 
 Completely untested and unverified, but it's there.
 
-Download the latest `.AppImage` or `.deb` package from the [Releases](https://github.com/YOUR_USERNAME/BoltPage/releases) page.
+Download the latest `.AppImage` or `.deb` package from the [Releases](https://github.com/Silverfell/BoltPage/releases) page.
 
 ## Building from Source
 
@@ -57,7 +57,7 @@ Download the latest `.AppImage` or `.deb` package from the [Releases](https://gi
 
 ```bash
 # Clone the repository
-git clone https://github.com/YOUR_USERNAME/BoltPage.git
+git clone https://github.com/Silverfell/BoltPage.git
 cd BoltPage/boltpage
 
 # Install dependencies

@@ -60,7 +60,7 @@
     "longDescription": "BoltPage is a fast, lightweight Markdown viewer and editor built with Rust and Tauri. It supports GitHub-flavored Markdown with syntax highlighting and multiple themes.",
     "copyright": "Copyright © 2025 BoltPage Contributors",
     "license": "MIT",
-    "homepage": "https://github.com/YOUR_USERNAME/BoltPage",
+    "homepage": "https://github.com/Silverfell/BoltPage",
     "resources": [],
     "externalBin": [],
     "macOS": {
