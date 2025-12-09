@@ -4,35 +4,41 @@ A fast, lightweight Markdown viewer and editor built with Rust and Tauri. BoltPa
 
 ![BoltPage Screenshot](boltpage_icon.png)
 
+## Foreword
+
+This project is aggressively vibe-coded. Not blind-coded, not one-shotted, not made in one day. I did want to build an app entirely programmed by AI, however, and I needed a Markdown file viewer and quick editor that fit my needs.
+
+So, BoltPage was born. It's built on Rust for speed, and implements Tauri because I am not going to supervise the creation of an entire file viewer as a test project.
+
+BoldPage works, very well, for my use case. It's fast, lightweight, and does everything I need it to. I hope you can find some use in it too.
+
 ## Features
 
 - **Fast Markdown Rendering**: Built with Rust for maximum performance
 - **Multi-Window Support**: Open multiple files in separate windows, each with independent preferences
-- **Syntax Highlighting**: Beautiful code block highlighting with multiple themes
+- **Syntax Highlighting**: Beautiful code block highlighting that doesn't look like a dot matrix printer made it
 - **GitHub-Flavored Markdown**: Full support for GFM including tables, task lists, and more
-- **Multiple File Formats**: View and edit Markdown (.md), JSON, YAML, TXT, and PDF files
+- **Multiple File Formats**: View and edit Markdown (.md), view-only JSON, YAML, TXT, and PDF files
 - **Live Preview**: See changes in real-time as you edit
 - **File Watching**: Automatic detection of external file changes
 - **Cross-Platform**: Available for macOS, Windows, and Linux
-- **Theme Support**: Multiple built-in themes for comfortable viewing
 
 ## Installation
 
 ### macOS
-
-#### Homebrew (Coming Soon)
-```bash
-brew install --cask boltpage
-```
 
 #### Direct Download
 Download the latest `.dmg` file from the [Releases](https://github.com/YOUR_USERNAME/BoltPage/releases) page.
 
 ### Windows
 
+Windows builds are currently not signed. Will have to fix that if more than three of us use this.
+
 Download the latest `.exe` installer from the [Releases](https://github.com/YOUR_USERNAME/BoltPage/releases) page.
 
 ### Linux
+
+Completely untested and unverified, but it's there.
 
 Download the latest `.AppImage` or `.deb` package from the [Releases](https://github.com/YOUR_USERNAME/BoltPage/releases) page.
 
@@ -93,11 +99,6 @@ For distributing signed applications:
 
 The `.env` file is gitignored and will never be committed. See `.env.example` for all required variables.
 
-For detailed build instructions, see:
-- [Setup Guide](boltpage/setup_readme.md)
-- [Packaging Guide](boltpage/PACKAGING.md)
-- [Strict Build Instructions](boltpage/STRICT_BUILD_INSTRUCTIONS.md)
-
 ## Usage
 
 ### Opening Files
@@ -136,33 +137,9 @@ See [CI/CD Documentation](docs/release_CI.md) for complete details on:
 - Local testing procedures
 - Troubleshooting guide
 
-### Project Structure
-
-```
-BoltPage/
-├── boltpage/              # Main Tauri application
-│   ├── src/              # Frontend assets (HTML, CSS, JavaScript)
-│   ├── src-tauri/        # Rust backend
-│   ├── markrust-core/    # Markdown processing library
-│   └── Homebrew/         # Homebrew cask definition
-├── astrojs_website/      # Landing page website
-└── docs/                 # Additional documentation
-```
-
 ## Contributing
 
 Contributions are welcome! Please feel free to submit a Pull Request. For major changes, please open an issue first to discuss what you would like to change.
-
-### Guidelines
-
-- Follow the existing code style
-- Add tests for new features
-- Update documentation as needed
-- Ensure all tests pass before submitting PR
-
-## Security
-
-If you discover a security vulnerability, please send an email to [SECURITY_EMAIL_HERE] instead of using the issue tracker.
 
 ### Important Security Notes
 
@@ -179,13 +156,3 @@ This project is licensed under the MIT License - see the [LICENSE](LICENSE) file
 - Built with [Tauri](https://tauri.app/)
 - Markdown parsing by [pulldown-cmark](https://github.com/raphlinus/pulldown-cmark)
 - Syntax highlighting by [syntect](https://github.com/trishume/syntect)
-
-## Support
-
-- 📖 [Documentation](https://github.com/YOUR_USERNAME/BoltPage/wiki)
-- 🐛 [Issue Tracker](https://github.com/YOUR_USERNAME/BoltPage/issues)
-- 💬 [Discussions](https://github.com/YOUR_USERNAME/BoltPage/discussions)
-
----
-
-Made with ⚡ by the BoltPage community
