@@ -61,5 +61,9 @@
 	<!-- Photos Access (disabled as not needed) -->
 	<key>com.apple.security.personal-information.photos-library</key>
 	<false/>
+
+	<!-- AppleScript/Automation Access (needed for CLI setup via osascript) -->
+	<key>com.apple.security.automation.apple-events</key>
+	<true/>
 </dict>
 </plist>

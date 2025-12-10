@@ -1,5 +1,13 @@
 # Changes
 
+2025-12-10: Fix CLI setup dialog blocking (removed alert, use console.log instead)
+2025-12-10: Fix terminal lock when launching from CLI (use shell script wrapper with 'open' command on macOS)
+2025-12-10: Add AppleScript automation entitlement to prevent JavaScript permission dialog on CLI setup
+2025-12-10: Add automatic CLI setup on first run with platform-specific installation (macOS shell script, Windows PATH)
+2025-12-10: Add Homebrew cask binary stanza for automatic CLI access via brew install
+2025-12-10: Remove unused save_window_size command (window resize now handled directly in Rust event system)
+2025-12-10: Fix version mismatch (aligned package.json to 1.6.2)
+2025-12-10: Update BRIEFING.md with PDF support, find functionality, scroll sync parameters, and CLI file creation details
 2025-11-23: Allow CLI invocation with a new file path to auto-create and open the file
 2025-11-23: Add File -> New menu to create empty markdown files immediately and open them; bump version to 1.6.1
 2025-11-23: Harden release workflow certificate decoding/import for macOS and Windows

@@ -1,5 +1,5 @@
 cask "boltpage" do
-  version "1.6.2"
+  version "1.6.4"
   sha256 :no_check # Replace with exact checksums per-arch below when URLs are final
 
   name "BoltPage"
@@ -21,6 +21,8 @@ cask "boltpage" do
   depends_on macos: ">= :catalina"
 
   app "BoltPage.app"
+
+  binary "#{appdir}/BoltPage.app/Contents/MacOS/BoltPage", target: "boltpage"
 
   # If you host releases on GitHub, uncomment this livecheck
   # livecheck do

@@ -6,11 +6,17 @@ A fast, lightweight Markdown viewer and editor built with Rust and Tauri. BoltPa
 
 ## Foreword
 
-This project is aggressively vibe-coded. Not blind-coded, not one-shotted, not made in one day. I did want to build an app entirely programmed by AI, however, and I needed a Markdown file viewer and quick editor that fit my needs.
+This project is aggressively vibe-coded. Not blind-coded, not one-shotted, not made in one day. Most of this code was reviewed and manually approved. It does what it's supposed to. However, I did want to build an app entirely programmed by AI, and I needed a Markdown file viewer and quick editor that fit my needs.
 
 So, BoltPage was born. It's built on Rust for speed, and implements Tauri because I am not going to supervise the creation of an entire file viewer as a test project.
 
 BoldPage works, very well, for my use case. It's fast, lightweight, and does everything I need it to. I hope you can find some use in it too.
+
+## AI Coding Agent notes
+
+The project contains ai_truthfulness.md and ai_software.md. These are the actual prompts I feed to the coding agents. You will notice they are not your typical corporate speak prompts you see floating around the internet. That's because they were not written to impress you with how good I am at AI.
+
+They were written to work, and they are battle-tested across several projects. BoltPage is simply the one I chose to share with you. Feel free to adjust and reuse, these are the real point of this distribution.
 
 ## Features
 
@@ -99,21 +105,6 @@ For distributing signed applications:
 
 The `.env` file is gitignored and will never be committed. See `.env.example` for all required variables.
 
-## Usage
-
-### Opening Files
-
-- **Double-click** any supported file type (`.md`, `.markdown`, `.json`, `.yaml`, `.txt`, `.pdf`)
-- **Drag and drop** files onto the BoltPage window
-- **File → Open** from the menu
-
-### Keyboard Shortcuts
-
-- `Cmd/Ctrl + N`: New file
-- `Cmd/Ctrl + O`: Open file
-- `Cmd/Ctrl + S`: Save file
-- `Cmd/Ctrl + E`: Toggle edit mode
-- `Cmd/Ctrl + W`: Close window
 
 ## Development
 

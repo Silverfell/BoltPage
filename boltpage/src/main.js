@@ -555,10 +555,40 @@ async function stopFileWatcher() {
 
 // Window size persistence handled in Rust with debounce.
 
+async function checkAndPromptCliSetup() {
+    try {
+        const needed = await invoke('check_cli_setup_needed');
+        if (!needed) return;
+
+        // Show dialog asking if user wants to set up CLI access
+        const message = 'Would you like to enable command-line access for BoltPage?\n\n' +
+                       'This will allow you to open files directly from your terminal:\n' +
+                       '  boltpage myfile.md\n\n' +
+                       'You can set this up later from the Help menu.';
+
+        if (confirm(message)) {
+            try {
+                const result = await invoke('setup_cli_access');
+                console.log('CLI setup:', result);
+                await invoke('mark_cli_setup_prompted');
+            } catch (err) {
+                if (!err.includes('cancelled')) {
+                    console.error('CLI setup failed:', err);
+                }
+                await invoke('mark_cli_setup_prompted');
+            }
+        } else {
+            await invoke('mark_cli_setup_prompted');
+        }
+    } catch (err) {
+        console.error('Failed to check CLI setup:', err);
+    }
+}
+
 // Initialize app
 window.addEventListener('DOMContentLoaded', async () => {
   try {
-        
+
         setupEventListeners();
         attachLinkInterceptor();
         await loadPreferences();
@@ -567,6 +597,9 @@ window.addEventListener('DOMContentLoaded', async () => {
         // Cache content wrapper and attach scroll sync listener
         contentEl = document.querySelector('.content-wrapper');
         attachPreviewScrollSync();
+
+        // Check if we should prompt for CLI setup (first run)
+        setTimeout(() => checkAndPromptCliSetup(), 2000);
     
         // Listen for file change events
         await listen('file-changed', () => {

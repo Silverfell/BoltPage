@@ -1,7 +1,7 @@
 # BoltPage Project Briefing
 
 ## Overview
-BoltPage is a fast Markdown viewer and editor built with Rust and Tauri. It renders Markdown, JSON, YAML, and plain text files with syntax highlighting and multiple themes.
+BoltPage is a fast Markdown viewer and editor built with Rust and Tauri. It renders Markdown, JSON, YAML, plain text, and PDF files with syntax highlighting and multiple themes.
 
 ## Architecture
 - **Frontend**: HTML/JS/CSS loaded via Tauri webview
@@ -16,6 +16,14 @@ BoltPage is a fast Markdown viewer and editor built with Rust and Tauri. It rend
 - **HTML Cache**: LRU cache (50 entries) keyed by (path, size, mtime, theme) for fast re-renders
 - **Window Management**: Dynamic native menus, multi-window support, automatic deduplication of file windows
 - **Preferences**: Persistent storage via tauri-plugin-store for theme, window size, font preferences
+- **Find Functionality**: In-page search with keyboard shortcuts (Ctrl+F) in both preview and editor windows
+- **Scroll Sync**: Bidirectional scroll synchronization between editor and preview windows with debouncing (50ms) and delta thresholds (0.5 lines, 1% for markdown)
+- **PDF Viewing**: Read-only PDF display via blob URLs with proper cleanup
+
+## CLI Usage
+- Launch with file path: `boltpage file.md`
+- Auto-creates files: If the specified file does not exist, BoltPage creates an empty file at that path
+- Supports URLs and relative/absolute paths via `resolve_file_path`
 
 ## Build Requirements
 - Rust toolchain (2021 edition)

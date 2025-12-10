@@ -330,6 +330,7 @@ struct AppPreferences {
     font_size: Option<u16>,
     word_wrap: Option<bool>,
     show_line_numbers: Option<bool>,
+    cli_setup_prompted: Option<bool>,
 }
 
 impl Default for AppPreferences {
@@ -341,6 +342,7 @@ impl Default for AppPreferences {
             font_size: None,
             word_wrap: None,
             show_line_numbers: None,
+            cli_setup_prompted: None,
         }
     }
 }
@@ -522,17 +524,6 @@ fn show_window(app: AppHandle, window_label: String) -> Result<(), String> {
             .show()
             .map_err(|e| format!("Failed to show window: {}", e))?;
     }
-    Ok(())
-}
-
-// save_window_size kept for compatibility but now unused on the JS side.
-#[tauri::command]
-fn save_window_size(app: AppHandle, width: u32, height: u32) -> Result<(), String> {
-    let (lw, lh) = convert_to_logical(&app, width, height);
-    let mut prefs = get_preferences(app.clone()).unwrap_or_default();
-    prefs.window_width = lw;
-    prefs.window_height = lh;
-    save_preferences(app, prefs)?;
     Ok(())
 }
 
@@ -934,6 +925,125 @@ fn focus_window(app: AppHandle, window_label: String) -> Result<(), String> {
     }
 }
 
+#[tauri::command]
+fn check_cli_setup_needed(app: AppHandle) -> Result<bool, String> {
+    let prefs = get_preferences(app)?;
+    Ok(!prefs.cli_setup_prompted.unwrap_or(false))
+}
+
+#[tauri::command]
+fn mark_cli_setup_prompted(app: AppHandle) -> Result<(), String> {
+    let mut prefs = get_preferences(app.clone())?;
+    prefs.cli_setup_prompted = Some(true);
+    save_preferences(app, prefs)?;
+    Ok(())
+}
+
+#[cfg(target_os = "macos")]
+#[tauri::command]
+async fn setup_cli_access() -> Result<String, String> {
+    use std::process::Command;
+
+    let script_path = "/usr/local/bin/boltpage";
+
+    // Check if script already exists
+    if PathBuf::from(script_path).exists() {
+        return Ok("CLI access already configured".to_string());
+    }
+
+    // Create a shell script wrapper that uses 'open' command to properly launch the app
+    // This ensures the terminal doesn't lock when launching from CLI
+    let script_content = r#"#!/bin/bash
+# BoltPage CLI wrapper - launches app via macOS 'open' command to prevent terminal lock
+if [ $# -eq 0 ]; then
+    open -a BoltPage
+else
+    open -a BoltPage --args "$@"
+fi
+"#;
+
+    // Escape single quotes in the script content for the shell command
+    let escaped_content = script_content.replace("'", "'\\''");
+
+    // Create the script using osascript to get admin privileges
+    let script = format!(
+        r#"do shell script "mkdir -p /usr/local/bin && printf '%s' '{}' > '{}' && chmod +x '{}'" with administrator privileges"#,
+        escaped_content,
+        script_path,
+        script_path
+    );
+
+    let output = Command::new("osascript")
+        .arg("-e")
+        .arg(&script)
+        .output()
+        .map_err(|e| format!("Failed to execute osascript: {}", e))?;
+
+    if output.status.success() {
+        Ok("CLI access configured successfully. You can now use 'boltpage' from the terminal.".to_string())
+    } else {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        if stderr.contains("User canceled") {
+            Err("Setup cancelled by user".to_string())
+        } else {
+            Err(format!("Failed to create CLI script: {}", stderr))
+        }
+    }
+}
+
+#[cfg(target_os = "windows")]
+#[tauri::command]
+async fn setup_cli_access() -> Result<String, String> {
+    use std::process::Command;
+    use winreg::enums::*;
+    use winreg::RegKey;
+
+    // Get the directory containing the executable
+    let exe_path = std::env::current_exe()
+        .map_err(|e| format!("Failed to get executable path: {}", e))?;
+    let exe_dir = exe_path.parent()
+        .ok_or_else(|| "Failed to get executable directory".to_string())?;
+
+    // Add to user PATH
+    let hkcu = RegKey::predef(HKEY_CURRENT_USER);
+    let env = hkcu.open_subkey_with_flags("Environment", KEY_READ | KEY_WRITE)
+        .map_err(|e| format!("Failed to open registry key: {}", e))?;
+
+    let current_path: String = env.get_value("Path")
+        .unwrap_or_else(|_| String::new());
+
+    let exe_dir_str = exe_dir.to_string_lossy().to_string();
+
+    // Check if already in PATH
+    if current_path.split(';').any(|p| p.trim() == exe_dir_str) {
+        return Ok("CLI access already configured".to_string());
+    }
+
+    // Append to PATH
+    let new_path = if current_path.is_empty() {
+        exe_dir_str
+    } else {
+        format!("{};{}", current_path, exe_dir_str)
+    };
+
+    env.set_value("Path", &new_path)
+        .map_err(|e| format!("Failed to update PATH: {}", e))?;
+
+    // Broadcast environment change
+    let _ = Command::new("setx")
+        .arg("PATH")
+        .arg(&new_path)
+        .output();
+
+    Ok("CLI access configured successfully. You may need to restart your terminal.".to_string())
+}
+
+#[cfg(not(any(target_os = "macos", target_os = "windows")))]
+#[tauri::command]
+async fn setup_cli_access() -> Result<String, String> {
+    Err("CLI setup is not supported on this platform".to_string())
+}
+
 async fn open_markdown_window(app: &AppHandle, file_path: Option<String>) -> Result<(), String> {
     let resolved_path = file_path.and_then(|p| resolve_file_path(&p));
     create_window_with_file(app, resolved_path)
@@ -996,14 +1106,16 @@ pub fn run() {
             broadcast_theme_change,
             broadcast_scroll_link,
             show_window,
-            save_window_size,
             create_new_window_command,
             remove_window_from_tracking,
             get_file_path_from_window_label,
             get_all_windows,
             focus_window,
             get_syntax_css,
-            render_file_to_html
+            render_file_to_html,
+            check_cli_setup_needed,
+            mark_cli_setup_prompted,
+            setup_cli_access
         ])
         .setup(move |app| {
             // Initialize file watchers state only (app state already managed)

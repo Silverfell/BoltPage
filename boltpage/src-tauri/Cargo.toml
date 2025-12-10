@@ -1,6 +1,6 @@
 [package]
 name = "boltpage"
-version = "1.6.2"
+version = "1.6.4"
 description = "A Tauri App"
 authors = ["BoltPage Contributors"]
 edition = "2021"
@@ -35,3 +35,6 @@ tokio = { version = "1", features = ["sync", "time"] }
 base64 = "0.22"
 url = "2.5"
 lru = "0.12"
+
+[target.'cfg(windows)'.dependencies]
+winreg = "0.52"
