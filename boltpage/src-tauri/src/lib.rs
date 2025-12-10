@@ -257,10 +257,8 @@ fn rebuild_app_menu(app: &AppHandle) -> tauri::Result<()> {
 
     #[cfg(any(target_os = "macos", target_os = "windows"))]
     {
-        help_menu_builder = help_menu_builder.item(
-            &MenuItemBuilder::with_id("setup-cli", "Setup CLI Access...")
-                .build(app)?
-        );
+        help_menu_builder = help_menu_builder
+            .item(&MenuItemBuilder::with_id("setup-cli", "Setup CLI Access...").build(app)?);
     }
 
     let help_menu = help_menu_builder
@@ -1221,13 +1219,17 @@ pub fn run() {
                                 match setup_cli_access().await {
                                     Ok(msg) => {
                                         let alert = format!("alert('{msg}')");
-                                        if let Some((_, window)) = app_clone.webview_windows().into_iter().next() {
+                                        if let Some((_, window)) =
+                                            app_clone.webview_windows().into_iter().next()
+                                        {
                                             let _ = window.eval(&alert);
                                         }
                                     }
                                     Err(err) => {
                                         let alert = format!("alert('CLI setup failed: {err}')");
-                                        if let Some((_, window)) = app_clone.webview_windows().into_iter().next() {
+                                        if let Some((_, window)) =
+                                            app_clone.webview_windows().into_iter().next()
+                                        {
                                             let _ = window.eval(&alert);
                                         }
                                     }

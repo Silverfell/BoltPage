@@ -1,5 +1,6 @@
 # Changes
 
+2025-12-10: Fix code formatting issues (cargo fmt) for CI/CD pipeline
 2025-12-10: Remove "system" theme option and set "drac" as the default theme
 2025-12-10: Add "Setup CLI Access..." menu item to Help menu for manual CLI configuration
 2025-12-10: Fix clippy linting warnings: convert all format! strings to use inline format variables (e.g., format!("{x}") instead of format!("{}", x))
