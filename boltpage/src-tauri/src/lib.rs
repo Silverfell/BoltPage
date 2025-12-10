@@ -253,6 +253,7 @@ fn rebuild_app_menu(app: &AppHandle) -> tauri::Result<()> {
     let window_menu = window_menu_builder.build()?;
 
     // Help menu
+    #[allow(unused_mut)]
     let mut help_menu_builder = SubmenuBuilder::new(app, "Help");
 
     #[cfg(any(target_os = "macos", target_os = "windows"))]
