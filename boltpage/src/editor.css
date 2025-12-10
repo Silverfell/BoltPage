@@ -37,18 +37,6 @@
   --button-hover-bg: #44475a;
 }
 
-/* System preference detection */
-@media (prefers-color-scheme: dark) {
-  [data-theme="system"] {
-    --bg-color: #0d1117;
-    --text-color: #c9d1d9;
-    --border-color: #30363d;
-    --toolbar-bg: #161b22;
-    --toolbar-border: #30363d;
-    --button-hover-bg: #30363d;
-  }
-}
-
 * {
   box-sizing: border-box;
 }

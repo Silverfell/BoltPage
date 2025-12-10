@@ -6,7 +6,7 @@ const appWindow = getCurrentWindow();
 
 let currentFilePath = null;
 let fileWatcher = null;
-let currentTheme = 'system';
+let currentTheme = 'drac';
 let currentKind = 'markdown'; // 'json' | 'markdown' | 'txt' | 'pdf'
 let currentPdfUrl = null;
 let isProgrammaticScroll = false;
@@ -47,7 +47,7 @@ async function loadPreferences() {
         applyTheme(prefs.theme);
     } catch (err) {
         console.error('Failed to load preferences:', err);
-        applyTheme('system');
+        applyTheme('drac');
     }
 }
 

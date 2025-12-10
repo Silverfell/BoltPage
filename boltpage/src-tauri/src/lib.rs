@@ -346,7 +346,7 @@ struct AppPreferences {
 impl Default for AppPreferences {
     fn default() -> Self {
         Self {
-            theme: "system".to_string(),
+            theme: "drac".to_string(),
             window_width: 900,  // Page-like width for reading
             window_height: 800, // Taller default height
             font_size: None,

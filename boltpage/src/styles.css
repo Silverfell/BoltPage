@@ -82,25 +82,6 @@
   --json-punct: #6e7390;
 }
 
-/* System preference detection */
-@media (prefers-color-scheme: dark) {
-  [data-theme="system"] {
-    --bg-color: #0d1117;
-    --text-color: #c9d1d9;
-    --border-color: #30363d;
-    --code-bg: #161b22;
-    --blockquote-color: #8b949e;
-    --link-color: #58a6ff;
-    --table-border: #30363d;
-    --table-alt-bg: #161b22;
-    --toolbar-bg: #161b22;
-    --toolbar-border: #30363d;
-    --button-hover-bg: #30363d;
-    --kbd-bg: #161b22;
-    --kbd-border: #30363d;
-  }
-}
-
 * {
   box-sizing: border-box;
 }
