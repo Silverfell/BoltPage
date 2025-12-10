@@ -58,13 +58,11 @@ pub fn parse_markdown_with_theme(content: &str, _theme_name: &str) -> String {
                         );
                         for line in code_block_content.lines() {
                             let _ = generator
-                                .parse_html_for_line_which_includes_newline(&format!("{}\n", line));
+                                .parse_html_for_line_which_includes_newline(&format!("{line}\n"));
                         }
                         let highlighted = generator.finalize();
                         let block = format!(
-                            "<div class=\"highlight\"><pre><code class=\"language-{}\">{}</code></pre></div>",
-                            code_block_lang,
-                            highlighted
+                            "<div class=\"highlight\"><pre><code class=\"language-{code_block_lang}\">{highlighted}</code></pre></div>"
                         );
                         events.push(Event::Html(CowStr::from(block)));
                     } else {
@@ -133,9 +131,9 @@ pub fn get_syntax_theme_css(theme_name: &str) -> Option<String> {
 
 pub fn parse_json_with_theme(content: &str, _theme_name: &str) -> Result<String, String> {
     let json_value: serde_json_crate::Value =
-        serde_json_crate::from_str(content).map_err(|e| format!("Invalid JSON: {}", e))?;
+        serde_json_crate::from_str(content).map_err(|e| format!("Invalid JSON: {e}"))?;
     let pretty = serde_json_crate::to_string_pretty(&json_value)
-        .map_err(|e| format!("Failed to pretty-print JSON: {}", e))?;
+        .map_err(|e| format!("Failed to pretty-print JSON: {e}"))?;
 
     let syntax_set = get_syntax_set();
     let syntax = syntax_set
@@ -147,23 +145,22 @@ pub fn parse_json_with_theme(content: &str, _theme_name: &str) -> Result<String,
         ClassedHTMLGenerator::new_with_class_style(syntax, syntax_set, ClassStyle::Spaced);
 
     for line in pretty.lines() {
-        let _ = generator.parse_html_for_line_which_includes_newline(&format!("{}\n", line));
+        let _ = generator.parse_html_for_line_which_includes_newline(&format!("{line}\n"));
     }
 
     let highlighted = generator.finalize();
     let html = format!(
-        "<div class=\"highlight\"><pre><code class=\"language-json\">{}</code></pre></div>",
-        highlighted
+        "<div class=\"highlight\"><pre><code class=\"language-json\">{highlighted}</code></pre></div>"
     );
     Ok(html)
 }
 
 pub fn parse_yaml_with_theme(content: &str, _theme_name: &str) -> Result<String, String> {
     let yaml_value: serde_yaml_crate::Value =
-        serde_yaml_crate::from_str(content).map_err(|e| format!("Invalid YAML: {}", e))?;
+        serde_yaml_crate::from_str(content).map_err(|e| format!("Invalid YAML: {e}"))?;
 
     let pretty = serde_yaml_crate::to_string(&yaml_value)
-        .map_err(|e| format!("Failed to pretty-print YAML: {}", e))?;
+        .map_err(|e| format!("Failed to pretty-print YAML: {e}"))?;
 
     let syntax_set = get_syntax_set();
     let syntax = syntax_set
@@ -176,13 +173,12 @@ pub fn parse_yaml_with_theme(content: &str, _theme_name: &str) -> Result<String,
         ClassedHTMLGenerator::new_with_class_style(syntax, syntax_set, ClassStyle::Spaced);
 
     for line in pretty.lines() {
-        let _ = generator.parse_html_for_line_which_includes_newline(&format!("{}\n", line));
+        let _ = generator.parse_html_for_line_which_includes_newline(&format!("{line}\n"));
     }
 
     let highlighted = generator.finalize();
     let html = format!(
-        "<div class=\"highlight\"><pre><code class=\"language-yaml\">{}</code></pre></div>",
-        highlighted
+        "<div class=\"highlight\"><pre><code class=\"language-yaml\">{highlighted}</code></pre></div>"
     );
     Ok(html)
 }

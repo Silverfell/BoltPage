@@ -1,5 +1,13 @@
 # Changes
 
+2025-12-10: Add "Setup CLI Access..." menu item to Help menu for manual CLI configuration
+2025-12-10: Fix clippy linting warnings: convert all format! strings to use inline format variables (e.g., format!("{x}") instead of format!("{}", x))
+2025-12-10: Fix dead code warnings: remove initial_empty_window field and open_markdown_window function
+2025-12-10: Improve window creation logic: use tokio::task::yield_now() instead of arbitrary delays (proper macOS event loop pattern)
+2025-12-10: Fix double-click behavior: delay empty window creation by 1 second to allow Opened events to process first
+2025-12-10: Fix CLI setup: check preferences per-session, re-prompt if CLI not actually installed
+2025-12-10: Fix CLI script to resolve relative paths to absolute paths before passing to 'open' command (preserves working directory context)
+2025-12-10: Fix window creation logic: always create window on launch (empty if no file), detect initial launch file opens and close empty windows automatically
 2025-12-10: Fix CLI setup dialog blocking (removed alert, use console.log instead)
 2025-12-10: Fix terminal lock when launching from CLI (use shell script wrapper with 'open' command on macOS)
 2025-12-10: Add AppleScript automation entitlement to prevent JavaScript permission dialog on CLI setup

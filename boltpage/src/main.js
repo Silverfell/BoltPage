@@ -557,12 +557,25 @@ async function stopFileWatcher() {
 
 async function checkAndPromptCliSetup() {
     try {
-        const needed = await invoke('check_cli_setup_needed');
-        if (!needed) return;
+        // Check if CLI is actually installed
+        const isInstalled = await invoke('is_cli_installed');
+
+        if (isInstalled) {
+            // CLI is installed, nothing to do
+            return;
+        }
+
+        // CLI not installed - reset the declined flag in case it was set from a failed previous attempt
+        // Check if user has declined THIS SESSION
+        const prefs = await invoke('get_preferences');
+        if (prefs.cli_setup_prompted === true) {
+            // User declined in this session, don't ask again
+            return;
+        }
 
         // Show dialog asking if user wants to set up CLI access
-        const message = 'Would you like to enable command-line access for BoltPage?\n\n' +
-                       'This will allow you to open files directly from your terminal:\n' +
+        const message = 'Command-line access for BoltPage is not configured.\n\n' +
+                       'Would you like to enable it? This will allow you to open files from your terminal:\n' +
                        '  boltpage myfile.md\n\n' +
                        'You can set this up later from the Help menu.';
 
@@ -570,15 +583,15 @@ async function checkAndPromptCliSetup() {
             try {
                 const result = await invoke('setup_cli_access');
                 console.log('CLI setup:', result);
-                await invoke('mark_cli_setup_prompted');
             } catch (err) {
                 if (!err.includes('cancelled')) {
                     console.error('CLI setup failed:', err);
                 }
-                await invoke('mark_cli_setup_prompted');
+                await invoke('mark_cli_setup_declined');
             }
         } else {
-            await invoke('mark_cli_setup_prompted');
+            // User declined, remember for this session
+            await invoke('mark_cli_setup_declined');
         }
     } catch (err) {
         console.error('Failed to check CLI setup:', err);

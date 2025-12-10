@@ -387,7 +387,7 @@ dependencies = [
 
 [[package]]
 name = "boltpage"
-version = "1.6.4"
+version = "1.6.5"
 dependencies = [
  "base64 0.22.1",
  "lru",

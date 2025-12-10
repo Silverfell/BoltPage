@@ -106,12 +106,12 @@ async fn create_window_with_file(
     let (window_label, url, title) = if let Some(ref path) = file_path {
         let encoded_path = base64::engine::general_purpose::URL_SAFE_NO_PAD
             .encode(path.to_string_lossy().as_bytes());
-        let label = format!("markdown-file-{}", encoded_path);
+        let label = format!("markdown-file-{encoded_path}");
         let url = WebviewUrl::App("index.html".into());
         let title = path
             .file_name()
             .and_then(|n| n.to_str())
-            .map(|n| format!("BoltPage - {}", n))
+            .map(|n| format!("BoltPage - {n}"))
             .unwrap_or_else(|| "BoltPage".to_string());
         (label, url, title)
     } else {
@@ -246,14 +246,24 @@ fn rebuild_app_menu(app: &AppHandle) -> tauri::Result<()> {
 
     for (label, window) in app.webview_windows() {
         let title = window.title().unwrap_or_else(|_| "Untitled".to_string());
-        let window_id = format!("window-{}", label);
+        let window_id = format!("window-{label}");
         window_menu_builder =
             window_menu_builder.item(&MenuItemBuilder::with_id(&window_id, &title).build(app)?);
     }
     let window_menu = window_menu_builder.build()?;
 
     // Help menu
-    let help_menu = SubmenuBuilder::new(app, "Help")
+    let mut help_menu_builder = SubmenuBuilder::new(app, "Help");
+
+    #[cfg(any(target_os = "macos", target_os = "windows"))]
+    {
+        help_menu_builder = help_menu_builder.item(
+            &MenuItemBuilder::with_id("setup-cli", "Setup CLI Access...")
+                .build(app)?
+        );
+    }
+
+    let help_menu = help_menu_builder
         .item(&MenuItemBuilder::with_id("about", "About BoltPage").build(app)?)
         .build()?;
 
@@ -410,12 +420,12 @@ async fn start_file_watcher(
             },
             Config::default(),
         )
-        .map_err(|e| format!("Failed to create watcher: {}", e))?;
+        .map_err(|e| format!("Failed to create watcher: {e}"))?;
 
         // Watch the file
         watcher
             .watch(Path::new(&file_path), RecursiveMode::NonRecursive)
-            .map_err(|e| format!("Failed to watch file: {}", e))?;
+            .map_err(|e| format!("Failed to watch file: {e}"))?;
 
         // Store watcher and sender
         watchers
@@ -506,14 +516,14 @@ async fn stop_file_watcher(app: AppHandle, window_label: String) -> Result<(), S
 fn broadcast_theme_change(app: AppHandle, theme: String) -> Result<(), String> {
     // Emit theme change event to all windows
     app.emit("theme-changed", &theme)
-        .map_err(|e| format!("Failed to broadcast theme change: {}", e))?;
+        .map_err(|e| format!("Failed to broadcast theme change: {e}"))?;
     Ok(())
 }
 
 #[tauri::command]
 fn broadcast_scroll_link(app: AppHandle, enabled: bool) -> Result<(), String> {
     app.emit("scroll-link-changed", &enabled)
-        .map_err(|e| format!("Failed to broadcast scroll-link: {}", e))?;
+        .map_err(|e| format!("Failed to broadcast scroll-link: {e}"))?;
     Ok(())
 }
 
@@ -522,7 +532,7 @@ fn show_window(app: AppHandle, window_label: String) -> Result<(), String> {
     if let Some(window) = app.get_webview_window(&window_label) {
         window
             .show()
-            .map_err(|e| format!("Failed to show window: {}", e))?;
+            .map_err(|e| format!("Failed to show window: {e}"))?;
     }
     Ok(())
 }
@@ -563,26 +573,26 @@ fn escape_html(input: &str) -> String {
 
 #[tauri::command]
 fn read_file(path: String) -> Result<String, String> {
-    fs::read_to_string(&path).map_err(|e| format!("Failed to read file: {}", e))
+    fs::read_to_string(&path).map_err(|e| format!("Failed to read file: {e}"))
 }
 
 #[tauri::command]
 fn read_file_bytes_b64(path: String) -> Result<String, String> {
     fs::read(&path)
         .map(|bytes| base64::engine::general_purpose::STANDARD.encode(bytes))
-        .map_err(|e| format!("Failed to read file bytes: {}", e))
+        .map_err(|e| format!("Failed to read file bytes: {e}"))
 }
 
 #[tauri::command]
 fn write_file(path: String, content: String) -> Result<(), String> {
-    fs::write(&path, content).map_err(|e| format!("Failed to write file: {}", e))
+    fs::write(&path, content).map_err(|e| format!("Failed to write file: {e}"))
 }
 
 #[tauri::command]
 fn is_writable(path: String) -> Result<bool, String> {
     match fs::metadata(&path) {
         Ok(meta) => Ok(!meta.permissions().readonly()),
-        Err(e) => Err(format!("Failed to get metadata: {}", e)),
+        Err(e) => Err(format!("Failed to get metadata: {e}")),
     }
 }
 
@@ -610,8 +620,8 @@ fn parse_yaml_with_theme(content: String, theme: String) -> Result<String, Strin
 fn format_json_pretty(content: String) -> Result<String, String> {
     // Pretty-print JSON using serde_json with default map ordering (sorted keys)
     let value: serde_json::Value =
-        serde_json::from_str(&content).map_err(|e| format!("Invalid JSON: {}", e))?;
-    serde_json::to_string_pretty(&value).map_err(|e| format!("Failed to pretty-print JSON: {}", e))
+        serde_json::from_str(&content).map_err(|e| format!("Invalid JSON: {e}"))?;
+    serde_json::to_string_pretty(&value).map_err(|e| format!("Failed to pretty-print JSON: {e}"))
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
@@ -626,7 +636,7 @@ struct ScrollSyncPayload {
 #[tauri::command]
 fn broadcast_scroll_sync(app: AppHandle, payload: ScrollSyncPayload) -> Result<(), String> {
     app.emit("scroll-sync", &payload)
-        .map_err(|e| format!("Failed to broadcast scroll sync: {}", e))
+        .map_err(|e| format!("Failed to broadcast scroll sync: {e}"))
 }
 
 #[tauri::command]
@@ -644,7 +654,7 @@ async fn render_file_to_html(
     use std::time::UNIX_EPOCH;
 
     // Stat for cache key
-    let meta = fs::metadata(&path).map_err(|e| format!("Failed to stat file: {}", e))?;
+    let meta = fs::metadata(&path).map_err(|e| format!("Failed to stat file: {e}"))?;
     let size = meta.len();
     let mtime_secs = meta
         .modified()
@@ -679,29 +689,28 @@ async fn render_file_to_html(
 
         if lower == "txt" {
             let content =
-                fs::read_to_string(&path).map_err(|e| format!("Failed to read file: {}", e))?;
+                fs::read_to_string(&path).map_err(|e| format!("Failed to read file: {e}"))?;
             let escaped = escape_html(&content);
             Ok(format!(
-                "<div class=\"markdown-body\"><pre class=\"plain-text\">{}</pre></div>",
-                escaped
+                "<div class=\"markdown-body\"><pre class=\"plain-text\">{escaped}</pre></div>"
             ))
         } else if lower == "json" {
             let content =
-                fs::read_to_string(&path).map_err(|e| format!("Failed to read file: {}", e))?;
+                fs::read_to_string(&path).map_err(|e| format!("Failed to read file: {e}"))?;
             markrust_core::parse_json_with_theme(&content, &theme)
         } else if lower == "yaml" || lower == "yml" {
             let content =
-                fs::read_to_string(&path).map_err(|e| format!("Failed to read file: {}", e))?;
+                fs::read_to_string(&path).map_err(|e| format!("Failed to read file: {e}"))?;
             markrust_core::parse_yaml_with_theme(&content, &theme)
         } else {
             // default markdown
             let content =
-                fs::read_to_string(&path).map_err(|e| format!("Failed to read file: {}", e))?;
+                fs::read_to_string(&path).map_err(|e| format!("Failed to read file: {e}"))?;
             Ok(markrust_core::parse_markdown_with_theme(&content, &theme))
         }
     })
     .await
-    .map_err(|e| format!("Join error: {}", e))??;
+    .map_err(|e| format!("Join error: {e}"))??;
 
     // Insert into cache
     if let Some(state) = app.try_state::<AppState>() {
@@ -716,7 +725,7 @@ async fn render_file_to_html(
 fn get_preferences(app: AppHandle) -> Result<AppPreferences, String> {
     let store = app
         .store(".boltpage.dat")
-        .map_err(|e| format!("Failed to access store: {}", e))?;
+        .map_err(|e| format!("Failed to access store: {e}"))?;
 
     let prefs = store
         .get("preferences")
@@ -730,12 +739,12 @@ fn get_preferences(app: AppHandle) -> Result<AppPreferences, String> {
 fn save_preferences(app: AppHandle, preferences: AppPreferences) -> Result<(), String> {
     let store = app
         .store(".boltpage.dat")
-        .map_err(|e| format!("Failed to access store: {}", e))?;
+        .map_err(|e| format!("Failed to access store: {e}"))?;
 
     store.set("preferences", serde_json::to_value(&preferences).unwrap());
     store
         .save()
-        .map_err(|e| format!("Failed to save preferences: {}", e))?;
+        .map_err(|e| format!("Failed to save preferences: {e}"))?;
 
     Ok(())
 }
@@ -780,14 +789,14 @@ async fn create_new_markdown_file(app: AppHandle) -> Result<Option<String>, Stri
 
     let mut path = selection
         .into_path()
-        .map_err(|e| format!("Failed to resolve path: {}", e))?;
+        .map_err(|e| format!("Failed to resolve path: {e}"))?;
 
     if path.extension().is_none() {
         path.set_extension("md");
     }
 
     if let Some(parent) = path.parent() {
-        fs::create_dir_all(parent).map_err(|e| format!("Failed to create directories: {}", e))?;
+        fs::create_dir_all(parent).map_err(|e| format!("Failed to create directories: {e}"))?;
     }
 
     fs::OpenOptions::new()
@@ -795,11 +804,11 @@ async fn create_new_markdown_file(app: AppHandle) -> Result<Option<String>, Stri
         .create(true)
         .truncate(true)
         .open(&path)
-        .map_err(|e| format!("Failed to create file: {}", e))?;
+        .map_err(|e| format!("Failed to create file: {e}"))?;
 
     let window_label = create_window_with_file(&app, Some(path))
         .await
-        .map_err(|e| format!("Failed to open window: {}", e))?;
+        .map_err(|e| format!("Failed to open window: {e}"))?;
 
     Ok(Some(window_label))
 }
@@ -810,14 +819,13 @@ async fn open_editor_window(
     file_path: String,
     preview_window: String,
 ) -> Result<(), String> {
-    let editor_label = format!("editor-{}", uuid::Uuid::new_v4());
+    let editor_uuid = uuid::Uuid::new_v4();
+    let editor_label = format!("editor-{editor_uuid}");
 
+    let file_name = file_path.split('/').next_back().unwrap_or("Untitled");
     let _editor_window =
         WebviewWindowBuilder::new(&app, &editor_label, WebviewUrl::App("editor.html".into()))
-            .title(format!(
-                "BoltPage Editor - {}",
-                file_path.split('/').next_back().unwrap_or("Untitled")
-            ))
+            .title(format!("BoltPage Editor - {file_name}"))
             .inner_size(800.0, 600.0)
             .initialization_script(format!(
                 "window.__INITIAL_FILE_PATH__ = {}; window.__PREVIEW_WINDOW__ = {};",
@@ -825,7 +833,7 @@ async fn open_editor_window(
                 serde_json::to_string(&preview_window).unwrap()
             ))
             .build()
-            .map_err(|e| format!("Failed to create editor window: {}", e))?;
+            .map_err(|e| format!("Failed to create editor window: {e}"))?;
 
     Ok(())
 }
@@ -838,7 +846,7 @@ async fn create_new_window_command(
     let resolved_path = file_path.and_then(|p| resolve_file_path(&p));
     create_window_with_file(&app, resolved_path)
         .await
-        .map_err(|e| format!("Failed to create window: {}", e))
+        .map_err(|e| format!("Failed to create window: {e}"))
 }
 
 #[tauri::command]
@@ -856,7 +864,7 @@ fn refresh_preview(app: AppHandle, window: String) -> Result<(), String> {
     if let Some(preview_window) = app.get_webview_window(&window) {
         preview_window
             .eval("refreshFile()")
-            .map_err(|e| format!("Failed to refresh preview: {}", e))?;
+            .map_err(|e| format!("Failed to refresh preview: {e}"))?;
     }
     Ok(())
 }
@@ -870,9 +878,9 @@ fn get_file_path_from_window_label(window: tauri::Window) -> Result<Option<Strin
         match base64::engine::general_purpose::URL_SAFE_NO_PAD.decode(encoded_path) {
             Ok(decoded_bytes) => match String::from_utf8(decoded_bytes) {
                 Ok(file_path) => Ok(Some(file_path)),
-                Err(e) => Err(format!("Failed to decode UTF-8: {}", e)),
+                Err(e) => Err(format!("Failed to decode UTF-8: {e}")),
             },
-            Err(e) => Err(format!("Failed to decode base64: {}", e)),
+            Err(e) => Err(format!("Failed to decode base64: {e}")),
         }
     } else {
         // Not a file window, return None
@@ -915,24 +923,49 @@ fn focus_window(app: AppHandle, window_label: String) -> Result<(), String> {
     if let Some(window) = app.get_webview_window(&window_label) {
         window
             .set_focus()
-            .map_err(|e| format!("Failed to focus window: {}", e))?;
+            .map_err(|e| format!("Failed to focus window: {e}"))?;
         window
             .show()
-            .map_err(|e| format!("Failed to show window: {}", e))?;
+            .map_err(|e| format!("Failed to show window: {e}"))?;
         Ok(())
     } else {
         Err("Window not found".to_string())
     }
 }
 
+#[cfg(target_os = "macos")]
 #[tauri::command]
-fn check_cli_setup_needed(app: AppHandle) -> Result<bool, String> {
-    let prefs = get_preferences(app)?;
-    Ok(!prefs.cli_setup_prompted.unwrap_or(false))
+fn is_cli_installed() -> Result<bool, String> {
+    Ok(PathBuf::from("/usr/local/bin/boltpage").exists())
+}
+
+#[cfg(target_os = "windows")]
+#[tauri::command]
+fn is_cli_installed() -> Result<bool, String> {
+    // Check if the exe directory is in PATH
+    let exe_path =
+        std::env::current_exe().map_err(|e| format!("Failed to get executable path: {e}"))?;
+    let exe_dir = exe_path
+        .parent()
+        .ok_or_else(|| "Failed to get executable directory".to_string())?;
+    let exe_dir_str = exe_dir.to_string_lossy().to_string();
+
+    // Check PATH environment variable
+    if let Ok(path_var) = std::env::var("PATH") {
+        Ok(path_var.split(';').any(|p| p.trim() == exe_dir_str))
+    } else {
+        Ok(false)
+    }
+}
+
+#[cfg(not(any(target_os = "macos", target_os = "windows")))]
+#[tauri::command]
+fn is_cli_installed() -> Result<bool, String> {
+    Ok(false)
 }
 
 #[tauri::command]
-fn mark_cli_setup_prompted(app: AppHandle) -> Result<(), String> {
+fn mark_cli_setup_declined(app: AppHandle) -> Result<(), String> {
     let mut prefs = get_preferences(app.clone())?;
     prefs.cli_setup_prompted = Some(true);
     save_preferences(app, prefs)?;
@@ -953,12 +986,24 @@ async fn setup_cli_access() -> Result<String, String> {
 
     // Create a shell script wrapper that uses 'open' command to properly launch the app
     // This ensures the terminal doesn't lock when launching from CLI
+    // Converts relative paths to absolute paths since 'open' doesn't preserve working directory
     let script_content = r#"#!/bin/bash
 # BoltPage CLI wrapper - launches app via macOS 'open' command to prevent terminal lock
 if [ $# -eq 0 ]; then
     open -a BoltPage
 else
-    open -a BoltPage --args "$@"
+    # Convert all arguments to absolute paths if they exist as files
+    args=()
+    for arg in "$@"; do
+        if [ -e "$arg" ]; then
+            # File exists, convert to absolute path
+            args+=("$(cd "$(dirname "$arg")" && pwd)/$(basename "$arg")")
+        else
+            # Not a file, pass as-is
+            args+=("$arg")
+        fi
+    done
+    open -a BoltPage --args "${args[@]}"
 fi
 "#;
 
@@ -967,26 +1012,26 @@ fi
 
     // Create the script using osascript to get admin privileges
     let script = format!(
-        r#"do shell script "mkdir -p /usr/local/bin && printf '%s' '{}' > '{}' && chmod +x '{}'" with administrator privileges"#,
-        escaped_content,
-        script_path,
-        script_path
+        r#"do shell script "mkdir -p /usr/local/bin && printf '%s' '{escaped_content}' > '{script_path}' && chmod +x '{script_path}'" with administrator privileges"#
     );
 
     let output = Command::new("osascript")
         .arg("-e")
         .arg(&script)
         .output()
-        .map_err(|e| format!("Failed to execute osascript: {}", e))?;
+        .map_err(|e| format!("Failed to execute osascript: {e}"))?;
 
     if output.status.success() {
-        Ok("CLI access configured successfully. You can now use 'boltpage' from the terminal.".to_string())
+        Ok(
+            "CLI access configured successfully. You can now use 'boltpage' from the terminal."
+                .to_string(),
+        )
     } else {
         let stderr = String::from_utf8_lossy(&output.stderr);
         if stderr.contains("User canceled") {
             Err("Setup cancelled by user".to_string())
         } else {
-            Err(format!("Failed to create CLI script: {}", stderr))
+            Err(format!("Failed to create CLI script: {stderr}"))
         }
     }
 }
@@ -999,18 +1044,19 @@ async fn setup_cli_access() -> Result<String, String> {
     use winreg::RegKey;
 
     // Get the directory containing the executable
-    let exe_path = std::env::current_exe()
-        .map_err(|e| format!("Failed to get executable path: {}", e))?;
-    let exe_dir = exe_path.parent()
+    let exe_path =
+        std::env::current_exe().map_err(|e| format!("Failed to get executable path: {e}"))?;
+    let exe_dir = exe_path
+        .parent()
         .ok_or_else(|| "Failed to get executable directory".to_string())?;
 
     // Add to user PATH
     let hkcu = RegKey::predef(HKEY_CURRENT_USER);
-    let env = hkcu.open_subkey_with_flags("Environment", KEY_READ | KEY_WRITE)
-        .map_err(|e| format!("Failed to open registry key: {}", e))?;
+    let env = hkcu
+        .open_subkey_with_flags("Environment", KEY_READ | KEY_WRITE)
+        .map_err(|e| format!("Failed to open registry key: {e}"))?;
 
-    let current_path: String = env.get_value("Path")
-        .unwrap_or_else(|_| String::new());
+    let current_path: String = env.get_value("Path").unwrap_or_else(|_| String::new());
 
     let exe_dir_str = exe_dir.to_string_lossy().to_string();
 
@@ -1023,17 +1069,14 @@ async fn setup_cli_access() -> Result<String, String> {
     let new_path = if current_path.is_empty() {
         exe_dir_str
     } else {
-        format!("{};{}", current_path, exe_dir_str)
+        format!("{current_path};{exe_dir_str}")
     };
 
     env.set_value("Path", &new_path)
-        .map_err(|e| format!("Failed to update PATH: {}", e))?;
+        .map_err(|e| format!("Failed to update PATH: {e}"))?;
 
     // Broadcast environment change
-    let _ = Command::new("setx")
-        .arg("PATH")
-        .arg(&new_path)
-        .output();
+    let _ = Command::new("setx").arg("PATH").arg(&new_path).output();
 
     Ok("CLI access configured successfully. You may need to restart your terminal.".to_string())
 }
@@ -1042,14 +1085,6 @@ async fn setup_cli_access() -> Result<String, String> {
 #[tauri::command]
 async fn setup_cli_access() -> Result<String, String> {
     Err("CLI setup is not supported on this platform".to_string())
-}
-
-async fn open_markdown_window(app: &AppHandle, file_path: Option<String>) -> Result<(), String> {
-    let resolved_path = file_path.and_then(|p| resolve_file_path(&p));
-    create_window_with_file(app, resolved_path)
-        .await
-        .map_err(|e| format!("Failed to create window: {}", e))
-        .map(|_| ())
 }
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
@@ -1069,7 +1104,7 @@ pub fn run() {
                     .truncate(true)
                     .open(&pathbuf)
                 {
-                    eprintln!("Failed to create file from CLI arg {:?}: {}", pathbuf, e);
+                    eprintln!("Failed to create file from CLI arg {pathbuf:?}: {e}");
                 }
             }
             file_path = Some(pathbuf.to_string_lossy().to_string());
@@ -1113,8 +1148,8 @@ pub fn run() {
             focus_window,
             get_syntax_css,
             render_file_to_html,
-            check_cli_setup_needed,
-            mark_cli_setup_prompted,
+            is_cli_installed,
+            mark_cli_setup_declined,
             setup_cli_access
         ])
         .setup(move |app| {
@@ -1131,7 +1166,7 @@ pub fn run() {
                         let app_clone = app.clone();
                         tauri::async_runtime::spawn(async move {
                             if let Err(e) = create_new_markdown_file(app_clone).await {
-                                eprintln!("Failed to create new file: {}", e);
+                                eprintln!("Failed to create new file: {e}");
                             }
                         });
                     }
@@ -1178,11 +1213,32 @@ pub fn run() {
                     "find" => {
                         let _ = app.emit("menu-find", &());
                     }
+                    "setup-cli" => {
+                        #[cfg(any(target_os = "macos", target_os = "windows"))]
+                        {
+                            let app_clone = app.clone();
+                            tauri::async_runtime::spawn(async move {
+                                match setup_cli_access().await {
+                                    Ok(msg) => {
+                                        let alert = format!("alert('{msg}')");
+                                        if let Some((_, window)) = app_clone.webview_windows().into_iter().next() {
+                                            let _ = window.eval(&alert);
+                                        }
+                                    }
+                                    Err(err) => {
+                                        let alert = format!("alert('CLI setup failed: {err}')");
+                                        if let Some((_, window)) = app_clone.webview_windows().into_iter().next() {
+                                            let _ = window.eval(&alert);
+                                        }
+                                    }
+                                }
+                            });
+                        }
+                    }
                     "about" => {
                         let version = env!("CARGO_PKG_VERSION");
                         let msg = format!(
-                            "alert('BoltPage v{}\\nA fast Markdown viewer and editor')",
-                            version
+                            "alert('BoltPage v{version}\\nA fast Markdown viewer and editor')"
                         );
                         if let Some(window) = app.get_webview_window("main") {
                             let _ = window.eval(&msg);
@@ -1194,22 +1250,29 @@ pub fn run() {
                 }
             });
 
-            // Create initial window (CLI args or empty)
-            // On macOS, skip creating an empty window if no CLI args were provided,
-            // because double-clicking a file sends an Opened event instead of CLI args
-            #[cfg(target_os = "macos")]
-            {
-                if file_path.is_some() {
-                    // Explicit CLI argument (e.g., from terminal) - create window
-                    tauri::async_runtime::block_on(open_markdown_window(app.handle(), file_path))?;
-                }
-                // Otherwise, wait for Opened event or user menu action (don't create empty window)
-            }
+            // Create initial window based on launch method
+            if let Some(resolved_path) = file_path.and_then(|p| resolve_file_path(&p)) {
+                // File provided via CLI - create file window immediately
+                tauri::async_runtime::block_on(create_window_with_file(
+                    app.handle(),
+                    Some(resolved_path),
+                ))?;
+            } else {
+                // No CLI file - yield to event loop to let queued Opened events process first
+                // On macOS, double-clicking a file queues an Opened event before setup completes
+                let app_handle = app.handle().clone();
 
-            #[cfg(not(target_os = "macos"))]
-            {
-                // On other platforms, always create initial window
-                tauri::async_runtime::block_on(open_markdown_window(app.handle(), file_path))?;
+                tauri::async_runtime::spawn(async move {
+                    // Yield to event loop once to let Opened events process
+                    // This is the standard macOS pattern - much faster than arbitrary delays
+                    tokio::task::yield_now().await;
+
+                    // Check if an Opened event already created windows
+                    if app_handle.webview_windows().is_empty() {
+                        // No windows were created by Opened event, create empty window
+                        let _ = create_window_with_file(&app_handle, None).await;
+                    }
+                });
             }
 
             Ok(())
@@ -1277,12 +1340,13 @@ pub fn run() {
             if let tauri::RunEvent::Opened { urls } = _event {
                 let app_clone = _app.clone();
                 tauri::async_runtime::spawn(async move {
+                    // Open windows for all the files
                     for url in urls {
-                        if let Some(path) = resolve_file_path(&url.to_string()) {
+                        if let Some(path) = resolve_file_path(url.as_ref()) {
                             if let Err(e) =
                                 create_window_with_file(&app_clone, Some(path.clone())).await
                             {
-                                eprintln!("Failed to open window for {:?}: {}", path, e);
+                                eprintln!("Failed to open window for {path:?}: {e}");
                             }
                         }
                     }
