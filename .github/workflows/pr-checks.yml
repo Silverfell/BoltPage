@@ -155,11 +155,11 @@ jobs:
         shell: bash
         run: |
           if [ "${{ matrix.os }}" = "ubuntu-22.04" ]; then
-            ls -lh boltpage/src-tauri/target/${{ matrix.target }}/release/bundle/
+            ls -lh boltpage/target/${{ matrix.target }}/release/bundle/
           elif [ "${{ matrix.os }}" = "macos-14" ]; then
-            ls -lh boltpage/src-tauri/target/${{ matrix.target }}/release/bundle/
+            ls -lh boltpage/target/${{ matrix.target }}/release/bundle/
           elif [ "${{ matrix.os }}" = "windows-latest" ]; then
-            ls boltpage/src-tauri/target/${{ matrix.target }}/release/bundle/
+            ls boltpage/target/${{ matrix.target }}/release/bundle/
           fi
 
   # Summary job
