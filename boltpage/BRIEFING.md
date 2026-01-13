@@ -48,3 +48,18 @@ BoltPage is a fast Markdown viewer and editor built with Rust and Tauri. It rend
 - Debug builds include debug_log macro output (eprintln)
 - Release builds strip debug logging for performance
 - Test with stale Cargo build cache by running `cargo clean` if project moved between directories
+
+## Edit/Copy/Paste Tools Status
+
+### Currently Implemented
+- **Native Edit Menu (Rust)**: Undo, Redo, Cut, Copy, Paste, Select All, Find with keyboard accelerators
+- **Editor (editor.js)**: Keyboard shortcuts for copy/cut/paste/select-all via Clipboard API
+- **Viewer (main.js)**: Keyboard shortcuts for copy/select-all via Clipboard API
+
+### Missing Features (Investigation 2026-01-13)
+1. **Right-click Context Menu**: Neither editor nor viewer has a context menu - critical for user expectations
+2. **Undo/Redo in performEditAction**: Native menu events for undo/redo are captured but not implemented in JS handlers
+3. **Find & Replace**: Editor only has Find, no Replace functionality
+4. **Viewer Cut Operation**: Cut is implemented in viewer but inappropriate for read-only content
+
+See CHANGES.md for detailed implementation plan.
