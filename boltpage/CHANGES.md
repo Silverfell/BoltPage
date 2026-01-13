@@ -1,105 +1,15 @@
 # Changes
 
-## 2026-01-13: Edit/Copy/Paste Tools Investigation
-
-### Current State Analysis
-
-**Native Edit Menu (lib.rs:197-236):**
-- Undo (CmdOrCtrl+Z), Redo (Shift+CmdOrCtrl+Z), Cut, Copy, Paste, Select All, Find
-- Menu events are emitted via `app.emit("menu-edit", &action)` at lib.rs:1207-1209
-
-**Editor Window (editor.js):**
-- Keyboard shortcuts captured at lines 201-229 for undo/redo/copy/cut/paste/select-all
-- `performEditAction()` at lines 350-393 handles: copy, cut, paste, select-all
-- **ISSUE**: No cases for 'undo' or 'redo' - native menu triggers these but JS ignores them
-
-**Viewer Window (main.js):**
-- Keyboard shortcuts captured at lines 445-480 for undo/redo/copy/cut/paste/select-all
-- `performEditAction()` at lines 758-803 handles: copy, cut, paste, select-all
-- **ISSUE**: No cases for 'undo' or 'redo' - menu events are silently ignored
-- **ISSUE**: Cut operation deletes from read-only content (inappropriate for viewer)
-
-### Missing Standard Industry Features
-
-1. **Right-Click Context Menu (CRITICAL)**
-   - Neither editor.html nor index.html implement a context menu
-   - Users expect right-click access to Cut/Copy/Paste/Select All
-   - Industry standard for all text editors and viewers
-
-2. **Undo/Redo Support in Editor**
-   - Native menu emits 'undo'/'redo' events but `performEditAction()` lacks handlers
-   - Textarea has native undo/redo stack but not connected to menu events
-   - Fix: Add undo/redo cases using `document.execCommand('undo'/'redo')` or maintain custom stack
-
-3. **Find & Replace in Editor**
-   - Only Find functionality exists (Ctrl+F)
-   - No Replace or Replace All - standard feature for any text editor
-   - Find overlay exists but lacks replace input field
-
-4. **Inappropriate Viewer Operations**
-   - Cut in viewer calls `selection.deleteFromDocument()` which modifies read-only rendered content
-   - Fix: Remove cut handling from viewer or make it copy-only
-
-### Proposed Fixes
-
-#### Priority 1: Right-Click Context Menu
-**Files to modify:** editor.js, main.js, editor.css, styles.css
-
-Editor context menu should include:
-- Undo, Redo (separator)
-- Cut, Copy, Paste, Delete (separator)
-- Select All
-
-Viewer context menu should include:
-- Copy (separator)
-- Select All
-
-Implementation approach:
-1. Create `createContextMenu()` function to build menu DOM
-2. Add `contextmenu` event listener to prevent default and show custom menu
-3. Add click-outside handler to dismiss menu
-4. Style menu to match current theme (drac/light/dark)
-
-#### Priority 2: Undo/Redo in Editor performEditAction
-**File:** editor.js
-
-Add cases to switch statement:
-```javascript
-case 'undo':
-    document.execCommand('undo');
-    break;
-case 'redo':
-    document.execCommand('redo');
-    break;
-```
-
-Note: `document.execCommand` is deprecated but still works for textarea undo/redo.
-Alternative: Use InputEvent with inputType='historyUndo'/'historyRedo' but browser support varies.
-
-#### Priority 3: Find & Replace (Editor only)
-**File:** editor.js, editor.css
-
-Extend find overlay to include:
-- Replace input field
-- Replace / Replace All buttons
-- Match case toggle (optional enhancement)
-
-#### Priority 4: Fix Viewer Cut Operation
-**File:** main.js
-
-Remove or neuter cut handling in viewer:
-```javascript
-case 'cut':
-    // Viewer is read-only - cut acts as copy only
-    if (selection && selection.toString()) {
-        await navigator.clipboard.writeText(selection.toString());
-    }
-    break;
-```
-
----
-
-## Previous Changes
+2026-01-13: Add right-click context menu to editor with Undo/Redo/Cut/Copy/Paste/Delete/Select All actions
+2026-01-13: Add right-click context menu to viewer with Copy/Select All actions (read-only appropriate)
+2026-01-13: Implement undo/redo handlers in editor.js performEditAction using document.execCommand
+2026-01-13: Add Find & Replace functionality to editor with Replace/Replace All buttons and live search
+2026-01-13: Fix viewer cut operation to behave as copy-only (viewer content is read-only)
+2026-01-13: Add undo/redo handlers to viewer performEditAction for input fields only
+2026-01-13: Improve find highlighting in editor - focus textarea briefly to show selection
+2026-01-13: Add context menu CSS styles to editor.css and styles.css with theme support
+2026-01-13: Add ::selection CSS for highlighted text in both editor and viewer
+2026-01-13: Add --link-color CSS variable to editor.css themes for selection highlighting
 
 2025-12-10: Fix unused-mut warning for help_menu_builder (only used on macOS/Windows)
 2025-12-10: Fix code formatting issues (cargo fmt) for CI/CD pipeline

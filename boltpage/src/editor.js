@@ -13,6 +13,8 @@ let scrollLinkEnabled = true;
 let findOverlay = null;
 let findInput = null;
 let findVisible = false;
+let contextMenu = null;
+let replaceInput = null;
 
 // Scroll sync configuration constants
 const SCROLL_SYNC_DEBOUNCE_MS = 50;
@@ -353,6 +355,14 @@ async function performEditAction(action) {
         if (!textarea) return;
 
         switch (action) {
+            case 'undo':
+                textarea.focus();
+                document.execCommand('undo');
+                break;
+            case 'redo':
+                textarea.focus();
+                document.execCommand('redo');
+                break;
             case 'copy':
                 if (textarea.selectionStart !== textarea.selectionEnd) {
                     const text = textarea.value.substring(textarea.selectionStart, textarea.selectionEnd);
@@ -383,6 +393,15 @@ async function performEditAction(action) {
                     console.error('Paste failed:', err);
                 }
                 break;
+            case 'delete':
+                if (textarea.selectionStart !== textarea.selectionEnd) {
+                    const start = textarea.selectionStart;
+                    const end = textarea.selectionEnd;
+                    textarea.value = textarea.value.substring(0, start) + textarea.value.substring(end);
+                    textarea.selectionStart = textarea.selectionEnd = start;
+                    textarea.dispatchEvent(new Event('input', { bubbles: true }));
+                }
+                break;
             case 'select-all':
                 textarea.select();
                 break;
@@ -402,14 +421,22 @@ function ensureFindOverlay() {
     findOverlay = document.createElement('div');
     findOverlay.className = 'find-overlay';
     findOverlay.innerHTML = `
-        <input id="find-input" class="find-input" type="text" placeholder="Find..." />
-        <span class="find-count" id="find-count"></span>
-        <button class="find-btn" id="find-prev" title="Previous">&#8593;</button>
-        <button class="find-btn" id="find-next" title="Next">&#8595;</button>
-        <button class="find-btn" id="find-close" title="Close">&#10005;</button>
+        <div class="find-row">
+            <input id="find-input" class="find-input" type="text" placeholder="Find..." />
+            <span class="find-count" id="find-count"></span>
+            <button class="find-btn" id="find-prev" title="Previous (Shift+Enter)">&#8593;</button>
+            <button class="find-btn" id="find-next" title="Next (Enter)">&#8595;</button>
+            <button class="find-btn" id="find-close" title="Close (Esc)">&#10005;</button>
+        </div>
+        <div class="replace-row">
+            <input id="replace-input" class="find-input" type="text" placeholder="Replace..." />
+            <button class="find-btn replace-btn" id="replace-one" title="Replace">Replace</button>
+            <button class="find-btn replace-btn" id="replace-all" title="Replace All">All</button>
+        </div>
     `;
     document.body.appendChild(findOverlay);
     findInput = findOverlay.querySelector('#find-input');
+    replaceInput = findOverlay.querySelector('#replace-input');
 
     findInput.addEventListener('keydown', (e) => {
         if (e.key === 'Enter') {
@@ -425,7 +452,26 @@ function ensureFindOverlay() {
             closeFindOverlay();
         }
     });
-    
+
+    findInput.addEventListener('input', () => {
+        // Live search as user types
+        performFind(findInput.value);
+    });
+
+    replaceInput.addEventListener('keydown', (e) => {
+        if (e.key === 'Enter') {
+            e.preventDefault();
+            if (e.shiftKey) {
+                replaceAll();
+            } else {
+                replaceOne();
+            }
+        } else if (e.key === 'Escape') {
+            e.preventDefault();
+            closeFindOverlay();
+        }
+    });
+
     findOverlay.querySelector('#find-prev').addEventListener('click', () => {
         findPrevious();
     });
@@ -433,6 +479,63 @@ function ensureFindOverlay() {
         findNext();
     });
     findOverlay.querySelector('#find-close').addEventListener('click', closeFindOverlay);
+    findOverlay.querySelector('#replace-one').addEventListener('click', replaceOne);
+    findOverlay.querySelector('#replace-all').addEventListener('click', replaceAll);
+}
+
+function replaceOne() {
+    if (currentFindIndex < 0 || currentFindIndex >= findResults.length) return;
+
+    const ta = document.getElementById('editor-textarea');
+    const result = findResults[currentFindIndex];
+    const replaceText = replaceInput.value;
+
+    // Replace the current match
+    ta.value = ta.value.substring(0, result.start) + replaceText + ta.value.substring(result.end);
+    ta.dispatchEvent(new Event('input', { bubbles: true }));
+
+    // Adjust positions of subsequent matches
+    const lenDiff = replaceText.length - (result.end - result.start);
+    for (let i = currentFindIndex + 1; i < findResults.length; i++) {
+        findResults[i].start += lenDiff;
+        findResults[i].end += lenDiff;
+    }
+
+    // Remove the replaced match from results
+    findResults.splice(currentFindIndex, 1);
+
+    // Adjust current index
+    if (findResults.length === 0) {
+        currentFindIndex = -1;
+    } else if (currentFindIndex >= findResults.length) {
+        currentFindIndex = 0;
+    }
+
+    updateFindCount();
+    if (findResults.length > 0) {
+        highlightCurrentFind();
+    }
+}
+
+function replaceAll() {
+    if (findResults.length === 0) return;
+
+    const ta = document.getElementById('editor-textarea');
+    const replaceText = replaceInput.value;
+    const query = findInput.value;
+
+    // Replace all occurrences (case-insensitive)
+    const regex = new RegExp(escapeRegExp(query), 'gi');
+    ta.value = ta.value.replace(regex, replaceText);
+    ta.dispatchEvent(new Event('input', { bubbles: true }));
+
+    // Clear results
+    clearFindResults();
+    updateFindCount();
+}
+
+function escapeRegExp(string) {
+    return string.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 }
 
 function performFind(query) {
@@ -510,20 +613,27 @@ function findPrevious() {
 
 function highlightCurrentFind() {
     if (currentFindIndex < 0 || currentFindIndex >= findResults.length) return;
-    
+
     const result = findResults[currentFindIndex];
     const ta = document.getElementById('editor-textarea');
-    
-    // Don't focus the textarea - keep focus in the find input
-    ta.setSelectionRange(result.start, result.end);
-    
-    // Scroll into view
+
+    // Scroll into view first
     const lh = getEditorLineHeight();
     const before = ta.value.slice(0, result.start);
     const line = (before.match(/\n/g) || []).length + 1;
     isProgrammaticScroll = true;
     ta.scrollTop = Math.max(0, (line - 1) * lh - ta.clientHeight / 2);
     setTimeout(() => { isProgrammaticScroll = false; }, PROGRAMMATIC_SCROLL_TIMEOUT_MS);
+
+    // Focus textarea briefly to show selection, then return focus to find input
+    ta.focus();
+    ta.setSelectionRange(result.start, result.end);
+    // Return focus to find input after a brief moment so selection stays visible
+    setTimeout(() => {
+        if (findVisible && findInput) {
+            findInput.focus();
+        }
+    }, 50);
 }
 
 function clearFindResults() {
@@ -568,14 +678,100 @@ function closeFindOverlay() {
 // Legacy function for backward compatibility
 function findInTextarea(q, forward) {
     if (!q) return;
-    
+
     if (q !== lastSearchQuery) {
         performFind(q);
     }
-    
+
     if (forward) {
         findNext();
     } else {
         findPrevious();
     }
 }
+
+// --- Right-click Context Menu ---
+function createContextMenu() {
+    if (contextMenu) return;
+
+    contextMenu = document.createElement('div');
+    contextMenu.className = 'context-menu';
+    contextMenu.innerHTML = `
+        <div class="context-menu-item" data-action="undo">Undo</div>
+        <div class="context-menu-item" data-action="redo">Redo</div>
+        <div class="context-menu-separator"></div>
+        <div class="context-menu-item" data-action="cut">Cut</div>
+        <div class="context-menu-item" data-action="copy">Copy</div>
+        <div class="context-menu-item" data-action="paste">Paste</div>
+        <div class="context-menu-item" data-action="delete">Delete</div>
+        <div class="context-menu-separator"></div>
+        <div class="context-menu-item" data-action="select-all">Select All</div>
+    `;
+    document.body.appendChild(contextMenu);
+
+    // Handle menu item clicks
+    contextMenu.addEventListener('click', async (e) => {
+        const item = e.target.closest('.context-menu-item');
+        if (item) {
+            const action = item.dataset.action;
+            hideContextMenu();
+            await performEditAction(action);
+        }
+    });
+
+    // Close menu on outside click
+    document.addEventListener('click', (e) => {
+        if (!contextMenu.contains(e.target)) {
+            hideContextMenu();
+        }
+    });
+
+    // Close menu on scroll
+    document.addEventListener('scroll', hideContextMenu, true);
+}
+
+function showContextMenu(x, y) {
+    createContextMenu();
+
+    const textarea = document.getElementById('editor-textarea');
+    const hasSelection = textarea && textarea.selectionStart !== textarea.selectionEnd;
+
+    // Update menu item states
+    contextMenu.querySelectorAll('.context-menu-item').forEach(item => {
+        const action = item.dataset.action;
+        if (action === 'cut' || action === 'copy' || action === 'delete') {
+            item.classList.toggle('disabled', !hasSelection);
+        }
+    });
+
+    // Position menu
+    contextMenu.style.left = `${x}px`;
+    contextMenu.style.top = `${y}px`;
+    contextMenu.classList.add('show');
+
+    // Adjust if menu goes off screen
+    const rect = contextMenu.getBoundingClientRect();
+    if (rect.right > window.innerWidth) {
+        contextMenu.style.left = `${window.innerWidth - rect.width - 5}px`;
+    }
+    if (rect.bottom > window.innerHeight) {
+        contextMenu.style.top = `${window.innerHeight - rect.height - 5}px`;
+    }
+}
+
+function hideContextMenu() {
+    if (contextMenu) {
+        contextMenu.classList.remove('show');
+    }
+}
+
+// Set up context menu listener
+document.addEventListener('DOMContentLoaded', () => {
+    const textarea = document.getElementById('editor-textarea');
+    if (textarea) {
+        textarea.addEventListener('contextmenu', (e) => {
+            e.preventDefault();
+            showContextMenu(e.clientX, e.clientY);
+        });
+    }
+});

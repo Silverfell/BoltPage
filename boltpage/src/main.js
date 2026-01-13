@@ -18,6 +18,7 @@ let findInput = null;
 let findVisible = false;
 let windowListOverlay = null;
 let windowListVisible = false;
+let contextMenu = null;
 
 // Scroll sync configuration constants
 const SCROLL_SYNC_DEBOUNCE_MS = 50;
@@ -761,15 +762,27 @@ async function performEditAction(action) {
         const activeEl = document.activeElement;
 
         switch (action) {
+            case 'undo':
+                // Viewer is read-only, undo only works in input fields
+                if (activeEl && (activeEl.tagName === 'TEXTAREA' || activeEl.tagName === 'INPUT')) {
+                    document.execCommand('undo');
+                }
+                break;
+            case 'redo':
+                // Viewer is read-only, redo only works in input fields
+                if (activeEl && (activeEl.tagName === 'TEXTAREA' || activeEl.tagName === 'INPUT')) {
+                    document.execCommand('redo');
+                }
+                break;
             case 'copy':
                 if (selection && selection.toString()) {
                     await navigator.clipboard.writeText(selection.toString());
                 }
                 break;
             case 'cut':
+                // Viewer is read-only - cut behaves as copy (no deletion)
                 if (selection && selection.toString()) {
                     await navigator.clipboard.writeText(selection.toString());
-                    selection.deleteFromDocument();
                 }
                 break;
             case 'paste':
@@ -793,7 +806,13 @@ async function performEditAction(action) {
                 if (activeEl && (activeEl.tagName === 'TEXTAREA' || activeEl.tagName === 'INPUT')) {
                     activeEl.select();
                 } else {
-                    selection.selectAllChildren(document.body);
+                    // Select all content in the markdown content area
+                    const content = document.getElementById('markdown-content');
+                    if (content) {
+                        selection.selectAllChildren(content);
+                    } else {
+                        selection.selectAllChildren(document.body);
+                    }
                 }
                 break;
         }
@@ -1007,14 +1026,96 @@ function closeFindOverlay() {
 // Legacy function for backward compatibility
 function doFind(q, forward) {
     if (!q) return;
-    
+
     if (q !== lastSearchQuery) {
         performFind(q);
     }
-    
+
     if (forward) {
         findNext();
     } else {
         findPrevious();
     }
 }
+
+// --- Right-click Context Menu (Viewer) ---
+function createContextMenu() {
+    if (contextMenu) return;
+
+    contextMenu = document.createElement('div');
+    contextMenu.className = 'context-menu';
+    contextMenu.innerHTML = `
+        <div class="context-menu-item" data-action="copy">Copy</div>
+        <div class="context-menu-separator"></div>
+        <div class="context-menu-item" data-action="select-all">Select All</div>
+    `;
+    document.body.appendChild(contextMenu);
+
+    // Handle menu item clicks
+    contextMenu.addEventListener('click', async (e) => {
+        const item = e.target.closest('.context-menu-item');
+        if (item && !item.classList.contains('disabled')) {
+            const action = item.dataset.action;
+            hideContextMenu();
+            await performEditAction(action);
+        }
+    });
+
+    // Close menu on outside click
+    document.addEventListener('click', (e) => {
+        if (contextMenu && !contextMenu.contains(e.target)) {
+            hideContextMenu();
+        }
+    });
+
+    // Close menu on scroll
+    document.addEventListener('scroll', hideContextMenu, true);
+}
+
+function showContextMenu(x, y) {
+    createContextMenu();
+
+    const selection = window.getSelection();
+    const hasSelection = selection && selection.toString().length > 0;
+
+    // Update menu item states
+    contextMenu.querySelectorAll('.context-menu-item').forEach(item => {
+        const action = item.dataset.action;
+        if (action === 'copy') {
+            item.classList.toggle('disabled', !hasSelection);
+        }
+    });
+
+    // Position menu
+    contextMenu.style.left = `${x}px`;
+    contextMenu.style.top = `${y}px`;
+    contextMenu.classList.add('show');
+
+    // Adjust if menu goes off screen
+    const rect = contextMenu.getBoundingClientRect();
+    if (rect.right > window.innerWidth) {
+        contextMenu.style.left = `${window.innerWidth - rect.width - 5}px`;
+    }
+    if (rect.bottom > window.innerHeight) {
+        contextMenu.style.top = `${window.innerHeight - rect.height - 5}px`;
+    }
+}
+
+function hideContextMenu() {
+    if (contextMenu) {
+        contextMenu.classList.remove('show');
+    }
+}
+
+// Set up context menu listener for viewer content
+document.addEventListener('DOMContentLoaded', () => {
+    const content = document.getElementById('markdown-content');
+    if (content) {
+        content.addEventListener('contextmenu', (e) => {
+            // Don't show custom menu for PDFs
+            if (currentKind === 'pdf') return;
+            e.preventDefault();
+            showContextMenu(e.clientX, e.clientY);
+        });
+    }
+});

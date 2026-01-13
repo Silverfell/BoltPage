@@ -855,3 +855,69 @@ body {
 [data-theme="drac"] .markdown-body .highlight .vc,
 [data-theme="drac"] .markdown-body .highlight .vg,
 [data-theme="drac"] .markdown-body .highlight .vi { color: #8be9fd } /* Built-ins */
+
+/* Context Menu */
+.context-menu {
+  position: fixed;
+  background: var(--toolbar-bg);
+  border: 1px solid var(--border-color);
+  border-radius: 6px;
+  padding: 4px 0;
+  min-width: 120px;
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.15);
+  z-index: 2000;
+  display: none;
+}
+
+.context-menu.show {
+  display: block;
+}
+
+.context-menu-item {
+  padding: 6px 12px;
+  cursor: pointer;
+  font-size: 13px;
+  color: var(--text-color);
+}
+
+.context-menu-item:hover {
+  background: var(--button-hover-bg);
+}
+
+.context-menu-item.disabled {
+  opacity: 0.5;
+  pointer-events: none;
+}
+
+.context-menu-separator {
+  height: 1px;
+  background: var(--border-color);
+  margin: 4px 0;
+}
+
+/* Find highlight for selected text */
+::selection {
+  background: var(--link-color);
+  color: white;
+}
+
+[data-theme="dark"] ::selection {
+  background: var(--link-color);
+  color: #000;
+}
+
+[data-theme="drac"] ::selection {
+  background: var(--link-color);
+  color: #000;
+}
+
+/* Find result highlight marker */
+.find-highlight {
+  background: rgba(255, 235, 59, 0.5);
+  border-radius: 2px;
+}
+
+.find-highlight-current {
+  background: rgba(255, 152, 0, 0.7);
+  border-radius: 2px;
+}

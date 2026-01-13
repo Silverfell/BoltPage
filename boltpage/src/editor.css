@@ -6,6 +6,7 @@
   --toolbar-bg: #f6f8fa;
   --toolbar-border: #e1e4e8;
   --button-hover-bg: #e1e4e8;
+  --link-color: #0366d6;
   
   font-family: "SFMono-Regular", Consolas, "Liberation Mono", Menlo, monospace;
   font-size: 14px;
@@ -25,6 +26,7 @@
   --toolbar-bg: #161b22;
   --toolbar-border: #30363d;
   --button-hover-bg: #30363d;
+  --link-color: #58a6ff;
 }
 
 /* Drac theme (Dracula-inspired) */
@@ -35,6 +37,7 @@
   --toolbar-bg: #21222c;
   --toolbar-border: #44475a;
   --button-hover-bg: #44475a;
+  --link-color: #8be9fd;
 }
 
 * {
@@ -176,4 +179,77 @@ body {
   align-items: center;
   justify-content: center;
   cursor: pointer;
+}
+
+.find-btn:hover {
+  background: var(--button-hover-bg);
+}
+
+/* Find overlay layout */
+.find-overlay {
+  flex-direction: column;
+  gap: 6px;
+}
+
+.find-row, .replace-row {
+  display: flex;
+  gap: 6px;
+  align-items: center;
+}
+
+.replace-btn {
+  width: auto;
+  padding: 0 8px;
+  font-size: 12px;
+}
+
+/* Context Menu */
+.context-menu {
+  position: fixed;
+  background: var(--toolbar-bg);
+  border: 1px solid var(--border-color);
+  border-radius: 6px;
+  padding: 4px 0;
+  min-width: 150px;
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.15);
+  z-index: 2000;
+  display: none;
+}
+
+.context-menu.show {
+  display: block;
+}
+
+.context-menu-item {
+  padding: 6px 12px;
+  cursor: pointer;
+  font-size: 13px;
+  color: var(--text-color);
+}
+
+.context-menu-item:hover {
+  background: var(--button-hover-bg);
+}
+
+.context-menu-item.disabled {
+  opacity: 0.5;
+  pointer-events: none;
+}
+
+.context-menu-separator {
+  height: 1px;
+  background: var(--border-color);
+  margin: 4px 0;
+}
+
+/* Selection highlight for textarea */
+.editor-textarea::selection {
+  background: var(--link-color, #0366d6);
+  color: white;
+}
+
+[data-theme="dark"] .editor-textarea::selection,
+[data-theme="drac"] .editor-textarea::selection {
+  background: var(--link-color, #58a6ff);
+  color: #000;
 }
