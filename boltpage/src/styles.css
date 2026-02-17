@@ -197,11 +197,16 @@ body {
   display: flex;
 }
 
+/* Theme button wrapper (positioning anchor for dropdown) */
+.theme-btn-wrapper {
+  position: relative;
+}
+
 /* Theme menu */
 .theme-menu {
   position: absolute;
   top: 100%;
-  right: 12px;
+  left: 0;
   margin-top: 4px;
   background-color: var(--toolbar-bg);
   border: 1px solid var(--border-color);

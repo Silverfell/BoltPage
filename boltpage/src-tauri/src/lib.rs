@@ -539,13 +539,6 @@ fn broadcast_theme_change(app: AppHandle, theme: String) -> Result<(), String> {
 }
 
 #[tauri::command]
-fn broadcast_scroll_link(app: AppHandle, enabled: bool) -> Result<(), String> {
-    app.emit("scroll-link-changed", &enabled)
-        .map_err(|e| format!("Failed to broadcast scroll-link: {e}"))?;
-    Ok(())
-}
-
-#[tauri::command]
 fn show_window(app: AppHandle, window_label: String) -> Result<(), String> {
     if let Some(window) = app.get_webview_window(&window_label) {
         window
@@ -917,10 +910,18 @@ async fn open_editor_window(
     file_path: String,
     preview_window: String,
 ) -> Result<(), String> {
-    let editor_uuid = uuid::Uuid::new_v4();
-    let editor_label = format!("editor-{editor_uuid}");
-
     check_path_allowed(&app, &file_path)?;
+
+    // Deterministic label from file path so we can detect an existing editor
+    let encoded_path = base64::engine::general_purpose::URL_SAFE_NO_PAD
+        .encode(file_path.as_bytes());
+    let editor_label = format!("editor-{encoded_path}");
+
+    // If an editor for this file already exists, focus it
+    if let Some(existing) = app.get_webview_window(&editor_label) {
+        let _ = existing.set_focus();
+        return Ok(());
+    }
 
     let file_name = Path::new(&file_path)
         .file_name()
@@ -1253,8 +1254,7 @@ pub fn run() {
             start_file_watcher,
             stop_file_watcher,
             broadcast_theme_change,
-            broadcast_scroll_link,
-            show_window,
+show_window,
             create_new_window_command,
             remove_window_from_tracking,
             get_file_path_from_window_label,
@@ -1356,7 +1356,7 @@ pub fn run() {
                         }
                     }
                     "about" => {
-                        let version = env!("CARGO_PKG_VERSION");
+                        let version = app.package_info().version.to_string();
                         let msg_text =
                             format!("BoltPage v{version}\nA fast Markdown viewer and editor");
                         let escaped = serde_json::to_string(&msg_text).unwrap_or_default();

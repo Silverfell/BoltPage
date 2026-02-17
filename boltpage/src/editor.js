@@ -5,7 +5,6 @@ import {
     MIN_SCROLL_DELTA_PERCENT,
     LINE_HEIGHT_FALLBACK_MULTIPLIER,
     parsePx,
-    updateLinkScrollButton as updateLinkBtn,
     createFindOverlay,
     updateFindCount,
 } from './shared.js';
@@ -21,10 +20,11 @@ let saveTimeout = null;
 let previewWindow = null;
 let isProgrammaticScroll = false;
 let scrollDebounce = null;
-let scrollLinkEnabled = true;
 let findOverlay = null;
 let findInput = null;
+let replaceInput = null;
 let findVisible = false;
+let findHighlightOverlay = null;
 
 // Track last synced position to filter micro-scrolls
 let lastSyncedLine = null;
@@ -112,10 +112,6 @@ async function saveFile() {
     }
 }
 
-function updateLinkScrollButton() {
-    updateLinkBtn(document.getElementById('link-scroll-btn'), scrollLinkEnabled);
-}
-
 function getEditorLineHeight() {
     const ta = document.getElementById('editor-textarea');
     const cs = window.getComputedStyle(ta);
@@ -174,22 +170,22 @@ document.addEventListener('DOMContentLoaded', async () => {
         if (ctrl && e.key.toLowerCase() === 'f') {
             e.preventDefault();
             openFindOverlay();
+        } else if (ctrl && e.key.toLowerCase() === 'h') {
+            e.preventDefault();
+            openFindOverlay();
+            if (replaceInput) replaceInput.focus();
         } else if (ctrl && e.key === 's') {
             e.preventDefault();
             await saveFile();
         } else if (ctrl && e.key === 'w') {
             e.preventDefault();
             appWindow.close();
-        } else if (ctrl && e.key === 'l') {
-            e.preventDefault();
-            const btn = document.getElementById('link-scroll-btn');
-            if (btn) btn.click();
         }
     });
     
     // Sync: send scroll position to preview
     textarea.addEventListener('scroll', () => {
-        if (!currentFilePath || isProgrammaticScroll || !scrollLinkEnabled) return;
+        if (!currentFilePath || isProgrammaticScroll) return;
         if (scrollDebounce) clearTimeout(scrollDebounce);
         scrollDebounce = setTimeout(async () => {
             const lower = currentFilePath.toLowerCase();
@@ -232,7 +228,7 @@ document.addEventListener('DOMContentLoaded', async () => {
     // Listen for scroll sync events
     await listen('scroll-sync', (event) => {
         const p = event.payload || {};
-        if (!currentFilePath || !scrollLinkEnabled) return;
+        if (!currentFilePath) return;
         if (p.source === appWindow.label) return;
         if (p.file_path !== currentFilePath) return;
         if (typeof p.line === 'number') {
@@ -248,12 +244,6 @@ document.addEventListener('DOMContentLoaded', async () => {
             lastSyncedPercent = p.percent;
             setTimeout(() => { isProgrammaticScroll = false; }, PROGRAMMATIC_SCROLL_TIMEOUT_MS);
         }
-    });
-
-    // Listen for global scroll-link toggle
-    await listen('scroll-link-changed', (event) => {
-        scrollLinkEnabled = !!event.payload;
-        updateLinkScrollButton();
     });
 
     // Listen for menu find requests
@@ -290,34 +280,21 @@ document.addEventListener('DOMContentLoaded', async () => {
         // No-op in editor window — open is handled by preview windows
     });
 
-    // Link scroll button
-    const linkBtn = document.getElementById('link-scroll-btn');
-    if (linkBtn) {
-        linkBtn.addEventListener('click', async () => {
-            scrollLinkEnabled = !scrollLinkEnabled;
-            updateLinkScrollButton();
-            try { await invoke('broadcast_scroll_link', { enabled: scrollLinkEnabled }); } catch {}
-        });
-        updateLinkScrollButton();
-    }
     const findBtn = document.getElementById('find-btn');
     if (findBtn) findBtn.addEventListener('click', toggleFindOverlay);
 
     // Use Tauri's onCloseRequested so we can reliably await the async save
     // before allowing the window to close (beforeunload cannot await).
-    let closePending = false;
     await appWindow.onCloseRequested(async (event) => {
-        if (closePending) return; // second pass after save, allow close
+        event.preventDefault();
         if (saveTimeout) {
             clearTimeout(saveTimeout);
             saveTimeout = null;
         }
         if (isDirty) {
-            event.preventDefault();
-            closePending = true;
             await saveFile();
-            appWindow.close();
         }
+        appWindow.destroy();
     });
 
   } catch (error) {
@@ -382,6 +359,14 @@ async function performEditAction(action) {
     }
 }
 
+function escapeRegex(str) {
+    return str.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+}
+
+function escapeHtml(str) {
+    return str.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+}
+
 // --- Find overlay (editor) ---
 let findResults = [];
 let currentFindIndex = -1;
@@ -393,6 +378,17 @@ function ensureFindOverlay() {
     findOverlay = els.overlay;
     findInput = els.input;
 
+    // Add replace row
+    const replaceRow = document.createElement('div');
+    replaceRow.className = 'replace-row';
+    replaceRow.innerHTML = `
+        <input id="replace-input" class="find-input replace-input" type="text" placeholder="Replace..." />
+        <button class="find-btn replace-btn-text" id="replace-one" title="Replace current match">Replace</button>
+        <button class="find-btn replace-btn-text" id="replace-all" title="Replace all matches">All</button>
+    `;
+    findOverlay.appendChild(replaceRow);
+    replaceInput = replaceRow.querySelector('#replace-input');
+
     findInput.addEventListener('keydown', (e) => {
         if (e.key === 'Enter') {
             e.preventDefault();
@@ -400,12 +396,49 @@ function ensureFindOverlay() {
         } else if (e.key === 'Escape') {
             e.preventDefault();
             closeFindOverlay();
+        } else if (e.key === 'Tab' && !e.shiftKey) {
+            e.preventDefault();
+            replaceInput.focus();
+        }
+    });
+
+    replaceInput.addEventListener('keydown', (e) => {
+        if (e.key === 'Enter') {
+            e.preventDefault();
+            replaceCurrent();
+        } else if (e.key === 'Escape') {
+            e.preventDefault();
+            closeFindOverlay();
+        } else if (e.key === 'Tab' && e.shiftKey) {
+            e.preventDefault();
+            findInput.focus();
         }
     });
 
     findOverlay.querySelector('#find-prev').addEventListener('click', findPrevious);
     findOverlay.querySelector('#find-next').addEventListener('click', findNext);
     findOverlay.querySelector('#find-close').addEventListener('click', closeFindOverlay);
+    findOverlay.querySelector('#replace-one').addEventListener('click', replaceCurrent);
+    findOverlay.querySelector('#replace-all').addEventListener('click', replaceAll);
+
+    // Create highlight overlay that sits on top of the textarea
+    if (!findHighlightOverlay) {
+        const ta = document.getElementById('editor-textarea');
+        // Wrap textarea in a relative container for overlay positioning
+        const wrapper = document.createElement('div');
+        wrapper.className = 'editor-textarea-wrapper';
+        ta.parentElement.insertBefore(wrapper, ta);
+        wrapper.appendChild(ta);
+
+        findHighlightOverlay = document.createElement('div');
+        findHighlightOverlay.className = 'find-highlight-overlay';
+        wrapper.appendChild(findHighlightOverlay);
+
+        // Sync textarea scroll to overlay
+        ta.addEventListener('scroll', () => {
+            if (findHighlightOverlay) findHighlightOverlay.scrollTop = ta.scrollTop;
+        });
+    }
 }
 
 function performFind(query) {
@@ -482,26 +515,82 @@ function findPrevious() {
 }
 
 function highlightCurrentFind() {
-    if (currentFindIndex < 0 || currentFindIndex >= findResults.length) return;
-    
+    if (currentFindIndex < 0 || currentFindIndex >= findResults.length) {
+        if (findHighlightOverlay) findHighlightOverlay.innerHTML = '';
+        return;
+    }
+
     const result = findResults[currentFindIndex];
     const ta = document.getElementById('editor-textarea');
-    
-    // Don't focus the textarea - keep focus in the find input
-    ta.setSelectionRange(result.start, result.end);
-    
-    // Scroll into view
-    const lh = getEditorLineHeight();
-    const before = ta.value.slice(0, result.start);
-    const line = (before.match(/\n/g) || []).length + 1;
-    isProgrammaticScroll = true;
-    ta.scrollTop = Math.max(0, (line - 1) * lh - ta.clientHeight / 2);
-    setTimeout(() => { isProgrammaticScroll = false; }, PROGRAMMATIC_SCROLL_TIMEOUT_MS);
+    const text = ta.value;
+
+    // Update highlight overlay with current match marked
+    if (findHighlightOverlay) {
+        const before = escapeHtml(text.slice(0, result.start));
+        const match = escapeHtml(text.slice(result.start, result.end));
+        const after = escapeHtml(text.slice(result.end));
+        findHighlightOverlay.innerHTML = before + '<mark>' + match + '</mark>' + after;
+        findHighlightOverlay.scrollTop = ta.scrollTop;
+
+        // Use the mark element's rendered position for accurate scrolling
+        const mark = findHighlightOverlay.querySelector('mark');
+        if (mark) {
+            const overlayTop = findHighlightOverlay.getBoundingClientRect().top;
+            const markTop = mark.getBoundingClientRect().top;
+            const offset = markTop - overlayTop + findHighlightOverlay.scrollTop;
+            isProgrammaticScroll = true;
+            ta.scrollTop = Math.max(0, offset - ta.clientHeight / 2);
+            findHighlightOverlay.scrollTop = ta.scrollTop;
+            setTimeout(() => { isProgrammaticScroll = false; }, PROGRAMMATIC_SCROLL_TIMEOUT_MS);
+        }
+    }
+}
+
+function replaceCurrent() {
+    if (currentFindIndex < 0 || currentFindIndex >= findResults.length) return;
+    if (!replaceInput) return;
+
+    const ta = document.getElementById('editor-textarea');
+    const result = findResults[currentFindIndex];
+    const oldStart = result.start;
+    const replacement = replaceInput.value;
+
+    ta.value = ta.value.slice(0, result.start) + replacement + ta.value.slice(result.end);
+    ta.dispatchEvent(new Event('input', { bubbles: true }));
+
+    const savedIndex = currentFindIndex;
+    performFind(findInput.value);
+
+    if (findResults.length > 0) {
+        currentFindIndex = Math.min(savedIndex, findResults.length - 1);
+        // If the replacement itself matches, skip past it to the next match
+        if (findResults[currentFindIndex] && findResults[currentFindIndex].start === oldStart) {
+            currentFindIndex = (currentFindIndex + 1) % findResults.length;
+        }
+        highlightCurrentFind();
+        updateFindCountDisplay();
+    }
+}
+
+function replaceAll() {
+    if (findResults.length === 0) return;
+    if (!replaceInput) return;
+
+    const ta = document.getElementById('editor-textarea');
+    const replacement = replaceInput.value;
+    const query = findInput.value;
+    const regex = new RegExp(escapeRegex(query), 'gi');
+
+    ta.value = ta.value.replace(regex, replacement);
+    ta.dispatchEvent(new Event('input', { bubbles: true }));
+
+    performFind(query);
 }
 
 function clearFindResults() {
     findResults = [];
     currentFindIndex = -1;
+    if (findHighlightOverlay) findHighlightOverlay.innerHTML = '';
     updateFindCountDisplay();
 }
 
@@ -529,5 +618,6 @@ function closeFindOverlay() {
     findOverlay.classList.remove('show');
     findVisible = false;
     clearFindResults();
+    if (replaceInput) replaceInput.value = '';
 }
 
