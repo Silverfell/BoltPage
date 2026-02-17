@@ -21,6 +21,7 @@ pub fn parse_markdown(content: &str) -> String {
     parse_markdown_with_theme(content, "light")
 }
 
+/// Theme is applied via CSS class on the frontend; param reserved for future per-render theming.
 pub fn parse_markdown_with_theme(content: &str, _theme_name: &str) -> String {
     let mut options = Options::empty();
     options.insert(Options::ENABLE_TABLES);
@@ -100,15 +101,6 @@ pub fn parse_markdown_with_theme(content: &str, _theme_name: &str) -> String {
     ammonia::clean(&html_output)
 }
 
-pub fn get_syntax_themes() -> Vec<&'static str> {
-    vec![
-        "InspiredGitHub",
-        "Monokai",
-        "Solarized (dark)",
-        "Solarized (light)",
-    ]
-}
-
 pub fn get_syntax_theme_css(theme_name: &str) -> Option<String> {
     let theme_set = get_theme_set();
     let theme = match theme_name {
@@ -129,6 +121,7 @@ pub fn get_syntax_theme_css(theme_name: &str) -> Option<String> {
     Some(css)
 }
 
+/// Theme is applied via CSS class on the frontend; param reserved for future per-render theming.
 pub fn parse_json_with_theme(content: &str, _theme_name: &str) -> Result<String, String> {
     let json_value: serde_json_crate::Value =
         serde_json_crate::from_str(content).map_err(|e| format!("Invalid JSON: {e}"))?;
@@ -155,6 +148,10 @@ pub fn parse_json_with_theme(content: &str, _theme_name: &str) -> Result<String,
     Ok(html)
 }
 
+/// Theme is applied via CSS class on the frontend; param reserved for future per-render theming.
+///
+/// Note: serde_yaml 0.9 uses `IndexMap` for `Mapping`, so key insertion order
+/// from the source document is preserved through the parse/serialize round-trip.
 pub fn parse_yaml_with_theme(content: &str, _theme_name: &str) -> Result<String, String> {
     let yaml_value: serde_yaml_crate::Value =
         serde_yaml_crate::from_str(content).map_err(|e| format!("Invalid YAML: {e}"))?;

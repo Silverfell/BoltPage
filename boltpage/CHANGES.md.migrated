@@ -1,5 +1,6 @@
 # Changes
 
+2025-12-10: Fix pr-checks.yml artifact path (remove src-tauri prefix, Tauri 2.x builds to target/ not src-tauri/target/)
 2025-12-10: Fix unused-mut warning for help_menu_builder (only used on macOS/Windows)
 2025-12-10: Fix code formatting issues (cargo fmt) for CI/CD pipeline
 2025-12-10: Remove "system" theme option and set "drac" as the default theme

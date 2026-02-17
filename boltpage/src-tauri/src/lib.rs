@@ -2,11 +2,11 @@ use base64::Engine;
 use lru::LruCache;
 use notify::{Config, RecommendedWatcher, RecursiveMode, Watcher};
 use serde::{Deserialize, Serialize};
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::fs;
 use std::num::NonZeroUsize;
 use std::path::{Path, PathBuf};
-use std::sync::Arc;
+use std::sync::{Arc, RwLock as StdRwLock};
 use tauri::menu::{MenuBuilder, MenuItemBuilder, SubmenuBuilder};
 use tauri::{AppHandle, Emitter, Manager, WebviewUrl, WebviewWindowBuilder};
 use tauri_plugin_store::StoreExt;
@@ -35,6 +35,42 @@ fn file_url_to_path(s: &str) -> Option<PathBuf> {
     } else {
         None
     }
+}
+
+/// Canonicalize a path for use in the allowed-paths set.
+/// Falls back to the raw string if the file does not yet exist.
+fn normalize_path(path: &str) -> String {
+    fs::canonicalize(path)
+        .map(|p| p.to_string_lossy().to_string())
+        .unwrap_or_else(|_| path.to_string())
+}
+
+/// Verify that `path` was explicitly opened by the user (file dialog, CLI, or
+/// macOS Launch Services).  Prevents a compromised webview from reading /
+/// writing arbitrary files.
+fn check_path_allowed(app: &AppHandle, path: &str) -> Result<(), String> {
+    let normalized = normalize_path(path);
+    let state = app.state::<AppState>();
+    let allowed = state
+        .allowed_paths
+        .read()
+        .expect("allowed_paths lock poisoned");
+    if allowed.contains(&normalized) {
+        Ok(())
+    } else {
+        Err("Access denied: path not authorized".to_string())
+    }
+}
+
+/// Register a path as allowed for file I/O commands.
+fn allow_path(app: &AppHandle, path: &str) {
+    let normalized = normalize_path(path);
+    let state = app.state::<AppState>();
+    state
+        .allowed_paths
+        .write()
+        .expect("allowed_paths lock poisoned")
+        .insert(normalized);
 }
 
 // Resolve file path from various input formats (URLs, relative paths, absolute paths)
@@ -73,7 +109,6 @@ fn calculate_window_size(app: &AppHandle, prefs: &AppPreferences) -> tauri::Resu
         let scale_factor = monitor.scale_factor();
 
         // Convert physical pixels to logical pixels
-        let _logical_width = monitor_size.width as f64 / scale_factor;
         let logical_height = monitor_size.height as f64 / scale_factor;
 
         // Page-like proportions: reasonable reading width, full screen height
@@ -82,7 +117,7 @@ fn calculate_window_size(app: &AppHandle, prefs: &AppPreferences) -> tauri::Resu
 
         debug_log!(
             "[DEBUG] Monitor size: {}x{} (scale: {}), Using calculated window size: {}x{}",
-            _logical_width,
+            monitor_size.width as f64 / scale_factor,
             logical_height,
             scale_factor,
             page_width,
@@ -147,11 +182,13 @@ async fn create_window_with_file(
     // Rebuild the application menu to include this window in the Window menu
     let _ = rebuild_app_menu(app);
 
-    // Track file windows
+    // Track file windows and register as allowed for I/O commands
     if let Some(path) = file_path {
+        let path_str = path.to_string_lossy().to_string();
+        allow_path(app, &path_str);
         let app_state = app.state::<AppState>();
         let mut open_windows = app_state.open_windows.write().await;
-        open_windows.insert(path.to_string_lossy().to_string(), window_label.clone());
+        open_windows.insert(path_str, window_label.clone());
     }
 
     Ok(window_label)
@@ -236,13 +273,7 @@ fn rebuild_app_menu(app: &AppHandle) -> tauri::Result<()> {
         .build()?;
 
     // Window menu (dynamic list of open windows)
-    let mut window_menu_builder = SubmenuBuilder::new(app, "Window")
-        .item(
-            &MenuItemBuilder::with_id("new-window", "New Window")
-                .accelerator("CmdOrCtrl+Shift+N")
-                .build(app)?,
-        )
-        .separator();
+    let mut window_menu_builder = SubmenuBuilder::new(app, "Window").separator();
 
     for (label, window) in app.webview_windows() {
         let title = window.title().unwrap_or_else(|_| "Untitled".to_string());
@@ -278,24 +309,27 @@ fn rebuild_app_menu(app: &AppHandle) -> tauri::Result<()> {
 }
 
 // Global file watchers storage with dedup by file path and debounced emits
+struct FileWatcherInner {
+    watchers: HashMap<String, RecommendedWatcher>,
+    /// Stored to keep the channel alive; dropping the sender closes the receiver.
+    senders: HashMap<String, mpsc::UnboundedSender<()>>,
+    debounce_tasks: HashMap<String, tauri::async_runtime::JoinHandle<()>>,
+    subs: HashMap<String, Vec<String>>,
+}
+
 struct FileWatchers {
-    // One OS watcher per file path
-    watchers: Arc<Mutex<HashMap<String, RecommendedWatcher>>>,
-    // Sender per file path to notify async task
-    senders: Arc<Mutex<HashMap<String, mpsc::UnboundedSender<()>>>>,
-    // Debounce task per file path
-    debounce_tasks: Arc<Mutex<HashMap<String, tauri::async_runtime::JoinHandle<()>>>>,
-    // Subscriptions: file path -> list of window labels
-    subs: Arc<Mutex<HashMap<String, Vec<String>>>>,
+    inner: Arc<Mutex<FileWatcherInner>>,
 }
 
 impl Default for FileWatchers {
     fn default() -> Self {
         Self {
-            watchers: Arc::new(Mutex::new(HashMap::new())),
-            senders: Arc::new(Mutex::new(HashMap::new())),
-            debounce_tasks: Arc::new(Mutex::new(HashMap::new())),
-            subs: Arc::new(Mutex::new(HashMap::new())),
+            inner: Arc::new(Mutex::new(FileWatcherInner {
+                watchers: HashMap::new(),
+                senders: HashMap::new(),
+                debounce_tasks: HashMap::new(),
+                subs: HashMap::new(),
+            })),
         }
     }
 }
@@ -316,9 +350,17 @@ struct AppState {
     /// Writes on every resize event, so Mutex is appropriate
     resize_tasks: Arc<Mutex<ResizeTaskMap>>,
 
-    /// HTML render cache: (path, size, mtime_secs, theme) -> HTML
+    /// HTML render cache: (path, size, mtime_secs) -> HTML
     /// Read-heavy workload with LRU eviction
     html_cache: Arc<RwLock<LruCache<CacheKey, String>>>,
+
+    /// Set of canonicalized paths the user has explicitly opened.
+    /// Uses std::sync::RwLock (not tokio) so sync commands can read it.
+    allowed_paths: Arc<StdRwLock<HashSet<String>>>,
+
+    /// Serializes read-modify-write cycles on the preference store
+    /// to prevent concurrent saves from overwriting each other.
+    pref_lock: Arc<Mutex<()>>,
 }
 
 impl Default for AppState {
@@ -327,6 +369,8 @@ impl Default for AppState {
             open_windows: Arc::new(RwLock::new(HashMap::new())),
             resize_tasks: Arc::new(Mutex::new(HashMap::new())),
             html_cache: Arc::new(RwLock::new(LruCache::new(NonZeroUsize::new(50).unwrap()))),
+            allowed_paths: Arc::new(StdRwLock::new(HashSet::new())),
+            pref_lock: Arc::new(Mutex::new(())),
         }
     }
 }
@@ -361,7 +405,6 @@ struct CacheKey {
     path: String,
     size: u64,
     mtime_secs: u64,
-    theme: String,
 }
 
 async fn invalidate_cache_for_path(app: &AppHandle, file_path: &str) {
@@ -386,89 +429,76 @@ async fn start_file_watcher(
     file_path: String,
     window_label: String,
 ) -> Result<(), String> {
+    check_path_allowed(&app, &file_path)?;
     let watchers = app.state::<FileWatchers>();
+    let mut inner = watchers.inner.lock().await;
 
     // Register subscription
-    {
-        let mut subs = watchers.subs.lock().await;
-        let entry = subs.entry(file_path.clone()).or_default();
-        if !entry.iter().any(|w| w == &window_label) {
-            entry.push(window_label.clone());
-        }
+    let entry = inner.subs.entry(file_path.clone()).or_default();
+    if !entry.iter().any(|w| w == &window_label) {
+        entry.push(window_label.clone());
     }
 
-    // Ensure a single watcher exists for this file path
-    let need_create = {
-        let map = watchers.watchers.lock().await;
-        !map.contains_key(&file_path)
-    };
+    // If watcher already exists for this file, we're done
+    if inner.watchers.contains_key(&file_path) {
+        return Ok(());
+    }
 
-    if need_create {
-        // Channel for raw events
-        let (tx, mut rx) = mpsc::unbounded_channel();
+    // Create watcher while holding lock to prevent duplicate creation.
+    // Watcher creation is fast (OS notification setup only).
+    let (tx, mut rx) = mpsc::unbounded_channel();
 
-        // Create the watcher
-        let tx_for_watcher = tx.clone();
-        let mut watcher = RecommendedWatcher::new(
-            move |res: Result<notify::Event, notify::Error>| {
-                if let Ok(event) = res {
-                    if matches!(event.kind, notify::EventKind::Modify(_)) {
-                        let _ = tx_for_watcher.send(());
-                    }
+    let tx_for_watcher = tx.clone();
+    let mut watcher = RecommendedWatcher::new(
+        move |res: Result<notify::Event, notify::Error>| {
+            if let Ok(event) = res {
+                if matches!(event.kind, notify::EventKind::Modify(_)) {
+                    let _ = tx_for_watcher.send(());
                 }
-            },
-            Config::default(),
-        )
-        .map_err(|e| format!("Failed to create watcher: {e}"))?;
+            }
+        },
+        Config::default(),
+    )
+    .map_err(|e| format!("Failed to create watcher: {e}"))?;
 
-        // Watch the file
-        watcher
-            .watch(Path::new(&file_path), RecursiveMode::NonRecursive)
-            .map_err(|e| format!("Failed to watch file: {e}"))?;
+    watcher
+        .watch(Path::new(&file_path), RecursiveMode::NonRecursive)
+        .map_err(|e| format!("Failed to watch file: {e}"))?;
 
-        // Store watcher and sender
-        watchers
-            .watchers
-            .lock()
-            .await
-            .insert(file_path.clone(), watcher);
-        watchers.senders.lock().await.insert(file_path.clone(), tx);
-
-        // Spawn a debounced notifier for this file path
-        let app_clone = app.clone();
-        let file_key = file_path.clone();
-        let handle = tauri::async_runtime::spawn(async move {
-            let mut pending_task: Option<tauri::async_runtime::JoinHandle<()>> = None;
-            while rx.recv().await.is_some() {
-                // Reset debounce timer
-                if let Some(h) = pending_task.take() {
-                    h.abort();
-                }
-                let app2 = app_clone.clone();
-                let file2 = file_key.clone();
-                pending_task = Some(tauri::async_runtime::spawn(async move {
-                    sleep(Duration::from_millis(250)).await;
-                    // Invalidate any cached HTML for this file
-                    invalidate_cache_for_path(&app2, &file2).await;
-                    if let Some(state) = app2.try_state::<FileWatchers>() {
-                        let subs = state.subs.lock().await;
-                        if let Some(labels) = subs.get(&file2) {
-                            for label in labels.iter() {
-                                if let Some(win) = app2.get_webview_window(label) {
-                                    let _ = win.emit("file-changed", ());
-                                }
+    // Spawn a debounced notifier for this file path
+    let app_clone = app.clone();
+    let file_key = file_path.clone();
+    let handle = tauri::async_runtime::spawn(async move {
+        let mut pending_task: Option<tauri::async_runtime::JoinHandle<()>> = None;
+        while rx.recv().await.is_some() {
+            // Reset debounce timer
+            if let Some(h) = pending_task.take() {
+                h.abort();
+            }
+            let app2 = app_clone.clone();
+            let file2 = file_key.clone();
+            pending_task = Some(tauri::async_runtime::spawn(async move {
+                sleep(Duration::from_millis(250)).await;
+                // Invalidate any cached HTML for this file
+                invalidate_cache_for_path(&app2, &file2).await;
+                if let Some(state) = app2.try_state::<FileWatchers>() {
+                    let guard = state.inner.lock().await;
+                    if let Some(labels) = guard.subs.get(&file2) {
+                        for label in labels.iter() {
+                            if let Some(win) = app2.get_webview_window(label) {
+                                let _ = win.emit("file-changed", ());
                             }
                         }
                     }
-                }));
-            }
-        });
-        watchers
-            .debounce_tasks
-            .lock()
-            .await
-            .insert(file_path.clone(), handle);
-    }
+                }
+            }));
+        }
+    });
+
+    // Store watcher, sender, and debounce task (lock still held)
+    inner.watchers.insert(file_path.clone(), watcher);
+    inner.senders.insert(file_path.clone(), tx);
+    inner.debounce_tasks.insert(file_path.clone(), handle);
 
     Ok(())
 }
@@ -476,34 +506,23 @@ async fn start_file_watcher(
 #[tauri::command]
 async fn stop_file_watcher(app: AppHandle, window_label: String) -> Result<(), String> {
     let watchers = app.state::<FileWatchers>();
+    let mut inner = watchers.inner.lock().await;
+
     // Remove the window from all subscriptions and clean up any orphaned watchers
     let mut to_remove: Vec<String> = Vec::new();
-    {
-        let mut subs = watchers.subs.lock().await;
-        for (file, labels) in subs.iter_mut() {
-            labels.retain(|l| l != &window_label);
-            if labels.is_empty() {
-                to_remove.push(file.clone());
-            }
-        }
-        // Actually remove empty entries
-        for f in to_remove.iter() {
-            subs.remove(f);
+    for (file, labels) in inner.subs.iter_mut() {
+        labels.retain(|l| l != &window_label);
+        if labels.is_empty() {
+            to_remove.push(file.clone());
         }
     }
 
-    // Stop watchers for files with no subscribers
-    for f in to_remove.iter() {
-        let mut map = watchers.watchers.lock().await;
-        map.remove(f);
-        drop(map);
-
-        let mut txs = watchers.senders.lock().await;
-        txs.remove(f);
-        drop(txs);
-
-        let mut tasks = watchers.debounce_tasks.lock().await;
-        if let Some(h) = tasks.remove(f) {
+    // Clean up files with no subscribers
+    for f in &to_remove {
+        inner.subs.remove(f);
+        inner.watchers.remove(f);
+        inner.senders.remove(f);
+        if let Some(h) = inner.debounce_tasks.remove(f) {
             h.abort();
         }
     }
@@ -536,8 +555,10 @@ fn show_window(app: AppHandle, window_label: String) -> Result<(), String> {
     Ok(())
 }
 
-fn convert_to_logical(app: &AppHandle, width: u32, height: u32) -> (u32, u32) {
-    if let Ok(Some(monitor)) = app.primary_monitor() {
+fn convert_to_logical(window: &tauri::Window, width: u32, height: u32) -> (u32, u32) {
+    // Use the window's current monitor, not the primary monitor, so the
+    // correct scale factor is applied when the window is on a secondary display.
+    if let Ok(Some(monitor)) = window.current_monitor() {
         let scale_factor = monitor.scale_factor();
         let logical_width = (width as f64 / scale_factor).round() as u32;
         let logical_height = (height as f64 / scale_factor).round() as u32;
@@ -571,27 +592,37 @@ fn escape_html(input: &str) -> String {
 }
 
 #[tauri::command]
-fn read_file(path: String) -> Result<String, String> {
+fn read_file(app: AppHandle, path: String) -> Result<String, String> {
+    check_path_allowed(&app, &path)?;
     fs::read_to_string(&path).map_err(|e| format!("Failed to read file: {e}"))
 }
 
 #[tauri::command]
-fn read_file_bytes_b64(path: String) -> Result<String, String> {
+fn read_file_bytes_b64(app: AppHandle, path: String) -> Result<String, String> {
+    check_path_allowed(&app, &path)?;
     fs::read(&path)
         .map(|bytes| base64::engine::general_purpose::STANDARD.encode(bytes))
         .map_err(|e| format!("Failed to read file bytes: {e}"))
 }
 
 #[tauri::command]
-fn write_file(path: String, content: String) -> Result<(), String> {
+fn write_file(app: AppHandle, path: String, content: String) -> Result<(), String> {
+    check_path_allowed(&app, &path)?;
+    if !Path::new(&path).exists() {
+        return Err("File does not exist. Use create to make new files.".to_string());
+    }
     fs::write(&path, content).map_err(|e| format!("Failed to write file: {e}"))
 }
 
 #[tauri::command]
-fn is_writable(path: String) -> Result<bool, String> {
-    match fs::metadata(&path) {
-        Ok(meta) => Ok(!meta.permissions().readonly()),
-        Err(e) => Err(format!("Failed to get metadata: {e}")),
+fn is_writable(app: AppHandle, path: String) -> Result<bool, String> {
+    check_path_allowed(&app, &path)?;
+    // Actually attempt to open for writing rather than checking permission bits,
+    // which are unreliable on Unix for non-owner users.
+    match fs::OpenOptions::new().write(true).open(&path) {
+        Ok(_) => Ok(true),
+        Err(e) if e.kind() == std::io::ErrorKind::PermissionDenied => Ok(false),
+        Err(e) => Err(format!("Failed to check writability: {e}")),
     }
 }
 
@@ -652,21 +683,46 @@ async fn render_file_to_html(
 ) -> Result<String, String> {
     use std::time::UNIX_EPOCH;
 
-    // Stat for cache key
-    let meta = fs::metadata(&path).map_err(|e| format!("Failed to stat file: {e}"))?;
-    let size = meta.len();
-    let mtime_secs = meta
-        .modified()
-        .ok()
-        .and_then(|t| t.duration_since(UNIX_EPOCH).ok())
-        .map(|d| d.as_secs())
-        .unwrap_or(0);
+    check_path_allowed(&app, &path)?;
 
+    // Only allow known file extensions
+    let allowed = ["md", "markdown", "json", "yaml", "yml", "txt"];
+    let ext = Path::new(&path)
+        .extension()
+        .and_then(|s| s.to_str())
+        .map(|s| s.to_lowercase())
+        .unwrap_or_default();
+    if !allowed.contains(&ext.as_str()) {
+        return Err(format!("Unsupported file extension: .{ext}"));
+    }
+
+    // Stat and read in a single blocking call to avoid TOCTOU between
+    // metadata check and content read.
+    let read_path = path.clone();
+    let (size, mtime_secs, raw_content) =
+        tauri::async_runtime::spawn_blocking(move || -> Result<(u64, u64, String), String> {
+            let meta =
+                fs::metadata(&read_path).map_err(|e| format!("Failed to stat file: {e}"))?;
+            let size = meta.len();
+            let mtime_secs = meta
+                .modified()
+                .ok()
+                .and_then(|t| t.duration_since(UNIX_EPOCH).ok())
+                .map(|d| d.as_secs())
+                .unwrap_or(0);
+            let content =
+                fs::read_to_string(&read_path).map_err(|e| format!("Failed to read file: {e}"))?;
+            Ok((size, mtime_secs, content))
+        })
+        .await
+        .map_err(|e| format!("Join error: {e}"))??;
+
+    // Theme is not part of the cache key because the rendered HTML is
+    // theme-independent (themes are applied via CSS class swapping).
     let key = CacheKey {
         path: path.clone(),
         size,
         mtime_secs,
-        theme: theme.clone(),
     };
 
     // Try cache first (write lock needed because LRU get() updates internal state)
@@ -677,35 +733,19 @@ async fn render_file_to_html(
         }
     }
 
-    // Heavy work in blocking thread
+    // Heavy rendering work in blocking thread
     let html = tauri::async_runtime::spawn_blocking(move || -> Result<String, String> {
-        // Determine kind by extension
-        let lower = Path::new(&path)
-            .extension()
-            .and_then(|s| s.to_str())
-            .map(|s| s.to_lowercase())
-            .unwrap_or_default();
-
-        if lower == "txt" {
-            let content =
-                fs::read_to_string(&path).map_err(|e| format!("Failed to read file: {e}"))?;
-            let escaped = escape_html(&content);
+        if ext == "txt" {
+            let escaped = escape_html(&raw_content);
             Ok(format!(
                 "<div class=\"markdown-body\"><pre class=\"plain-text\">{escaped}</pre></div>"
             ))
-        } else if lower == "json" {
-            let content =
-                fs::read_to_string(&path).map_err(|e| format!("Failed to read file: {e}"))?;
-            markrust_core::parse_json_with_theme(&content, &theme)
-        } else if lower == "yaml" || lower == "yml" {
-            let content =
-                fs::read_to_string(&path).map_err(|e| format!("Failed to read file: {e}"))?;
-            markrust_core::parse_yaml_with_theme(&content, &theme)
+        } else if ext == "json" {
+            markrust_core::parse_json_with_theme(&raw_content, &theme)
+        } else if ext == "yaml" || ext == "yml" {
+            markrust_core::parse_yaml_with_theme(&raw_content, &theme)
         } else {
-            // default markdown
-            let content =
-                fs::read_to_string(&path).map_err(|e| format!("Failed to read file: {e}"))?;
-            Ok(markrust_core::parse_markdown_with_theme(&content, &theme))
+            Ok(markrust_core::parse_markdown_with_theme(&raw_content, &theme))
         }
     })
     .await
@@ -740,7 +780,11 @@ fn save_preferences(app: AppHandle, preferences: AppPreferences) -> Result<(), S
         .store(".boltpage.dat")
         .map_err(|e| format!("Failed to access store: {e}"))?;
 
-    store.set("preferences", serde_json::to_value(&preferences).unwrap());
+    store.set(
+        "preferences",
+        serde_json::to_value(&preferences)
+            .map_err(|e| format!("Failed to serialize preferences: {e}"))?,
+    );
     store
         .save()
         .map_err(|e| format!("Failed to save preferences: {e}"))?;
@@ -748,25 +792,74 @@ fn save_preferences(app: AppHandle, preferences: AppPreferences) -> Result<(), S
     Ok(())
 }
 
+/// Atomically read-modify-write a single preference key while holding pref_lock.
+/// Used by both JS (via the command) and internal Rust code.
+async fn save_preference_key_inner(
+    app: &AppHandle,
+    key: &str,
+    value: serde_json::Value,
+) -> Result<(), String> {
+    let state = app.state::<AppState>();
+    let _lock = state.pref_lock.lock().await;
+
+    let store = app
+        .store(".boltpage.dat")
+        .map_err(|e| format!("Failed to access store: {e}"))?;
+
+    let mut map = store
+        .get("preferences")
+        .and_then(|v| serde_json::from_value::<serde_json::Map<String, serde_json::Value>>(v.clone()).ok())
+        .unwrap_or_default();
+
+    map.insert(key.to_string(), value);
+
+    store.set(
+        "preferences",
+        serde_json::Value::Object(map),
+    );
+    store
+        .save()
+        .map_err(|e| format!("Failed to save preferences: {e}"))?;
+    Ok(())
+}
+
+#[tauri::command]
+async fn save_preference_key(
+    app: AppHandle,
+    key: String,
+    value: serde_json::Value,
+) -> Result<(), String> {
+    save_preference_key_inner(&app, &key, value).await
+}
+
 #[tauri::command]
 async fn open_file_dialog(app: AppHandle) -> Result<Option<String>, String> {
     use tauri_plugin_dialog::DialogExt;
 
-    let file_path = app
-        .dialog()
-        .file()
-        // Show a combined filter first for convenience
-        .add_filter(
-            "Supported",
-            &["md", "markdown", "json", "yaml", "yml", "txt", "pdf"],
-        )
-        // Specific filters
-        .add_filter("Markdown", &["md", "markdown"])
-        .add_filter("JSON", &["json"])
-        .add_filter("YAML", &["yaml", "yml"])
-        .add_filter("Text", &["txt"])
-        .add_filter("PDF", &["pdf"])
-        .blocking_pick_file();
+    // Run the blocking native dialog off the async worker thread
+    let app_clone = app.clone();
+    let file_path = tauri::async_runtime::spawn_blocking(move || {
+        app_clone
+            .dialog()
+            .file()
+            .add_filter(
+                "Supported",
+                &["md", "markdown", "json", "yaml", "yml", "txt", "pdf"],
+            )
+            .add_filter("Markdown", &["md", "markdown"])
+            .add_filter("JSON", &["json"])
+            .add_filter("YAML", &["yaml", "yml"])
+            .add_filter("Text", &["txt"])
+            .add_filter("PDF", &["pdf"])
+            .blocking_pick_file()
+    })
+    .await
+    .map_err(|e| format!("Join error: {e}"))?;
+
+    // Register the user-chosen path as allowed for I/O
+    if let Some(ref p) = file_path {
+        allow_path(&app, &p.to_string());
+    }
 
     Ok(file_path.map(|p| p.to_string()))
 }
@@ -775,12 +868,18 @@ async fn open_file_dialog(app: AppHandle) -> Result<Option<String>, String> {
 async fn create_new_markdown_file(app: AppHandle) -> Result<Option<String>, String> {
     use tauri_plugin_dialog::DialogExt;
 
-    let selection = app
-        .dialog()
-        .file()
-        .add_filter("Markdown", &["md", "markdown"])
-        .add_filter("All Files", &["*"])
-        .blocking_save_file();
+    // Run the blocking native dialog off the async worker thread
+    let app_clone = app.clone();
+    let selection = tauri::async_runtime::spawn_blocking(move || {
+        app_clone
+            .dialog()
+            .file()
+            .add_filter("Markdown", &["md", "markdown"])
+            .add_filter("All Files", &["*"])
+            .blocking_save_file()
+    })
+    .await
+    .map_err(|e| format!("Join error: {e}"))?;
 
     let Some(selection) = selection else {
         return Ok(None);
@@ -821,7 +920,12 @@ async fn open_editor_window(
     let editor_uuid = uuid::Uuid::new_v4();
     let editor_label = format!("editor-{editor_uuid}");
 
-    let file_name = file_path.split('/').next_back().unwrap_or("Untitled");
+    check_path_allowed(&app, &file_path)?;
+
+    let file_name = Path::new(&file_path)
+        .file_name()
+        .and_then(|n| n.to_str())
+        .unwrap_or("Untitled");
     let _editor_window =
         WebviewWindowBuilder::new(&app, &editor_label, WebviewUrl::App("editor.html".into()))
             .title(format!("BoltPage Editor - {file_name}"))
@@ -900,11 +1004,14 @@ fn get_all_windows(app: AppHandle) -> Result<Vec<WindowInfo>, String> {
 
     for (label, window) in app.webview_windows() {
         let title = window.title().unwrap_or_else(|_| "Untitled".to_string());
-        // For now, just show the window label as file path since we can't easily get the actual path
-        let file_path = if label.starts_with("markdown-file-") {
-            "File window".to_string()
+        let file_path = if let Some(encoded) = label.strip_prefix("markdown-file-") {
+            base64::engine::general_purpose::URL_SAFE_NO_PAD
+                .decode(encoded)
+                .ok()
+                .and_then(|b| String::from_utf8(b).ok())
+                .unwrap_or_default()
         } else {
-            "Empty window".to_string()
+            String::new()
         };
 
         windows.push(WindowInfo {
@@ -964,11 +1071,8 @@ fn is_cli_installed() -> Result<bool, String> {
 }
 
 #[tauri::command]
-fn mark_cli_setup_declined(app: AppHandle) -> Result<(), String> {
-    let mut prefs = get_preferences(app.clone())?;
-    prefs.cli_setup_prompted = Some(true);
-    save_preferences(app, prefs)?;
-    Ok(())
+async fn mark_cli_setup_declined(app: AppHandle) -> Result<(), String> {
+    save_preference_key_inner(&app, "cli_setup_prompted", serde_json::Value::Bool(true)).await
 }
 
 #[cfg(target_os = "macos")]
@@ -1074,8 +1178,12 @@ async fn setup_cli_access() -> Result<String, String> {
     env.set_value("Path", &new_path)
         .map_err(|e| format!("Failed to update PATH: {e}"))?;
 
-    // Broadcast environment change
-    let _ = Command::new("setx").arg("PATH").arg(&new_path).output();
+    // Broadcast WM_SETTINGCHANGE so running processes pick up the new PATH.
+    // We intentionally avoid `setx` here because it silently truncates values
+    // longer than 1024 characters, which would corrupt the user's PATH.
+    let _ = Command::new("cmd")
+        .args(["/C", "rundll32", "user32.dll,UpdatePerUserSystemParameters"])
+        .output();
 
     Ok("CLI access configured successfully. You may need to restart your terminal.".to_string())
 }
@@ -1090,6 +1198,12 @@ async fn setup_cli_access() -> Result<String, String> {
 pub fn run() {
     let args: Vec<String> = std::env::args().collect();
     let mut file_path = args.get(1).cloned();
+    // Skip arguments that look like flags
+    if let Some(ref p) = file_path {
+        if p.starts_with('-') {
+            file_path = None;
+        }
+    }
     // If a CLI path was provided, ensure it exists (create empty file) and normalize to absolute
     if let Some(ref path_str) = file_path {
         if let Some(pathbuf) = resolve_file_path(path_str) {
@@ -1128,6 +1242,7 @@ pub fn run() {
             parse_json_with_theme,
             parse_yaml_with_theme,
             format_json_pretty,
+            save_preference_key,
             broadcast_scroll_sync,
             get_preferences,
             save_preferences,
@@ -1186,19 +1301,15 @@ pub fn run() {
                         }
                     }
                     "open" => {
-                        // Create a new window and trigger open file dialog
-                        let app_clone = app.clone();
-                        tauri::async_runtime::spawn(async move {
-                            let _ = create_new_window_command(app_clone, None).await;
-                        });
+                        // Emit event so the focused window triggers the open file dialog
+                        let _ = app.emit("menu-open", &());
                     }
                     "print" => {
                         // Forward to all windows; JS will handle based on focus
                         let _ = app.emit("menu-print", &());
                     }
                     "close" => {
-                        // This will be handled by the window's menu directly
-                        // Individual windows handle their own close events
+                        let _ = app.emit("menu-close", &());
                     }
                     "quit" => {
                         app.exit(0);
@@ -1219,7 +1330,9 @@ pub fn run() {
                             tauri::async_runtime::spawn(async move {
                                 match setup_cli_access().await {
                                     Ok(msg) => {
-                                        let alert = format!("alert('{msg}')");
+                                        let escaped =
+                                            serde_json::to_string(&msg).unwrap_or_default();
+                                        let alert = format!("alert({escaped})");
                                         if let Some((_, window)) =
                                             app_clone.webview_windows().into_iter().next()
                                         {
@@ -1227,7 +1340,11 @@ pub fn run() {
                                         }
                                     }
                                     Err(err) => {
-                                        let alert = format!("alert('CLI setup failed: {err}')");
+                                        let escaped = serde_json::to_string(&format!(
+                                            "CLI setup failed: {err}"
+                                        ))
+                                        .unwrap_or_default();
+                                        let alert = format!("alert({escaped})");
                                         if let Some((_, window)) =
                                             app_clone.webview_windows().into_iter().next()
                                         {
@@ -1240,18 +1357,22 @@ pub fn run() {
                     }
                     "about" => {
                         let version = env!("CARGO_PKG_VERSION");
-                        let msg = format!(
-                            "alert('BoltPage v{version}\\nA fast Markdown viewer and editor')"
-                        );
-                        if let Some(window) = app.get_webview_window("main") {
-                            let _ = window.eval(&msg);
-                        } else if let Some((_, window)) = app.webview_windows().into_iter().next() {
-                            let _ = window.eval(&msg);
+                        let msg_text =
+                            format!("BoltPage v{version}\nA fast Markdown viewer and editor");
+                        let escaped = serde_json::to_string(&msg_text).unwrap_or_default();
+                        let alert = format!("alert({escaped})");
+                        if let Some((_, window)) = app.webview_windows().into_iter().next() {
+                            let _ = window.eval(&alert);
                         }
                     }
                     _ => {}
                 }
             });
+
+            // Register CLI path as allowed before creating the window
+            if let Some(ref p) = file_path {
+                allow_path(app.handle(), p);
+            }
 
             // Create initial window based on launch method
             if let Some(resolved_path) = file_path.and_then(|p| resolve_file_path(&p)) {
@@ -1283,17 +1404,21 @@ pub fn run() {
         .on_window_event(|window, event| {
             match event {
                 tauri::WindowEvent::Resized(size) => {
-                    // Debounce saves and convert to logical pixels
+                    // Debounce saves and convert to logical pixels using the
+                    // window's own monitor (not primary) for correct scale factor.
                     let app = window.app_handle().clone();
                     let label = window.label().to_string();
-                    let (lw, lh) = convert_to_logical(&app, size.width, size.height);
+                    let (lw, lh) = convert_to_logical(window, size.width, size.height);
 
-                    // Extract only the Arc<Mutex> we need (not a borrow)
-                    let resize_tasks_arc = app
-                        .try_state::<AppState>()
-                        .map(|state| state.inner().resize_tasks.clone());
+                    // Extract only the Arcs we need (not a borrow of the State)
+                    let arcs = app.try_state::<AppState>().map(|state| {
+                        (
+                            state.inner().resize_tasks.clone(),
+                            state.inner().pref_lock.clone(),
+                        )
+                    });
 
-                    if let Some(resize_tasks) = resize_tasks_arc {
+                    if let Some((resize_tasks, pref_lock)) = arcs {
                         let app_clone = app.clone();
                         tauri::async_runtime::spawn(async move {
                             let mut tasks = resize_tasks.lock().await;
@@ -1308,7 +1433,8 @@ pub fn run() {
                             let handle = tauri::async_runtime::spawn(async move {
                                 sleep(Duration::from_millis(450)).await;
 
-                                // Save the size that was captured at spawn time
+                                // Hold pref_lock for the read-modify-write cycle
+                                let _lock = pref_lock.lock().await;
                                 let mut prefs =
                                     get_preferences(app_clone2.clone()).unwrap_or_default();
                                 prefs.window_width = lw;
@@ -1341,9 +1467,15 @@ pub fn run() {
             // Handle file opening via Launch Services on macOS
             #[cfg(target_os = "macos")]
             if let tauri::RunEvent::Opened { urls } = _event {
+                // Register paths as allowed before creating windows
+                for url in urls.iter() {
+                    if let Some(path) = resolve_file_path(url.as_ref()) {
+                        allow_path(_app, &path.to_string_lossy());
+                    }
+                }
                 let app_clone = _app.clone();
+                let urls = urls.clone();
                 tauri::async_runtime::spawn(async move {
-                    // Open windows for all the files
                     for url in urls {
                         if let Some(path) = resolve_file_path(url.as_ref()) {
                             if let Err(e) =
@@ -1353,7 +1485,6 @@ pub fn run() {
                             }
                         }
                     }
-                    // Rebuild menu after opening files
                     let _ = rebuild_app_menu(&app_clone);
                 });
             }
