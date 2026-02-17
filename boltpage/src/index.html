@@ -22,13 +22,20 @@
                 </svg>
                 <span class="refresh-indicator" id="refresh-indicator">!</span>
             </button>
-            <button id="theme-btn" class="toolbar-btn" title="Theme (Ctrl+T)">
-                <svg width="20" height="20" viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="2">
-                    <circle cx="10" cy="10" r="4"/>
-                    <path d="M10 2v2m0 12v2m8-8h-2M4 10H2m14.14-5.66l-1.41 1.41M5.27 14.73l-1.41 1.41m14.14 0l-1.41-1.41M5.27 5.27L3.86 3.86"/>
-                </svg>
-                Theme
-            </button>
+            <div class="theme-btn-wrapper">
+                <button id="theme-btn" class="toolbar-btn" title="Theme (Ctrl+T)">
+                    <svg width="20" height="20" viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="2">
+                        <circle cx="10" cy="10" r="4"/>
+                        <path d="M10 2v2m0 12v2m8-8h-2M4 10H2m14.14-5.66l-1.41 1.41M5.27 14.73l-1.41 1.41m14.14 0l-1.41-1.41M5.27 5.27L3.86 3.86"/>
+                    </svg>
+                    Theme
+                </button>
+                <div id="theme-menu" class="theme-menu">
+                    <button class="theme-option" data-theme="light">Light</button>
+                    <button class="theme-option" data-theme="dark">Dark</button>
+                    <button class="theme-option" data-theme="drac">Drac</button>
+                </div>
+            </div>
         </div>
         <div class="toolbar-right">
             <div class="toolbar-buttons">
@@ -39,13 +46,6 @@
                     </svg>
                     Find
                 </button>
-                <button id="link-scroll-btn" class="toolbar-btn" title="Toggle scroll linking (Ctrl+L)">
-                    <svg width="20" height="20" viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="2">
-                        <path d="M10 13a3 3 0 004.24 0l2.12-2.12a3 3 0 10-4.24-4.24l-.88.88"/>
-                        <path d="M14 7a3 3 0 00-4.24 0L7.64 9.12a3 3 0 104.24 4.24l.88-.88"/>
-                    </svg>
-                    Link
-                </button>
                 <button id="edit-btn" class="toolbar-btn" title="Edit (Ctrl+E)">
                     <svg width="20" height="20" viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="2">
                         <path d="M14.5 2.5a2.121 2.121 0 113 3L6 17H3v-3L14.5 2.5z"/>
@@ -53,11 +53,6 @@
                     Edit
                 </button>
             </div>
-        </div>
-        <div id="theme-menu" class="theme-menu">
-            <button class="theme-option" data-theme="light">Light</button>
-            <button class="theme-option" data-theme="dark">Dark</button>
-            <button class="theme-option" data-theme="drac">Drac</button>
         </div>
     </div>
     

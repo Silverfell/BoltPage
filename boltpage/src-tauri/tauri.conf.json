@@ -1,10 +1,11 @@
 {
   "$schema": "https://schema.tauri.app/config/2",
   "productName": "BoltPage",
-  "version": "1.7.0",
+  "version": "1.7.1",
   "identifier": "com.dpm.boltpage",
   "build": {
-    "frontendDist": "../src"
+    "frontendDist": "../src",
+    "beforeBuildCommand": "sh scripts/sync-version.sh"
   },
   "app": {
     "withGlobalTauri": true,

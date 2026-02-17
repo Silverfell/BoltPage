@@ -6,7 +6,6 @@ import {
     LINE_HEIGHT_FALLBACK_MULTIPLIER,
     parsePx,
     escapeHtml,
-    updateLinkScrollButton as updateLinkBtn,
     createFindOverlay,
     updateFindCount,
 } from './shared.js';
@@ -24,7 +23,6 @@ let currentPdfUrl = null;
 let isProgrammaticScroll = false;
 let scrollDebounce = null;
 let contentEl = null; // scrolling container (.content-wrapper)
-let scrollLinkEnabled = true;
 let findOverlay = null;
 let findInput = null;
 let findVisible = false;
@@ -373,15 +371,6 @@ function setupEventListeners() {
     document.getElementById('edit-btn').addEventListener('click', openEditor);
     const findBtn = document.getElementById('find-btn');
     if (findBtn) findBtn.addEventListener('click', toggleFindOverlay);
-    const linkBtn = document.getElementById('link-scroll-btn');
-    if (linkBtn) {
-        linkBtn.addEventListener('click', async () => {
-            scrollLinkEnabled = !scrollLinkEnabled;
-            updateLinkScrollButton();
-            try { await invoke('broadcast_scroll_link', { enabled: scrollLinkEnabled }); } catch {}
-        });
-    }
-    
     // Theme menu
     document.querySelectorAll('.theme-option').forEach(btn => {
         btn.addEventListener('click', (e) => {
@@ -426,9 +415,6 @@ function setupEventListeners() {
         } else if (ctrl && e.key === 'e') {
             e.preventDefault();
             openEditor();
-        } else if (ctrl && e.key === 'l') {
-            e.preventDefault();
-            if (linkBtn) linkBtn.click();
         } else if (ctrl && e.shiftKey && e.key.toLowerCase() === 'n') {
             e.preventDefault();
             // Create new window
@@ -558,7 +544,6 @@ window.addEventListener('DOMContentLoaded', async () => {
         await loadPreferences();
         // Initial button states
         updateEditButtonState();
-        updateLinkScrollButton();
         // Cache content wrapper and attach scroll sync listener
         contentEl = document.querySelector('.content-wrapper');
         attachPreviewScrollSync();
@@ -593,12 +578,6 @@ window.addEventListener('DOMContentLoaded', async () => {
             performEditAction(action);
         });
 
-        // Listen for scroll-link state changes
-        await listen('scroll-link-changed', (event) => {
-            scrollLinkEnabled = !!event.payload;
-            updateLinkScrollButton();
-        });
-
         // Listen for print menu requests
         await listen('menu-print', () => {
             if (!document.hasFocus()) return;
@@ -626,7 +605,7 @@ window.addEventListener('DOMContentLoaded', async () => {
         // Listen for scroll sync events from other windows
         await listen('scroll-sync', async (event) => {
             const payload = event.payload || {};
-            if (!currentFilePath || !scrollLinkEnabled) return;
+            if (!currentFilePath) return;
             if (payload.source === appWindow.label) return; // ignore self
             if (payload.file_path !== currentFilePath) return;
             if ((payload.kind === 'json' || payload.kind === 'yaml' || payload.kind === 'txt') && typeof payload.line === 'number') {
@@ -678,7 +657,7 @@ window.addEventListener('beforeunload', () => {
 function attachPreviewScrollSync() {
     if (!contentEl) return;
     contentEl.addEventListener('scroll', () => {
-        if (!currentFilePath || isProgrammaticScroll || !scrollLinkEnabled || currentKind === 'pdf') return;
+        if (!currentFilePath || isProgrammaticScroll || currentKind === 'pdf') return;
         if (scrollDebounce) clearTimeout(scrollDebounce);
         scrollDebounce = setTimeout(async () => {
             const info = getTopLineForPreview();
@@ -711,10 +690,6 @@ function attachPreviewScrollSync() {
             }
         }, SCROLL_SYNC_DEBOUNCE_MS);
     });
-}
-
-function updateLinkScrollButton() {
-    updateLinkBtn(document.getElementById('link-scroll-btn'), scrollLinkEnabled);
 }
 
 // Edit command helpers using modern Clipboard API

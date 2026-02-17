@@ -21,12 +21,6 @@ export function escapeHtml(str) {
         .replace(/'/g, '&#039;');
 }
 
-export function updateLinkScrollButton(btn, enabled) {
-    if (!btn) return;
-    btn.classList.toggle('active', enabled);
-    btn.setAttribute('aria-pressed', String(enabled));
-}
-
 /**
  * Creates the find overlay DOM and appends it to document.body.
  * Returns { overlay, input } for the caller to wire up event handlers.
