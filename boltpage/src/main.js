@@ -1,3 +1,16 @@
+import {
+    SCROLL_SYNC_DEBOUNCE_MS,
+    PROGRAMMATIC_SCROLL_TIMEOUT_MS,
+    MIN_SCROLL_DELTA_LINES,
+    MIN_SCROLL_DELTA_PERCENT,
+    LINE_HEIGHT_FALLBACK_MULTIPLIER,
+    parsePx,
+    escapeHtml,
+    updateLinkScrollButton as updateLinkBtn,
+    createFindOverlay,
+    updateFindCount,
+} from './shared.js';
+
 const { invoke } = window.__TAURI__.core;
 const { getCurrentWindow } = window.__TAURI__.window;
 const { listen } = window.__TAURI__.event;
@@ -5,7 +18,6 @@ const { listen } = window.__TAURI__.event;
 const appWindow = getCurrentWindow();
 
 let currentFilePath = null;
-let fileWatcher = null;
 let currentTheme = 'drac';
 let currentKind = 'markdown'; // 'json' | 'markdown' | 'txt' | 'pdf'
 let currentPdfUrl = null;
@@ -16,30 +28,12 @@ let scrollLinkEnabled = true;
 let findOverlay = null;
 let findInput = null;
 let findVisible = false;
-let windowListOverlay = null;
-let windowListVisible = false;
-
-// Scroll sync configuration constants
-const SCROLL_SYNC_DEBOUNCE_MS = 50;
-const PROGRAMMATIC_SCROLL_TIMEOUT_MS = 100;
-const MIN_SCROLL_DELTA_LINES = 0.5;
-const MIN_SCROLL_DELTA_PERCENT = 0.01;
-const LINE_HEIGHT_FALLBACK_MULTIPLIER = 1.4;
 
 // Track last synced position to filter micro-scrolls
 let lastSyncedLine = null;
 let lastSyncedPercent = null;
 // Cache offset calculations to avoid repeated DOM walking
 let cachedPreMetrics = null;
-
-function escapeHtml(str) {
-    return str
-        .replace(/&/g, '&amp;')
-        .replace(/</g, '&lt;')
-        .replace(/>/g, '&gt;')
-        .replace(/"/g, '&quot;')
-        .replace(/'/g, '&#039;');
-}
 
 async function loadPreferences() {
     try {
@@ -61,9 +55,7 @@ async function broadcastThemeChange(theme) {
 
 async function savePreference(key, value) {
     try {
-        const prefs = await invoke('get_preferences');
-        prefs[key] = value;
-        await invoke('save_preferences', { preferences: prefs });
+        await invoke('save_preference_key', { key, value });
     } catch (err) {
         console.error('Failed to save preference:', err);
     }
@@ -150,15 +142,15 @@ async function openFile(filePath) {
         }
 
         currentFilePath = filePath;
+        // Clear any in-flight find results that reference old DOM nodes
+        clearFindResults();
         const container = document.getElementById('markdown-content');
-        if (container.innerHTML !== html) {
-            const range = document.createRange();
-            range.selectNodeContents(container);
-            const fragment = range.createContextualFragment(html);
-            container.replaceChildren(fragment);
-            // Invalidate cached metrics after DOM change
-            cachedPreMetrics = null;
-        }
+        const range = document.createRange();
+        range.selectNodeContents(container);
+        const fragment = range.createContextualFragment(html);
+        container.replaceChildren(fragment);
+        // Invalidate cached metrics after DOM change
+        cachedPreMetrics = null;
         // Toggle PDF layout mode
         if (usedPdf) {
             document.body.classList.add('pdf-mode');
@@ -185,7 +177,7 @@ async function openFile(filePath) {
 
         // Ensure window title reflects the opened file (overrides default index.html title)
         try {
-            const base = (String(currentFilePath).split(/[/\\\\]/).pop()) || '';
+            const base = (String(currentFilePath).split(/[/\\]/).pop()) || '';
             if (base) {
                 await appWindow.setTitle(`BoltPage - ${base}`);
             }
@@ -213,11 +205,6 @@ async function openFile(filePath) {
         console.error('[DEBUG] Failed to open file:', err);
         alert(`Failed to open file: ${err}`);
     }
-}
-
-function parsePx(v) {
-    const n = parseFloat(v);
-    return Number.isFinite(n) ? n : 0;
 }
 
 function getPreAndMetrics() {
@@ -442,42 +429,6 @@ function setupEventListeners() {
         } else if (ctrl && e.key === 'l') {
             e.preventDefault();
             if (linkBtn) linkBtn.click();
-        } else if (ctrl && e.key.toLowerCase() === 'z' && e.shiftKey) {
-            // Redo (Shift+Cmd/Ctrl+Z)
-            e.preventDefault();
-            performEditAction('redo');
-        } else if (ctrl && e.key.toLowerCase() === 'z') {
-            // Undo
-            e.preventDefault();
-            performEditAction('undo');
-        } else if (ctrl && e.key.toLowerCase() === 'y') {
-            // Redo on Windows/Linux
-            e.preventDefault();
-            performEditAction('redo');
-        } else if (ctrl && e.key.toLowerCase() === 'c') {
-            // Copy
-            if (currentKind !== 'pdf') {
-                e.preventDefault();
-                performEditAction('copy');
-            }
-        } else if (ctrl && e.key.toLowerCase() === 'x') {
-            // Cut
-            if (currentKind !== 'pdf') {
-                e.preventDefault();
-                performEditAction('cut');
-            }
-        } else if (ctrl && e.key.toLowerCase() === 'v') {
-            // Paste
-            if (currentKind !== 'pdf') {
-                e.preventDefault();
-                performEditAction('paste');
-            }
-        } else if (ctrl && e.key.toLowerCase() === 'a') {
-            // Select All
-            if (currentKind !== 'pdf') {
-                e.preventDefault();
-                performEditAction('select-all');
-            }
         } else if (ctrl && e.shiftKey && e.key.toLowerCase() === 'n') {
             e.preventDefault();
             // Create new window
@@ -584,7 +535,7 @@ async function checkAndPromptCliSetup() {
                 const result = await invoke('setup_cli_access');
                 console.log('CLI setup:', result);
             } catch (err) {
-                if (!err.includes('cancelled')) {
+                if (!String(err).includes('cancelled')) {
                     console.error('CLI setup failed:', err);
                 }
                 await invoke('mark_cli_setup_declined');
@@ -605,8 +556,9 @@ window.addEventListener('DOMContentLoaded', async () => {
         setupEventListeners();
         attachLinkInterceptor();
         await loadPreferences();
-        // Initial edit button state
+        // Initial button states
         updateEditButtonState();
+        updateLinkScrollButton();
         // Cache content wrapper and attach scroll sync listener
         contentEl = document.querySelector('.content-wrapper');
         attachPreviewScrollSync();
@@ -614,23 +566,24 @@ window.addEventListener('DOMContentLoaded', async () => {
         // Check if we should prompt for CLI setup (first run)
         setTimeout(() => checkAndPromptCliSetup(), 2000);
     
-        // Listen for file change events
-        await listen('file-changed', () => {
-            // Show the refresh indicator
-            document.getElementById('refresh-indicator').classList.add('show');
+        // Listen for file change events -- auto-refresh the preview
+        await listen('file-changed', async () => {
+            await refreshFile();
         });
         
         // Listen for theme change events from other windows
         await listen('theme-changed', async (event) => {
+            // Skip if this window already applied this theme (avoids redundant
+            // DOM work from our own broadcast echo).
+            if (event.payload === currentTheme) return;
             currentTheme = event.payload;
             document.documentElement.setAttribute('data-theme', currentTheme);
             await ensureSyntaxCss(currentTheme);
-            
+
             // Update active theme indicator
             document.querySelectorAll('.theme-option').forEach(btn => {
                 btn.classList.toggle('active', btn.dataset.theme === currentTheme);
             });
-            // No need to re-render; CSS-only theme swap
         });
 
         // Listen for edit menu actions (cut/copy/paste/select-all)
@@ -648,13 +601,26 @@ window.addEventListener('DOMContentLoaded', async () => {
 
         // Listen for print menu requests
         await listen('menu-print', () => {
-            // This is the preview window; print directly
+            if (!document.hasFocus()) return;
             window.print();
         });
 
         // Listen for menu find
         await listen('menu-find', () => {
+            if (!document.hasFocus()) return;
             if (currentKind !== 'pdf') openFindOverlay();
+        });
+
+        // Listen for File > Open menu action
+        await listen('menu-open', () => {
+            if (!document.hasFocus()) return;
+            openFile();
+        });
+
+        // Listen for File > Close Window menu action
+        await listen('menu-close', async () => {
+            if (!document.hasFocus()) return;
+            await appWindow.close();
         });
 
         // Listen for scroll sync events from other windows
@@ -748,10 +714,7 @@ function attachPreviewScrollSync() {
 }
 
 function updateLinkScrollButton() {
-    const btn = document.getElementById('link-scroll-btn');
-    if (!btn) return;
-    btn.classList.toggle('active', scrollLinkEnabled);
-    btn.setAttribute('aria-pressed', String(scrollLinkEnabled));
+    updateLinkBtn(document.getElementById('link-scroll-btn'), scrollLinkEnabled);
 }
 
 // Edit command helpers using modern Clipboard API
@@ -761,15 +724,19 @@ async function performEditAction(action) {
         const activeEl = document.activeElement;
 
         switch (action) {
+            case 'undo':
+            case 'redo':
+                // Preview is read-only: undo/redo are not applicable
+                break;
             case 'copy':
                 if (selection && selection.toString()) {
                     await navigator.clipboard.writeText(selection.toString());
                 }
                 break;
             case 'cut':
+                // Preview is read-only: copy selection to clipboard without modifying DOM
                 if (selection && selection.toString()) {
                     await navigator.clipboard.writeText(selection.toString());
-                    selection.deleteFromDocument();
                 }
                 break;
             case 'paste':
@@ -793,7 +760,10 @@ async function performEditAction(action) {
                 if (activeEl && (activeEl.tagName === 'TEXTAREA' || activeEl.tagName === 'INPUT')) {
                     activeEl.select();
                 } else {
-                    selection.selectAllChildren(document.body);
+                    const contentContainer = document.getElementById('markdown-content');
+                    if (contentContainer) {
+                        selection.selectAllChildren(contentContainer);
+                    }
                 }
                 break;
         }
@@ -809,39 +779,22 @@ let lastSearchQuery = '';
 
 function ensureFindOverlay() {
     if (findOverlay) return;
-    findOverlay = document.createElement('div');
-    findOverlay.className = 'find-overlay';
-    findOverlay.innerHTML = `
-        <input id="find-input" class="find-input" type="text" placeholder="Find..." />
-        <span class="find-count" id="find-count"></span>
-        <button class="find-btn" id="find-prev" title="Previous">&#8593;</button>
-        <button class="find-btn" id="find-next" title="Next">&#8595;</button>
-        <button class="find-btn" id="find-close" title="Close">&#10005;</button>
-    `;
-    document.body.appendChild(findOverlay);
-    findInput = findOverlay.querySelector('#find-input');
+    const els = createFindOverlay();
+    findOverlay = els.overlay;
+    findInput = els.input;
 
     findInput.addEventListener('keydown', (e) => {
         if (e.key === 'Enter') {
             e.preventDefault();
-            const backwards = !!e.shiftKey;
-            if (backwards) {
-                findPrevious();
-            } else {
-                findNext();
-            }
+            if (e.shiftKey) findPrevious(); else findNext();
         } else if (e.key === 'Escape') {
             e.preventDefault();
             closeFindOverlay();
         }
     });
-    
-    findOverlay.querySelector('#find-prev').addEventListener('click', () => {
-        findPrevious();
-    });
-    findOverlay.querySelector('#find-next').addEventListener('click', () => {
-        findNext();
-    });
+
+    findOverlay.querySelector('#find-prev').addEventListener('click', findPrevious);
+    findOverlay.querySelector('#find-next').addEventListener('click', findNext);
     findOverlay.querySelector('#find-close').addEventListener('click', closeFindOverlay);
 }
 
@@ -891,7 +844,7 @@ function performFind(query) {
         offset += text.length;
     }
     
-    updateFindCount();
+    updateFindCountDisplay();
     
     if (findResults.length > 0) {
         currentFindIndex = 0;
@@ -916,7 +869,7 @@ function findNext() {
     
     currentFindIndex = (currentFindIndex + 1) % findResults.length;
     highlightCurrentFind();
-    updateFindCount();
+    updateFindCountDisplay();
 }
 
 function findPrevious() {
@@ -936,7 +889,7 @@ function findPrevious() {
     
     currentFindIndex = currentFindIndex <= 0 ? findResults.length - 1 : currentFindIndex - 1;
     highlightCurrentFind();
-    updateFindCount();
+    updateFindCountDisplay();
 }
 
 function highlightCurrentFind() {
@@ -968,18 +921,11 @@ function clearFindResults() {
     findResults = [];
     currentFindIndex = -1;
     clearFindHighlights();
-    updateFindCount();
+    updateFindCountDisplay();
 }
 
-function updateFindCount() {
-    const countEl = findOverlay?.querySelector('#find-count');
-    if (countEl) {
-        if (findResults.length === 0) {
-            countEl.textContent = '';
-        } else {
-            countEl.textContent = `${currentFindIndex + 1}/${findResults.length}`;
-        }
-    }
+function updateFindCountDisplay() {
+    updateFindCount(findOverlay, findResults, currentFindIndex);
 }
 
 function openFindOverlay() {
@@ -1004,17 +950,3 @@ function closeFindOverlay() {
     clearFindResults();
 }
 
-// Legacy function for backward compatibility
-function doFind(q, forward) {
-    if (!q) return;
-    
-    if (q !== lastSearchQuery) {
-        performFind(q);
-    }
-    
-    if (forward) {
-        findNext();
-    } else {
-        findPrevious();
-    }
-}

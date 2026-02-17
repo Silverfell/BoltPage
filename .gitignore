@@ -60,3 +60,8 @@ Thumbs.db
 # Project-specific
 .claude/
 CLAUDE.MD
+
+# Claude agent memory
+project.db
+project.db-wal
+project.db-shm
