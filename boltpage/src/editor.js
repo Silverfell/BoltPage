@@ -25,6 +25,8 @@ let findInput = null;
 let replaceInput = null;
 let findVisible = false;
 let findHighlightOverlay = null;
+let lineGutter = null;
+let lastLineCount = 0;
 
 // Track last synced position to filter micro-scrolls
 let lastSyncedLine = null;
@@ -135,6 +137,29 @@ function scrollEditorToLine(line) {
     setTimeout(() => { isProgrammaticScroll = false; }, PROGRAMMATIC_SCROLL_TIMEOUT_MS);
 }
 
+function setupEditorWrapper() {
+    const ta = document.getElementById('editor-textarea');
+    const wrapper = document.createElement('div');
+    wrapper.className = 'editor-textarea-wrapper';
+    ta.parentElement.insertBefore(wrapper, ta);
+    wrapper.appendChild(ta);
+
+    lineGutter = document.createElement('div');
+    lineGutter.className = 'line-number-gutter';
+    wrapper.insertBefore(lineGutter, ta);
+}
+
+function updateLineNumbers() {
+    if (!lineGutter) return;
+    const ta = document.getElementById('editor-textarea');
+    const count = ta.value.split('\n').length;
+    if (count === lastLineCount) return;
+    lastLineCount = count;
+    const lines = [];
+    for (let i = 1; i <= count; i++) lines.push(i);
+    lineGutter.textContent = lines.join('\n');
+}
+
 function scheduleAutoSave() {
     if (saveTimeout) {
         clearTimeout(saveTimeout);
@@ -150,12 +175,15 @@ document.addEventListener('DOMContentLoaded', async () => {
   try {
     await initialize();
 
+    setupEditorWrapper();
     const textarea = document.getElementById('editor-textarea');
+    updateLineNumbers();
 
     // Track changes
     textarea.addEventListener('input', () => {
         markDirty();
         scheduleAutoSave();
+        updateLineNumbers();
     });
 
     // Close button just triggers close -- onCloseRequested handles the save
@@ -185,6 +213,7 @@ document.addEventListener('DOMContentLoaded', async () => {
     
     // Sync: send scroll position to preview
     textarea.addEventListener('scroll', () => {
+        if (lineGutter) lineGutter.scrollTop = textarea.scrollTop;
         if (!currentFilePath || isProgrammaticScroll) return;
         if (scrollDebounce) clearTimeout(scrollDebounce);
         scrollDebounce = setTimeout(async () => {
@@ -421,14 +450,10 @@ function ensureFindOverlay() {
     findOverlay.querySelector('#replace-one').addEventListener('click', replaceCurrent);
     findOverlay.querySelector('#replace-all').addEventListener('click', replaceAll);
 
-    // Create highlight overlay that sits on top of the textarea
+    // Create highlight overlay that sits on top of the textarea (wrapper already exists)
     if (!findHighlightOverlay) {
         const ta = document.getElementById('editor-textarea');
-        // Wrap textarea in a relative container for overlay positioning
-        const wrapper = document.createElement('div');
-        wrapper.className = 'editor-textarea-wrapper';
-        ta.parentElement.insertBefore(wrapper, ta);
-        wrapper.appendChild(ta);
+        const wrapper = ta.closest('.editor-textarea-wrapper');
 
         findHighlightOverlay = document.createElement('div');
         findHighlightOverlay.className = 'find-highlight-overlay';

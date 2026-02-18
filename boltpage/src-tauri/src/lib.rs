@@ -218,6 +218,16 @@ fn rebuild_app_menu(app: &AppHandle) -> tauri::Result<()> {
                 .accelerator("CmdOrCtrl+P")
                 .build(app)?,
         )
+        .item(
+            &MenuItemBuilder::with_id("export-html", "Export as HTML...")
+                .accelerator("CmdOrCtrl+Shift+E")
+                .build(app)?,
+        )
+        .item(
+            &MenuItemBuilder::with_id("export-pdf", "Export as PDF...")
+                .accelerator("CmdOrCtrl+Shift+P")
+                .build(app)?,
+        )
         .separator()
         .item(
             &MenuItemBuilder::with_id("close", "Close Window")
@@ -656,6 +666,20 @@ struct ScrollSyncPayload {
     percent: Option<f64>, // fallback scroll percent [0.0, 1.0]
 }
 
+fn print_focused_webview(app: &AppHandle) {
+    for (_, window) in app.webview_windows() {
+        if window.is_focused().unwrap_or(false) {
+            let _ = window.print();
+            return;
+        }
+    }
+}
+
+#[tauri::command]
+fn print_current_window(window: tauri::WebviewWindow) -> Result<(), String> {
+    window.print().map_err(|e| format!("Print failed: {e}"))
+}
+
 #[tauri::command]
 fn broadcast_scroll_sync(app: AppHandle, payload: ScrollSyncPayload) -> Result<(), String> {
     app.emit("scroll-sync", &payload)
@@ -666,6 +690,91 @@ fn broadcast_scroll_sync(app: AppHandle, payload: ScrollSyncPayload) -> Result<(
 fn get_syntax_css(theme: String) -> Result<String, String> {
     markrust_core::get_syntax_theme_css(&theme)
         .ok_or_else(|| "Failed to generate syntax CSS".to_string())
+}
+
+async fn export_html_inner(app: &AppHandle, path: &str, theme: &str) -> Result<String, String> {
+    let fragment = render_file_to_html(app.clone(), path.to_string(), theme.to_string()).await?;
+    let syntax_css = markrust_core::get_syntax_theme_css(theme).unwrap_or_default();
+    let base_css = include_str!("../../src/styles.css");
+
+    let data_theme = match theme {
+        "dark" => r#" data-theme="dark""#,
+        "drac" => r#" data-theme="drac""#,
+        _ => "",
+    };
+
+    let title = Path::new(path)
+        .file_name()
+        .and_then(|n| n.to_str())
+        .unwrap_or("Exported Document");
+
+    Ok(format!(
+        r#"<!DOCTYPE html>
+<html lang="en"{data_theme}>
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>{title}</title>
+<style>
+{base_css}
+</style>
+<style>
+{syntax_css}
+</style>
+</head>
+<body>
+<div class="content-wrapper">
+<div class="markdown-body">
+{fragment}
+</div>
+</div>
+</body>
+</html>"#
+    ))
+}
+
+#[tauri::command]
+async fn save_html_export(
+    app: AppHandle,
+    path: String,
+    theme: String,
+) -> Result<Option<String>, String> {
+    use tauri_plugin_dialog::DialogExt;
+
+    check_path_allowed(&app, &path)?;
+
+    let html = export_html_inner(&app, &path, &theme).await?;
+
+    let app_clone = app.clone();
+    let selection = tauri::async_runtime::spawn_blocking(move || {
+        app_clone
+            .dialog()
+            .file()
+            .add_filter("HTML", &["html"])
+            .blocking_save_file()
+    })
+    .await
+    .map_err(|e| format!("Join error: {e}"))?;
+
+    let Some(selection) = selection else {
+        return Ok(None);
+    };
+
+    let mut save_path = selection
+        .into_path()
+        .map_err(|e| format!("Failed to resolve path: {e}"))?;
+
+    if save_path.extension().is_none() {
+        save_path.set_extension("html");
+    }
+
+    tauri::async_runtime::spawn_blocking(move || {
+        fs::write(&save_path, html).map_err(|e| format!("Failed to write HTML: {e}"))
+    })
+    .await
+    .map_err(|e| format!("Join error: {e}"))??;
+
+    Ok(Some("ok".to_string()))
 }
 
 #[tauri::command]
@@ -694,8 +803,7 @@ async fn render_file_to_html(
     let read_path = path.clone();
     let (size, mtime_secs, raw_content) =
         tauri::async_runtime::spawn_blocking(move || -> Result<(u64, u64, String), String> {
-            let meta =
-                fs::metadata(&read_path).map_err(|e| format!("Failed to stat file: {e}"))?;
+            let meta = fs::metadata(&read_path).map_err(|e| format!("Failed to stat file: {e}"))?;
             let size = meta.len();
             let mtime_secs = meta
                 .modified()
@@ -738,7 +846,10 @@ async fn render_file_to_html(
         } else if ext == "yaml" || ext == "yml" {
             markrust_core::parse_yaml_with_theme(&raw_content, &theme)
         } else {
-            Ok(markrust_core::parse_markdown_with_theme(&raw_content, &theme))
+            Ok(markrust_core::parse_markdown_with_theme(
+                &raw_content,
+                &theme,
+            ))
         }
     })
     .await
@@ -801,15 +912,14 @@ async fn save_preference_key_inner(
 
     let mut map = store
         .get("preferences")
-        .and_then(|v| serde_json::from_value::<serde_json::Map<String, serde_json::Value>>(v.clone()).ok())
+        .and_then(|v| {
+            serde_json::from_value::<serde_json::Map<String, serde_json::Value>>(v.clone()).ok()
+        })
         .unwrap_or_default();
 
     map.insert(key.to_string(), value);
 
-    store.set(
-        "preferences",
-        serde_json::Value::Object(map),
-    );
+    store.set("preferences", serde_json::Value::Object(map));
     store
         .save()
         .map_err(|e| format!("Failed to save preferences: {e}"))?;
@@ -913,8 +1023,8 @@ async fn open_editor_window(
     check_path_allowed(&app, &file_path)?;
 
     // Deterministic label from file path so we can detect an existing editor
-    let encoded_path = base64::engine::general_purpose::URL_SAFE_NO_PAD
-        .encode(file_path.as_bytes());
+    let encoded_path =
+        base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(file_path.as_bytes());
     let editor_label = format!("editor-{encoded_path}");
 
     // If an editor for this file already exists, focus it
@@ -1254,7 +1364,7 @@ pub fn run() {
             start_file_watcher,
             stop_file_watcher,
             broadcast_theme_change,
-show_window,
+            show_window,
             create_new_window_command,
             remove_window_from_tracking,
             get_file_path_from_window_label,
@@ -1262,6 +1372,8 @@ show_window,
             focus_window,
             get_syntax_css,
             render_file_to_html,
+            save_html_export,
+            print_current_window,
             is_cli_installed,
             mark_cli_setup_declined,
             setup_cli_access
@@ -1304,9 +1416,11 @@ show_window,
                         // Emit event so the focused window triggers the open file dialog
                         let _ = app.emit("menu-open", &());
                     }
-                    "print" => {
-                        // Forward to all windows; JS will handle based on focus
-                        let _ = app.emit("menu-print", &());
+                    "print" | "export-pdf" => {
+                        print_focused_webview(app);
+                    }
+                    "export-html" => {
+                        let _ = app.emit("menu-export-html", &());
                     }
                     "close" => {
                         let _ = app.emit("menu-close", &());

@@ -53,15 +53,26 @@
                     Edit
                 </button>
             </div>
+            <button id="toc-btn" class="toolbar-btn" title="Table of Contents">
+                <svg width="20" height="20" viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="2">
+                    <path d="M3 4h14M3 8h10M3 12h12M3 16h8"/>
+                </svg>
+                TOC
+            </button>
         </div>
     </div>
-    
-    <div class="content-wrapper">
-        <div id="markdown-content" class="markdown-body">
-            <div class="welcome-message">
-                <h1>Welcome to BoltPage</h1>
-                <p>Open a Markdown file to start viewing.</p>
-                <p>Use <kbd>Ctrl+O</kbd> to open a file.</p>
+
+    <div class="main-area">
+        <aside id="toc-sidebar" class="toc-sidebar">
+            <nav id="toc-nav"></nav>
+        </aside>
+        <div class="content-wrapper">
+            <div id="markdown-content" class="markdown-body">
+                <div class="welcome-message">
+                    <h1>Welcome to BoltPage</h1>
+                    <p>Open a Markdown file to start viewing.</p>
+                    <p>Use <kbd>Ctrl+O</kbd> to open a file.</p>
+                </div>
             </div>
         </div>
     </div>

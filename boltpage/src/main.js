@@ -90,6 +90,107 @@ async function ensureSyntaxCss(theme) {
     }
 }
 
+async function exportHtml() {
+    if (!currentFilePath) return;
+    if (currentKind === 'pdf') return;
+    try {
+        await invoke('save_html_export', {
+            path: currentFilePath,
+            theme: currentTheme,
+        });
+    } catch (err) {
+        console.error('HTML export failed:', err);
+    }
+}
+
+let tocScrollDebounce = null;
+
+function buildTOC() {
+    const tocNav = document.getElementById('toc-nav');
+    const tocBtn = document.getElementById('toc-btn');
+    const tocSidebar = document.getElementById('toc-sidebar');
+    if (!tocNav) return;
+
+    tocNav.innerHTML = '';
+
+    if (currentKind !== 'markdown') {
+        if (tocBtn) { tocBtn.style.display = 'none'; tocBtn.classList.remove('active'); }
+        if (tocSidebar) tocSidebar.classList.remove('show');
+        return;
+    }
+
+    const headings = document.querySelectorAll('#markdown-content h1, #markdown-content h2, #markdown-content h3, #markdown-content h4, #markdown-content h5, #markdown-content h6');
+    if (headings.length === 0) {
+        if (tocBtn) { tocBtn.style.display = 'none'; tocBtn.classList.remove('active'); }
+        if (tocSidebar) tocSidebar.classList.remove('show');
+        return;
+    }
+
+    if (tocBtn) tocBtn.style.display = '';
+    if (tocSidebar) tocSidebar.classList.add('show');
+    if (tocBtn) tocBtn.classList.add('active');
+
+    headings.forEach((heading, i) => {
+        const level = parseInt(heading.tagName[1], 10);
+        const link = document.createElement('a');
+        link.className = 'toc-link';
+        link.textContent = heading.textContent;
+        link.style.paddingLeft = ((level - 1) * 12) + 'px';
+        link.dataset.index = i;
+        link.addEventListener('click', (e) => {
+            e.preventDefault();
+            heading.scrollIntoView({ behavior: 'smooth', block: 'start' });
+        });
+        tocNav.appendChild(link);
+    });
+}
+
+function updateActiveTOCLink() {
+    const tocNav = document.getElementById('toc-nav');
+    if (!tocNav || !tocNav.children.length) return;
+
+    const headings = document.querySelectorAll('#markdown-content h1, #markdown-content h2, #markdown-content h3, #markdown-content h4, #markdown-content h5, #markdown-content h6');
+    if (!headings.length) return;
+
+    const wrapper = document.querySelector('.content-wrapper');
+    if (!wrapper) return;
+    const wrapperTop = wrapper.getBoundingClientRect().top;
+
+    let activeIndex = 0;
+    for (let i = 0; i < headings.length; i++) {
+        const rect = headings[i].getBoundingClientRect();
+        if (rect.top - wrapperTop <= 8) {
+            activeIndex = i;
+        } else {
+            break;
+        }
+    }
+
+    const links = tocNav.querySelectorAll('.toc-link');
+    links.forEach((link, i) => {
+        link.classList.toggle('active', i === activeIndex);
+    });
+
+    // Scroll the active link into view within the sidebar
+    const activeLink = links[activeIndex];
+    if (activeLink) {
+        const sidebar = document.getElementById('toc-sidebar');
+        const linkTop = activeLink.offsetTop;
+        const sidebarScroll = sidebar.scrollTop;
+        const sidebarHeight = sidebar.clientHeight;
+        if (linkTop < sidebarScroll || linkTop > sidebarScroll + sidebarHeight - 30) {
+            activeLink.scrollIntoView({ block: 'nearest' });
+        }
+    }
+}
+
+function toggleTOC() {
+    const sidebar = document.getElementById('toc-sidebar');
+    const tocBtn = document.getElementById('toc-btn');
+    if (sidebar) sidebar.classList.toggle('show');
+    if (tocBtn) tocBtn.classList.toggle('active', sidebar && sidebar.classList.contains('show'));
+}
+
 async function openFile(filePath) {
     if (!filePath) {
         filePath = await invoke('open_file_dialog');
@@ -159,6 +260,8 @@ async function openFile(filePath) {
         if (!usedPdf) attachLinkInterceptor();
         // Update edit button availability based on file writability
         updateEditButtonState();
+        // Build table of contents from headings
+        buildTOC();
         // Restore scroll position if applicable
         if (anchor) {
             if ((anchor.kind === 'json' || anchor.kind === 'yaml' || anchor.kind === 'txt') && typeof anchor.line === 'number') {
@@ -371,6 +474,8 @@ function setupEventListeners() {
     document.getElementById('edit-btn').addEventListener('click', openEditor);
     const findBtn = document.getElementById('find-btn');
     if (findBtn) findBtn.addEventListener('click', toggleFindOverlay);
+    const tocBtn = document.getElementById('toc-btn');
+    if (tocBtn) tocBtn.addEventListener('click', toggleTOC);
     // Theme menu
     document.querySelectorAll('.theme-option').forEach(btn => {
         btn.addEventListener('click', (e) => {
@@ -400,8 +505,7 @@ function setupEventListeners() {
         } else if (ctrl && e.key.toLowerCase() === 'p') {
             if (currentKind !== 'pdf') {
                 e.preventDefault();
-                // Print the preview (this window)
-                window.print();
+                invoke('print_current_window').catch(err => console.error('Print failed:', err));
             }
         } else if (ctrl && e.key === 'o') {
             e.preventDefault();
@@ -412,6 +516,9 @@ function setupEventListeners() {
         } else if (ctrl && e.key === 't') {
             e.preventDefault();
             toggleThemeMenu();
+        } else if (ctrl && e.shiftKey && e.key.toLowerCase() === 'e') {
+            e.preventDefault();
+            exportHtml();
         } else if (ctrl && e.key === 'e') {
             e.preventDefault();
             openEditor();
@@ -578,10 +685,12 @@ window.addEventListener('DOMContentLoaded', async () => {
             performEditAction(action);
         });
 
-        // Listen for print menu requests
-        await listen('menu-print', () => {
-            if (!document.hasFocus()) return;
-            window.print();
+        // Listen for HTML export menu requests
+        await listen('menu-export-html', () => {
+            setTimeout(() => {
+                if (!document.hasFocus()) return;
+                exportHtml();
+            }, 50);
         });
 
         // Listen for menu find
@@ -657,6 +766,9 @@ window.addEventListener('beforeunload', () => {
 function attachPreviewScrollSync() {
     if (!contentEl) return;
     contentEl.addEventListener('scroll', () => {
+        // Update active TOC link on scroll
+        if (tocScrollDebounce) clearTimeout(tocScrollDebounce);
+        tocScrollDebounce = setTimeout(updateActiveTOCLink, 50);
         if (!currentFilePath || isProgrammaticScroll || currentKind === 'pdf') return;
         if (scrollDebounce) clearTimeout(scrollDebounce);
         scrollDebounce = setTimeout(async () => {
