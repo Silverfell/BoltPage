@@ -37,6 +37,7 @@ async function loadPreferences() {
     try {
         const prefs = await invoke('get_preferences');
         applyTheme(prefs.theme);
+        tocVisible = prefs.toc_visible !== false;
     } catch (err) {
         console.error('Failed to load preferences:', err);
         applyTheme('drac');
@@ -104,6 +105,7 @@ async function exportHtml() {
 }
 
 let tocScrollDebounce = null;
+let tocVisible = true;
 
 function buildTOC() {
     const tocNav = document.getElementById('toc-nav');
@@ -127,8 +129,13 @@ function buildTOC() {
     }
 
     if (tocBtn) tocBtn.style.display = '';
-    if (tocSidebar) tocSidebar.classList.add('show');
-    if (tocBtn) tocBtn.classList.add('active');
+    if (tocVisible) {
+        if (tocSidebar) tocSidebar.classList.add('show');
+        if (tocBtn) tocBtn.classList.add('active');
+    } else {
+        if (tocSidebar) tocSidebar.classList.remove('show');
+        if (tocBtn) tocBtn.classList.remove('active');
+    }
 
     headings.forEach((heading, i) => {
         const level = parseInt(heading.tagName[1], 10);
@@ -188,7 +195,9 @@ function toggleTOC() {
     const sidebar = document.getElementById('toc-sidebar');
     const tocBtn = document.getElementById('toc-btn');
     if (sidebar) sidebar.classList.toggle('show');
-    if (tocBtn) tocBtn.classList.toggle('active', sidebar && sidebar.classList.contains('show'));
+    tocVisible = sidebar && sidebar.classList.contains('show');
+    if (tocBtn) tocBtn.classList.toggle('active', tocVisible);
+    savePreference('toc_visible', tocVisible);
 }
 
 async function openFile(filePath) {

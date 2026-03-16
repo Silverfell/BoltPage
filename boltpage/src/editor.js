@@ -26,7 +26,9 @@ let replaceInput = null;
 let findVisible = false;
 let findHighlightOverlay = null;
 let lineGutter = null;
+let lineMirror = null;
 let lastLineCount = 0;
+let wordWrapEnabled = false;
 
 // Track last synced position to filter micro-scrolls
 let lastSyncedLine = null;
@@ -66,6 +68,8 @@ async function initialize() {
     try {
         const prefs = await invoke('get_preferences');
         document.documentElement.setAttribute('data-theme', prefs.theme);
+        wordWrapEnabled = prefs.word_wrap === true;
+        applyWordWrap();
     } catch (err) {
         console.error('Failed to load preferences:', err);
     }
@@ -147,17 +151,79 @@ function setupEditorWrapper() {
     lineGutter = document.createElement('div');
     lineGutter.className = 'line-number-gutter';
     wrapper.insertBefore(lineGutter, ta);
+
+    lineMirror = document.createElement('div');
+    lineMirror.className = 'line-mirror';
+    wrapper.appendChild(lineMirror);
 }
 
 function updateLineNumbers() {
     if (!lineGutter) return;
     const ta = document.getElementById('editor-textarea');
     const count = ta.value.split('\n').length;
-    if (count === lastLineCount) return;
+    if (count === lastLineCount && !wordWrapEnabled) return;
     lastLineCount = count;
-    const lines = [];
-    for (let i = 1; i <= count; i++) lines.push(i);
-    lineGutter.textContent = lines.join('\n');
+
+    if (!wordWrapEnabled) {
+        const lines = [];
+        for (let i = 1; i <= count; i++) lines.push(i);
+        lineGutter.textContent = lines.join('\n');
+        return;
+    }
+
+    // Wrapped mode: measure each logical line's rendered height via mirror
+    const cs = window.getComputedStyle(ta);
+    const textWidth = ta.clientWidth - parseFloat(cs.paddingLeft) - parseFloat(cs.paddingRight);
+    lineMirror.style.width = textWidth + 'px';
+
+    // Batch: put all lines in mirror as separate divs, single reflow
+    const logicalLines = ta.value.split('\n');
+    lineMirror.innerHTML = '';
+    const divs = [];
+    for (let i = 0; i < logicalLines.length; i++) {
+        const d = document.createElement('div');
+        d.textContent = logicalLines[i] || '\u00A0';
+        lineMirror.appendChild(d);
+        divs.push(d);
+    }
+
+    // Single reflow: read all heights
+    const heights = divs.map(d => d.offsetHeight);
+
+    // Build gutter with matching heights
+    lineGutter.innerHTML = '';
+    for (let i = 0; i < heights.length; i++) {
+        const numDiv = document.createElement('div');
+        numDiv.className = 'line-num';
+        numDiv.style.height = heights[i] + 'px';
+        numDiv.textContent = i + 1;
+        lineGutter.appendChild(numDiv);
+    }
+}
+
+function toggleWordWrap() {
+    wordWrapEnabled = !wordWrapEnabled;
+    applyWordWrap();
+    invoke('save_preference_key', { key: 'word_wrap', value: wordWrapEnabled })
+        .catch(err => console.error('Failed to save word_wrap preference:', err));
+}
+
+function applyWordWrap() {
+    const ta = document.getElementById('editor-textarea');
+    const wrapBtn = document.getElementById('wrap-btn');
+    if (ta) {
+        ta.style.whiteSpace = wordWrapEnabled ? 'pre-wrap' : 'pre';
+        ta.style.overflowX = wordWrapEnabled ? 'hidden' : 'auto';
+        ta.style.wordBreak = wordWrapEnabled ? 'break-word' : 'normal';
+    }
+    if (findHighlightOverlay) {
+        findHighlightOverlay.style.whiteSpace = wordWrapEnabled ? 'pre-wrap' : 'pre';
+        findHighlightOverlay.style.overflowX = wordWrapEnabled ? 'hidden' : 'auto';
+        findHighlightOverlay.style.wordBreak = wordWrapEnabled ? 'break-word' : 'normal';
+    }
+    if (wrapBtn) wrapBtn.classList.toggle('active', wordWrapEnabled);
+    lastLineCount = -1;
+    updateLineNumbers();
 }
 
 function scheduleAutoSave() {
@@ -190,6 +256,15 @@ document.addEventListener('DOMContentLoaded', async () => {
     document.getElementById('close-btn').addEventListener('click', () => {
         appWindow.close();
     });
+
+    document.getElementById('wrap-btn').addEventListener('click', toggleWordWrap);
+
+    new ResizeObserver(() => {
+        if (wordWrapEnabled) {
+            lastLineCount = -1;
+            updateLineNumbers();
+        }
+    }).observe(textarea);
 
     // Handle keyboard shortcuts
     document.addEventListener('keydown', async (e) => {

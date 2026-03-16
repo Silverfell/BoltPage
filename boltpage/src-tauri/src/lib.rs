@@ -4,6 +4,7 @@ use notify::{Config, RecommendedWatcher, RecursiveMode, Watcher};
 use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, HashSet};
 use std::fs;
+use std::io::Write;
 use std::num::NonZeroUsize;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, RwLock as StdRwLock};
@@ -90,17 +91,188 @@ fn resolve_file_path(input: &str) -> Option<PathBuf> {
     }
 }
 
+fn pathbuf_to_string(path: &Path) -> String {
+    path.to_string_lossy().to_string()
+}
+
+fn is_reasonable_window_size(
+    width: u32,
+    height: u32,
+    default_width: u32,
+    default_height: u32,
+) -> bool {
+    width > 200
+        && width < 5000
+        && height > 200
+        && height < 5000
+        && (width != default_width || height != default_height)
+}
+
+fn stored_window_size(
+    width: Option<u32>,
+    height: Option<u32>,
+    default_width: u32,
+    default_height: u32,
+) -> Option<(f64, f64)> {
+    let (width, height) = (width?, height?);
+    if is_reasonable_window_size(width, height, default_width, default_height) {
+        Some((width as f64, height as f64))
+    } else {
+        None
+    }
+}
+
+fn is_preview_window_label(label: &str) -> bool {
+    label.starts_with("markdown-")
+}
+
+fn is_editor_window_label(label: &str) -> bool {
+    label.starts_with("editor-")
+}
+
+fn decode_file_path_from_window_label_str(window_label: &str) -> Result<Option<String>, String> {
+    if let Some(encoded_path) = window_label.strip_prefix("markdown-file-") {
+        match base64::engine::general_purpose::URL_SAFE_NO_PAD.decode(encoded_path) {
+            Ok(decoded_bytes) => match String::from_utf8(decoded_bytes) {
+                Ok(file_path) => Ok(Some(file_path)),
+                Err(e) => Err(format!("Failed to decode UTF-8: {e}")),
+            },
+            Err(e) => Err(format!("Failed to decode base64: {e}")),
+        }
+    } else {
+        Ok(None)
+    }
+}
+
+fn paths_match(a: &Path, b: &Path) -> bool {
+    if a == b {
+        return true;
+    }
+
+    match (fs::canonicalize(a), fs::canonicalize(b)) {
+        (Ok(a_canon), Ok(b_canon)) => a_canon == b_canon,
+        _ => false,
+    }
+}
+
+fn event_targets_file(paths: &[PathBuf], target: &Path) -> bool {
+    paths.iter().any(|candidate| paths_match(candidate, target))
+}
+
+fn is_refresh_relevant_event(kind: &notify::EventKind) -> bool {
+    matches!(
+        kind,
+        notify::EventKind::Modify(_)
+            | notify::EventKind::Create(_)
+            | notify::EventKind::Remove(_)
+            | notify::EventKind::Any
+    )
+}
+
+fn remove_cache_entries_for_path(cache: &mut LruCache<CacheKey, String>, file_path: &str) {
+    let keys_to_remove: Vec<CacheKey> = cache
+        .iter()
+        .filter(|(k, _)| k.path == file_path)
+        .map(|(k, _)| k.clone())
+        .collect();
+
+    for key in keys_to_remove {
+        cache.pop(&key);
+    }
+}
+
+fn invalidate_cache_for_path_sync(app: &AppHandle, file_path: &str) {
+    if let Some(state) = app.try_state::<AppState>() {
+        let mut cache = state.html_cache.blocking_write();
+        remove_cache_entries_for_path(&mut cache, file_path);
+    }
+}
+
+#[cfg(not(target_os = "windows"))]
+fn replace_file_atomically(temp_path: &Path, target_path: &Path) -> Result<(), String> {
+    fs::rename(temp_path, target_path).map_err(|e| format!("Failed to replace file: {e}"))
+}
+
+#[cfg(target_os = "windows")]
+fn replace_file_atomically(temp_path: &Path, target_path: &Path) -> Result<(), String> {
+    use std::ffi::OsStr;
+    use std::os::windows::ffi::OsStrExt;
+    use windows_sys::Win32::Storage::FileSystem::{
+        MoveFileExW, MOVEFILE_REPLACE_EXISTING, MOVEFILE_WRITE_THROUGH,
+    };
+
+    fn encode_wide(value: &OsStr) -> Vec<u16> {
+        value.encode_wide().chain(std::iter::once(0)).collect()
+    }
+
+    let temp_wide = encode_wide(temp_path.as_os_str());
+    let target_wide = encode_wide(target_path.as_os_str());
+    let flags = MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH;
+    let success = unsafe { MoveFileExW(temp_wide.as_ptr(), target_wide.as_ptr(), flags) };
+    if success != 0 {
+        Ok(())
+    } else {
+        Err(format!(
+            "Failed to replace file: {}",
+            std::io::Error::last_os_error()
+        ))
+    }
+}
+
+fn atomic_write_file(path: &Path, content: &str) -> Result<(), String> {
+    let parent = path
+        .parent()
+        .ok_or_else(|| "Cannot write file without a parent directory".to_string())?;
+    let file_name = path
+        .file_name()
+        .and_then(|value| value.to_str())
+        .ok_or_else(|| "Cannot write file with a non-UTF-8 name".to_string())?;
+    let metadata = fs::metadata(path).map_err(|e| format!("Failed to stat file: {e}"))?;
+    let temp_path = parent.join(format!(".{file_name}.{}.tmp", uuid::Uuid::new_v4()));
+
+    let result = (|| -> Result<(), String> {
+        let mut temp_file = fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&temp_path)
+            .map_err(|e| format!("Failed to create temp file: {e}"))?;
+        temp_file
+            .write_all(content.as_bytes())
+            .map_err(|e| format!("Failed to write temp file: {e}"))?;
+        temp_file
+            .sync_all()
+            .map_err(|e| format!("Failed to flush temp file: {e}"))?;
+        drop(temp_file);
+
+        fs::set_permissions(&temp_path, metadata.permissions())
+            .map_err(|e| format!("Failed to preserve file permissions: {e}"))?;
+        replace_file_atomically(&temp_path, path)?;
+
+        if let Ok(parent_dir) = fs::File::open(parent) {
+            let _ = parent_dir.sync_all();
+        }
+
+        Ok(())
+    })();
+
+    if result.is_err() {
+        let _ = fs::remove_file(&temp_path);
+    }
+
+    result
+}
+
 // Calculate appropriate window size with page-like proportions
 fn calculate_window_size(app: &AppHandle, prefs: &AppPreferences) -> tauri::Result<(f64, f64)> {
     // If user has resized windows (preferences were saved), use those dimensions
     // Check if these are reasonable user-resized values (not corrupted massive values)
-    if prefs.window_width > 200
-        && prefs.window_width < 5000
-        && prefs.window_height > 200
-        && prefs.window_height < 5000
-        && (prefs.window_width != 900 || prefs.window_height != 800)
-    {
-        return Ok((prefs.window_width as f64, prefs.window_height as f64));
+    if let Some(size) = stored_window_size(
+        Some(prefs.window_width),
+        Some(prefs.window_height),
+        900,
+        800,
+    ) {
+        return Ok(size);
     }
 
     // Otherwise, calculate default page-like proportions using monitor size
@@ -184,7 +356,7 @@ async fn create_window_with_file(
 
     // Track file windows and register as allowed for I/O commands
     if let Some(path) = file_path {
-        let path_str = path.to_string_lossy().to_string();
+        let path_str = pathbuf_to_string(&path);
         allow_path(app, &path_str);
         let app_state = app.state::<AppState>();
         let mut open_windows = app_state.open_windows.write().await;
@@ -344,6 +516,31 @@ impl Default for FileWatchers {
     }
 }
 
+fn prune_orphaned_watchers(inner: &mut FileWatcherInner) {
+    let mut to_remove = Vec::new();
+    for (file, labels) in inner.subs.iter() {
+        if labels.is_empty() {
+            to_remove.push(file.clone());
+        }
+    }
+
+    for file in to_remove {
+        inner.subs.remove(&file);
+        inner.watchers.remove(&file);
+        inner.senders.remove(&file);
+        if let Some(handle) = inner.debounce_tasks.remove(&file) {
+            handle.abort();
+        }
+    }
+}
+
+fn unsubscribe_window_from_all(inner: &mut FileWatcherInner, window_label: &str) {
+    for labels in inner.subs.values_mut() {
+        labels.retain(|label| label != window_label);
+    }
+    prune_orphaned_watchers(inner);
+}
+
 /// Type alias for resize task map to reduce complexity
 type ResizeTaskMap = HashMap<String, (tauri::async_runtime::JoinHandle<()>, u32, u32)>;
 
@@ -390,9 +587,12 @@ struct AppPreferences {
     theme: String,
     window_width: u32,
     window_height: u32,
+    editor_window_width: Option<u32>,
+    editor_window_height: Option<u32>,
     font_size: Option<u16>,
     word_wrap: Option<bool>,
     show_line_numbers: Option<bool>,
+    toc_visible: Option<bool>,
     cli_setup_prompted: Option<bool>,
 }
 
@@ -402,9 +602,12 @@ impl Default for AppPreferences {
             theme: "drac".to_string(),
             window_width: 900,  // Page-like width for reading
             window_height: 800, // Taller default height
+            editor_window_width: None,
+            editor_window_height: None,
             font_size: None,
             word_wrap: None,
             show_line_numbers: None,
+            toc_visible: None,
             cli_setup_prompted: None,
         }
     }
@@ -420,16 +623,7 @@ struct CacheKey {
 async fn invalidate_cache_for_path(app: &AppHandle, file_path: &str) {
     if let Some(state) = app.try_state::<AppState>() {
         let mut cache = state.html_cache.write().await;
-        // Collect matching keys first to avoid borrowing issues
-        let keys_to_remove: Vec<CacheKey> = cache
-            .iter()
-            .filter(|(k, _)| k.path == file_path)
-            .map(|(k, _)| k.clone())
-            .collect();
-
-        for k in keys_to_remove {
-            cache.pop(&k);
-        }
+        remove_cache_entries_for_path(&mut cache, file_path);
     }
 }
 
@@ -442,6 +636,7 @@ async fn start_file_watcher(
     check_path_allowed(&app, &file_path)?;
     let watchers = app.state::<FileWatchers>();
     let mut inner = watchers.inner.lock().await;
+    unsubscribe_window_from_all(&mut inner, &window_label);
 
     // Register subscription
     let entry = inner.subs.entry(file_path.clone()).or_default();
@@ -457,12 +652,19 @@ async fn start_file_watcher(
     // Create watcher while holding lock to prevent duplicate creation.
     // Watcher creation is fast (OS notification setup only).
     let (tx, mut rx) = mpsc::unbounded_channel();
+    let target_path = PathBuf::from(&file_path);
+    let watch_path = target_path
+        .parent()
+        .map(Path::to_path_buf)
+        .unwrap_or_else(|| target_path.clone());
 
     let tx_for_watcher = tx.clone();
     let mut watcher = RecommendedWatcher::new(
         move |res: Result<notify::Event, notify::Error>| {
             if let Ok(event) = res {
-                if matches!(event.kind, notify::EventKind::Modify(_)) {
+                if is_refresh_relevant_event(&event.kind)
+                    && event_targets_file(&event.paths, &target_path)
+                {
                     let _ = tx_for_watcher.send(());
                 }
             }
@@ -472,7 +674,7 @@ async fn start_file_watcher(
     .map_err(|e| format!("Failed to create watcher: {e}"))?;
 
     watcher
-        .watch(Path::new(&file_path), RecursiveMode::NonRecursive)
+        .watch(&watch_path, RecursiveMode::NonRecursive)
         .map_err(|e| format!("Failed to watch file: {e}"))?;
 
     // Spawn a debounced notifier for this file path
@@ -517,26 +719,7 @@ async fn start_file_watcher(
 async fn stop_file_watcher(app: AppHandle, window_label: String) -> Result<(), String> {
     let watchers = app.state::<FileWatchers>();
     let mut inner = watchers.inner.lock().await;
-
-    // Remove the window from all subscriptions and clean up any orphaned watchers
-    let mut to_remove: Vec<String> = Vec::new();
-    for (file, labels) in inner.subs.iter_mut() {
-        labels.retain(|l| l != &window_label);
-        if labels.is_empty() {
-            to_remove.push(file.clone());
-        }
-    }
-
-    // Clean up files with no subscribers
-    for f in &to_remove {
-        inner.subs.remove(f);
-        inner.watchers.remove(f);
-        inner.senders.remove(f);
-        if let Some(h) = inner.debounce_tasks.remove(f) {
-            h.abort();
-        }
-    }
-
+    unsubscribe_window_from_all(&mut inner, &window_label);
     Ok(())
 }
 
@@ -614,7 +797,9 @@ fn write_file(app: AppHandle, path: String, content: String) -> Result<(), Strin
     if !Path::new(&path).exists() {
         return Err("File does not exist. Use create to make new files.".to_string());
     }
-    fs::write(&path, content).map_err(|e| format!("Failed to write file: {e}"))
+    atomic_write_file(Path::new(&path), &content)?;
+    invalidate_cache_for_path_sync(&app, &path);
+    Ok(())
 }
 
 #[tauri::command]
@@ -1037,10 +1222,18 @@ async fn open_editor_window(
         .file_name()
         .and_then(|n| n.to_str())
         .unwrap_or("Untitled");
+    let prefs = get_preferences(app.clone()).unwrap_or_default();
+    let (editor_width, editor_height) = stored_window_size(
+        prefs.editor_window_width,
+        prefs.editor_window_height,
+        800,
+        600,
+    )
+    .unwrap_or((800.0, 600.0));
     let _editor_window =
         WebviewWindowBuilder::new(&app, &editor_label, WebviewUrl::App("editor.html".into()))
             .title(format!("BoltPage Editor - {file_name}"))
-            .inner_size(800.0, 600.0)
+            .inner_size(editor_width, editor_height)
             .initialization_script(format!(
                 "window.__INITIAL_FILE_PATH__ = {}; window.__PREVIEW_WINDOW__ = {};",
                 serde_json::to_string(&file_path).unwrap(),
@@ -1075,6 +1268,9 @@ async fn remove_window_from_tracking(app: AppHandle, window_label: String) -> Re
 
 #[tauri::command]
 fn refresh_preview(app: AppHandle, window: String) -> Result<(), String> {
+    if let Some(path) = decode_file_path_from_window_label_str(&window)? {
+        invalidate_cache_for_path_sync(&app, &path);
+    }
     if let Some(preview_window) = app.get_webview_window(&window) {
         preview_window
             .eval("refreshFile()")
@@ -1085,21 +1281,7 @@ fn refresh_preview(app: AppHandle, window: String) -> Result<(), String> {
 
 #[tauri::command]
 fn get_file_path_from_window_label(window: tauri::Window) -> Result<Option<String>, String> {
-    let window_label = window.label();
-
-    // Check if this is a file window (starts with "markdown-file-")
-    if let Some(encoded_path) = window_label.strip_prefix("markdown-file-") {
-        match base64::engine::general_purpose::URL_SAFE_NO_PAD.decode(encoded_path) {
-            Ok(decoded_bytes) => match String::from_utf8(decoded_bytes) {
-                Ok(file_path) => Ok(Some(file_path)),
-                Err(e) => Err(format!("Failed to decode UTF-8: {e}")),
-            },
-            Err(e) => Err(format!("Failed to decode base64: {e}")),
-        }
-    } else {
-        // Not a file window, return None
-        Ok(None)
-    }
+    decode_file_path_from_window_label_str(window.label())
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
@@ -1522,6 +1704,9 @@ pub fn run() {
                     // window's own monitor (not primary) for correct scale factor.
                     let app = window.app_handle().clone();
                     let label = window.label().to_string();
+                    if !is_preview_window_label(&label) && !is_editor_window_label(&label) {
+                        return;
+                    }
                     let (lw, lh) = convert_to_logical(window, size.width, size.height);
 
                     // Extract only the Arcs we need (not a borrow of the State)
@@ -1544,6 +1729,7 @@ pub fn run() {
 
                             // Spawn new debounced save task
                             let app_clone2 = app_clone.clone();
+                            let label_for_prefs = label.clone();
                             let handle = tauri::async_runtime::spawn(async move {
                                 sleep(Duration::from_millis(450)).await;
 
@@ -1551,8 +1737,13 @@ pub fn run() {
                                 let _lock = pref_lock.lock().await;
                                 let mut prefs =
                                     get_preferences(app_clone2.clone()).unwrap_or_default();
-                                prefs.window_width = lw;
-                                prefs.window_height = lh;
+                                if is_editor_window_label(&label_for_prefs) {
+                                    prefs.editor_window_width = Some(lw);
+                                    prefs.editor_window_height = Some(lh);
+                                } else {
+                                    prefs.window_width = lw;
+                                    prefs.window_height = lh;
+                                }
                                 let _ = save_preferences(app_clone2, prefs);
                             });
 
@@ -1603,4 +1794,130 @@ pub fn run() {
                 });
             }
         });
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::env;
+
+    fn unique_temp_dir() -> PathBuf {
+        let dir = env::temp_dir().join(format!("boltpage-tests-{}", uuid::Uuid::new_v4()));
+        fs::create_dir_all(&dir).unwrap();
+        dir
+    }
+
+    #[test]
+    fn decode_file_path_from_window_label_round_trips() {
+        let path = "/tmp/example.md";
+        let encoded = base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(path.as_bytes());
+        let label = format!("markdown-file-{encoded}");
+
+        assert_eq!(
+            decode_file_path_from_window_label_str(&label).unwrap(),
+            Some(path.to_string())
+        );
+        assert_eq!(
+            decode_file_path_from_window_label_str("markdown-plain").unwrap(),
+            None
+        );
+    }
+
+    #[test]
+    fn stored_window_size_ignores_defaults_and_invalid_values() {
+        assert_eq!(stored_window_size(Some(900), Some(800), 900, 800), None);
+        assert_eq!(stored_window_size(Some(100), Some(800), 900, 800), None);
+        assert_eq!(
+            stored_window_size(Some(1200), Some(900), 900, 800),
+            Some((1200.0, 900.0))
+        );
+    }
+
+    #[test]
+    fn remove_cache_entries_for_path_removes_all_versions() {
+        let mut cache = LruCache::new(NonZeroUsize::new(8).unwrap());
+        let key_a1 = CacheKey {
+            path: "/tmp/a.md".to_string(),
+            size: 10,
+            mtime_secs: 1,
+        };
+        let key_a2 = CacheKey {
+            path: "/tmp/a.md".to_string(),
+            size: 11,
+            mtime_secs: 2,
+        };
+        let key_b = CacheKey {
+            path: "/tmp/b.md".to_string(),
+            size: 20,
+            mtime_secs: 1,
+        };
+
+        cache.put(key_a1.clone(), "old".to_string());
+        cache.put(key_a2.clone(), "new".to_string());
+        cache.put(key_b.clone(), "other".to_string());
+
+        remove_cache_entries_for_path(&mut cache, "/tmp/a.md");
+
+        assert!(cache.get(&key_a1).is_none());
+        assert!(cache.get(&key_a2).is_none());
+        assert_eq!(cache.get(&key_b).cloned(), Some("other".to_string()));
+    }
+
+    #[test]
+    fn atomic_write_file_replaces_contents() {
+        let dir = unique_temp_dir();
+        let path = dir.join("sample.md");
+        fs::write(&path, "before").unwrap();
+
+        atomic_write_file(&path, "after").unwrap();
+
+        assert_eq!(fs::read_to_string(&path).unwrap(), "after");
+
+        let leftovers: Vec<PathBuf> = fs::read_dir(&dir)
+            .unwrap()
+            .filter_map(|entry| entry.ok().map(|value| value.path()))
+            .filter(|candidate| {
+                candidate
+                    .file_name()
+                    .and_then(|value| value.to_str())
+                    .map(|value| value.contains(".tmp"))
+                    .unwrap_or(false)
+            })
+            .collect();
+        assert!(leftovers.is_empty());
+
+        fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn watch_helpers_cover_replace_style_saves() {
+        let target = PathBuf::from("/tmp/notes.md");
+        assert!(is_preview_window_label("markdown-file-abc"));
+        assert!(is_preview_window_label("markdown-123"));
+        assert!(is_editor_window_label("editor-123"));
+        assert!(is_refresh_relevant_event(&notify::EventKind::Create(
+            notify::event::CreateKind::File
+        )));
+        assert!(is_refresh_relevant_event(&notify::EventKind::Remove(
+            notify::event::RemoveKind::File
+        )));
+        assert!(event_targets_file(std::slice::from_ref(&target), &target));
+        assert!(!event_targets_file(
+            &[PathBuf::from("/tmp/other.md")],
+            &target
+        ));
+    }
+
+    #[test]
+    fn app_preferences_deserialize_toc_visibility() {
+        let prefs: AppPreferences = serde_json::from_value(serde_json::json!({
+            "theme": "drac",
+            "window_width": 900,
+            "window_height": 800,
+            "toc_visible": false
+        }))
+        .unwrap();
+
+        assert_eq!(prefs.toc_visible, Some(false));
+    }
 }

@@ -164,6 +164,29 @@ body {
   z-index: 2;
 }
 
+.line-num {
+  box-sizing: border-box;
+  display: flex;
+  align-items: flex-start;
+  justify-content: flex-end;
+}
+
+.line-mirror {
+  visibility: hidden;
+  position: absolute;
+  top: 0;
+  left: 0;
+  height: 0;
+  overflow: hidden;
+  font-family: inherit;
+  font-size: inherit;
+  line-height: inherit;
+  white-space: pre-wrap;
+  word-break: break-word;
+  pointer-events: none;
+  z-index: -1;
+}
+
 .find-highlight-overlay {
   position: absolute;
   top: 0;
