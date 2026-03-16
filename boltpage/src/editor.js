@@ -5,9 +5,32 @@ import {
     MIN_SCROLL_DELTA_PERCENT,
     LINE_HEIGHT_FALLBACK_MULTIPLIER,
     parsePx,
+    escapeHtml,
     createFindOverlay,
     updateFindCount,
+    nextFindIndex,
+    applyThemeToDocument,
+    setupKeyboardShortcuts,
 } from './shared.js';
+import {
+    EVENT_THEME_CHANGED,
+    EVENT_SCROLL_SYNC,
+    EVENT_MENU_CLOSE,
+    EVENT_MENU_FIND,
+    EVENT_MENU_EDIT,
+    EVENT_MENU_OPEN,
+    EVENT_MENU_PRINT,
+    ACTION_UNDO,
+    ACTION_REDO,
+    ACTION_CUT,
+    ACTION_COPY,
+    ACTION_PASTE,
+    ACTION_SELECT_ALL,
+    KIND_MARKDOWN,
+    KIND_JSON,
+    KIND_YAML,
+    KIND_TXT,
+} from './constants.js';
 
 const { invoke } = window.__TAURI__.core;
 const { getCurrentWindow } = window.__TAURI__.window;
@@ -67,7 +90,7 @@ async function initialize() {
     // Load theme preference
     try {
         const prefs = await invoke('get_preferences');
-        document.documentElement.setAttribute('data-theme', prefs.theme);
+        applyThemeToDocument(prefs.theme);
         wordWrapEnabled = prefs.word_wrap === true;
         applyWordWrap();
     } catch (err) {
@@ -266,25 +289,13 @@ document.addEventListener('DOMContentLoaded', async () => {
         }
     }).observe(textarea);
 
-    // Handle keyboard shortcuts
-    document.addEventListener('keydown', async (e) => {
-        const ctrl = e.ctrlKey || e.metaKey;
-
-        if (ctrl && e.key.toLowerCase() === 'f') {
-            e.preventDefault();
-            openFindOverlay();
-        } else if (ctrl && e.key.toLowerCase() === 'h') {
-            e.preventDefault();
-            openFindOverlay();
-            if (replaceInput) replaceInput.focus();
-        } else if (ctrl && e.key === 's') {
-            e.preventDefault();
-            await saveFile();
-        } else if (ctrl && e.key === 'w') {
-            e.preventDefault();
-            appWindow.close();
-        }
-    });
+    // Keyboard shortcuts (table-driven)
+    setupKeyboardShortcuts([
+        { key: 'f', ctrl: true, action: () => openFindOverlay() },
+        { key: 'h', ctrl: true, action: () => { openFindOverlay(); if (replaceInput) replaceInput.focus(); } },
+        { key: 's', ctrl: true, action: () => saveFile() },
+        { key: 'w', ctrl: true, action: () => appWindow.close() },
+    ]);
     
     // Sync: send scroll position to preview
     textarea.addEventListener('scroll', () => {
@@ -304,7 +315,7 @@ document.addEventListener('DOMContentLoaded', async () => {
                     return;
                 }
                 lastSyncedLine = line;
-                const kind = isJson ? 'json' : (isYaml ? 'yaml' : 'txt');
+                const kind = isJson ? KIND_JSON : (isYaml ? KIND_YAML : KIND_TXT);
                 payload = { source: appWindow.label, file_path: currentFilePath, kind, line, percent: null };
             } else {
                 const ta = document.getElementById('editor-textarea');
@@ -319,7 +330,7 @@ document.addEventListener('DOMContentLoaded', async () => {
                     return;
                 }
                 lastSyncedPercent = percent;
-                payload = { source: appWindow.label, file_path: currentFilePath, kind: 'markdown', line: null, percent };
+                payload = { source: appWindow.label, file_path: currentFilePath, kind: KIND_MARKDOWN, line: null, percent };
             }
             try {
                 await invoke('broadcast_scroll_sync', { payload });
@@ -330,7 +341,7 @@ document.addEventListener('DOMContentLoaded', async () => {
     });
 
     // Listen for scroll sync events
-    await listen('scroll-sync', (event) => {
+    await listen(EVENT_SCROLL_SYNC, (event) => {
         const p = event.payload || {};
         if (!currentFilePath) return;
         if (p.source === appWindow.label) return;
@@ -351,36 +362,36 @@ document.addEventListener('DOMContentLoaded', async () => {
     });
 
     // Listen for menu find requests
-    await listen('menu-find', () => {
+    await listen(EVENT_MENU_FIND, () => {
         openFindOverlay();
     });
 
     // Listen for edit menu actions
-    await listen('menu-edit', async (event) => {
+    await listen(EVENT_MENU_EDIT, async (event) => {
         if (!document.hasFocus()) return;
         const action = String(event.payload || '');
         performEditAction(action);
     });
 
     // Listen for theme changes
-    await listen('theme-changed', (event) => {
-        document.documentElement.setAttribute('data-theme', event.payload);
+    await listen(EVENT_THEME_CHANGED, (event) => {
+        applyThemeToDocument(event.payload);
     });
 
     // Listen for close menu action -- onCloseRequested handles the save
-    await listen('menu-close', async () => {
+    await listen(EVENT_MENU_CLOSE, async () => {
         if (!document.hasFocus()) return;
         appWindow.close();
     });
 
     // Listen for print menu action
-    await listen('menu-print', () => {
+    await listen(EVENT_MENU_PRINT, () => {
         if (!document.hasFocus()) return;
         window.print();
     });
 
     // Listen for open menu action (editor ignores; only preview handles it)
-    await listen('menu-open', () => {
+    await listen(EVENT_MENU_OPEN, () => {
         // No-op in editor window — open is handled by preview windows
     });
 
@@ -413,21 +424,21 @@ async function performEditAction(action) {
         if (!textarea) return;
 
         switch (action) {
-            case 'undo':
+            case ACTION_UNDO:
                 textarea.focus();
                 document.execCommand('undo');
                 break;
-            case 'redo':
+            case ACTION_REDO:
                 textarea.focus();
                 document.execCommand('redo');
                 break;
-            case 'copy':
+            case ACTION_COPY:
                 if (textarea.selectionStart !== textarea.selectionEnd) {
                     const text = textarea.value.substring(textarea.selectionStart, textarea.selectionEnd);
                     await navigator.clipboard.writeText(text);
                 }
                 break;
-            case 'cut':
+            case ACTION_CUT:
                 if (textarea.selectionStart !== textarea.selectionEnd) {
                     const cutText = textarea.value.substring(textarea.selectionStart, textarea.selectionEnd);
                     await navigator.clipboard.writeText(cutText);
@@ -437,7 +448,7 @@ async function performEditAction(action) {
                     textarea.dispatchEvent(new Event('input', { bubbles: true }));
                 }
                 break;
-            case 'paste':
+            case ACTION_PASTE:
                 try {
                     const clipText = await navigator.clipboard.readText();
                     if (clipText) {
@@ -454,7 +465,7 @@ async function performEditAction(action) {
                     console.error('Paste failed:', pasteErr);
                 }
                 break;
-            case 'select-all':
+            case ACTION_SELECT_ALL:
                 textarea.select();
                 break;
         }
@@ -465,10 +476,6 @@ async function performEditAction(action) {
 
 function escapeRegex(str) {
     return str.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-}
-
-function escapeHtml(str) {
-    return str.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
 }
 
 // --- Find overlay (editor) ---
@@ -576,40 +583,22 @@ function performFind(query) {
 
 function findNext() {
     const currentQuery = findInput.value;
-    
-    // If query changed, perform new search
-    if (currentQuery !== lastSearchQuery) {
+    if (currentQuery !== lastSearchQuery || findResults.length === 0) {
         performFind(currentQuery);
         return;
     }
-    
-    // If no results, perform search
-    if (findResults.length === 0) {
-        performFind(currentQuery);
-        return;
-    }
-    
-    currentFindIndex = (currentFindIndex + 1) % findResults.length;
+    currentFindIndex = nextFindIndex(currentFindIndex, findResults.length, 1);
     highlightCurrentFind();
     updateFindCountDisplay();
 }
 
 function findPrevious() {
     const currentQuery = findInput.value;
-    
-    // If query changed, perform new search
-    if (currentQuery !== lastSearchQuery) {
+    if (currentQuery !== lastSearchQuery || findResults.length === 0) {
         performFind(currentQuery);
         return;
     }
-    
-    // If no results, perform search
-    if (findResults.length === 0) {
-        performFind(currentQuery);
-        return;
-    }
-    
-    currentFindIndex = currentFindIndex <= 0 ? findResults.length - 1 : currentFindIndex - 1;
+    currentFindIndex = nextFindIndex(currentFindIndex, findResults.length, -1);
     highlightCurrentFind();
     updateFindCountDisplay();
 }

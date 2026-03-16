@@ -49,3 +49,46 @@ export function updateFindCount(overlay, results, currentIndex) {
         countEl.textContent = `${currentIndex + 1}/${results.length}`;
     }
 }
+
+/**
+ * Calculate the next find result index.
+ * @param {number} currentIndex - current find result index
+ * @param {number} totalResults - total number of find results
+ * @param {number} direction - 1 for next, -1 for previous
+ * @returns {number} new index
+ */
+export function nextFindIndex(currentIndex, totalResults, direction) {
+    if (totalResults === 0) return -1;
+    if (direction === 1) {
+        return (currentIndex + 1) % totalResults;
+    }
+    return currentIndex <= 0 ? totalResults - 1 : currentIndex - 1;
+}
+
+export function applyThemeToDocument(theme) {
+    document.documentElement.setAttribute('data-theme', theme);
+}
+
+/**
+ * Set up table-driven keyboard shortcuts.
+ * Each entry: { key, ctrl, shift, action }
+ * - key: lowercase key name
+ * - ctrl: true if Ctrl/Cmd required (default false)
+ * - shift: true if Shift required (default false)
+ * - action: function to call (may be async)
+ * Entries are matched in order; shift variants must precede non-shift for the same key.
+ */
+export function setupKeyboardShortcuts(shortcuts) {
+    document.addEventListener('keydown', async (e) => {
+        const ctrl = e.ctrlKey || e.metaKey;
+        for (const s of shortcuts) {
+            if ((s.ctrl || false) === ctrl
+                && (s.shift || false) === e.shiftKey
+                && e.key.toLowerCase() === s.key) {
+                e.preventDefault();
+                await s.action(e);
+                return;
+            }
+        }
+    });
+}

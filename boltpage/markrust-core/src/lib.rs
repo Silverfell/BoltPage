@@ -17,6 +17,24 @@ fn get_theme_set() -> &'static ThemeSet {
     THEME_SET.get_or_init(ThemeSet::load_defaults)
 }
 
+fn highlight_code(text: &str, syntax_tokens: &[&str], lang_class: &str) -> Result<String, String> {
+    let syntax_set = get_syntax_set();
+    let syntax = syntax_tokens
+        .iter()
+        .find_map(|token| syntax_set.find_syntax_by_token(token))
+        .ok_or_else(|| format!("{lang_class} syntax not found"))?;
+
+    let mut generator =
+        ClassedHTMLGenerator::new_with_class_style(syntax, syntax_set, ClassStyle::Spaced);
+    for line in text.lines() {
+        let _ = generator.parse_html_for_line_which_includes_newline(&format!("{line}\n"));
+    }
+    let highlighted = generator.finalize();
+    Ok(format!(
+        "<div class=\"highlight\"><pre><code class=\"language-{lang_class}\">{highlighted}</code></pre></div>"
+    ))
+}
+
 pub fn parse_markdown(content: &str) -> String {
     parse_markdown_with_theme(content, "light")
 }
@@ -36,7 +54,6 @@ pub fn parse_markdown_with_theme(content: &str, _theme_name: &str) -> String {
     let mut code_block_content = String::new();
 
     let mut events = Vec::new();
-    let syntax_set = get_syntax_set();
 
     for event in parser {
         match event {
@@ -51,20 +68,9 @@ pub fn parse_markdown_with_theme(content: &str, _theme_name: &str) -> String {
             Event::End(TagEnd::CodeBlock) => {
                 in_code_block = false;
                 if !code_block_lang.is_empty() {
-                    if let Some(syntax) = syntax_set.find_syntax_by_token(&code_block_lang) {
-                        let mut generator = ClassedHTMLGenerator::new_with_class_style(
-                            syntax,
-                            syntax_set,
-                            ClassStyle::Spaced,
-                        );
-                        for line in code_block_content.lines() {
-                            let _ = generator
-                                .parse_html_for_line_which_includes_newline(&format!("{line}\n"));
-                        }
-                        let highlighted = generator.finalize();
-                        let block = format!(
-                            "<div class=\"highlight\"><pre><code class=\"language-{code_block_lang}\">{highlighted}</code></pre></div>"
-                        );
+                    if let Ok(block) =
+                        highlight_code(&code_block_content, &[&code_block_lang], &code_block_lang)
+                    {
                         events.push(Event::Html(CowStr::from(block)));
                     } else {
                         events.push(Event::Start(Tag::CodeBlock(
@@ -127,25 +133,7 @@ pub fn parse_json_with_theme(content: &str, _theme_name: &str) -> Result<String,
         serde_json_crate::from_str(content).map_err(|e| format!("Invalid JSON: {e}"))?;
     let pretty = serde_json_crate::to_string_pretty(&json_value)
         .map_err(|e| format!("Failed to pretty-print JSON: {e}"))?;
-
-    let syntax_set = get_syntax_set();
-    let syntax = syntax_set
-        .find_syntax_by_token("JSON")
-        .or_else(|| syntax_set.find_syntax_by_token("json"))
-        .ok_or_else(|| "JSON syntax not found".to_string())?;
-
-    let mut generator =
-        ClassedHTMLGenerator::new_with_class_style(syntax, syntax_set, ClassStyle::Spaced);
-
-    for line in pretty.lines() {
-        let _ = generator.parse_html_for_line_which_includes_newline(&format!("{line}\n"));
-    }
-
-    let highlighted = generator.finalize();
-    let html = format!(
-        "<div class=\"highlight\"><pre><code class=\"language-json\">{highlighted}</code></pre></div>"
-    );
-    Ok(html)
+    highlight_code(&pretty, &["JSON", "json"], "json")
 }
 
 /// Theme is applied via CSS class on the frontend; param reserved for future per-render theming.
@@ -155,27 +143,7 @@ pub fn parse_json_with_theme(content: &str, _theme_name: &str) -> Result<String,
 pub fn parse_yaml_with_theme(content: &str, _theme_name: &str) -> Result<String, String> {
     let yaml_value: serde_yaml_crate::Value =
         serde_yaml_crate::from_str(content).map_err(|e| format!("Invalid YAML: {e}"))?;
-
     let pretty = serde_yaml_crate::to_string(&yaml_value)
         .map_err(|e| format!("Failed to pretty-print YAML: {e}"))?;
-
-    let syntax_set = get_syntax_set();
-    let syntax = syntax_set
-        .find_syntax_by_token("YAML")
-        .or_else(|| syntax_set.find_syntax_by_token("yaml"))
-        .or_else(|| syntax_set.find_syntax_by_token("yml"))
-        .ok_or_else(|| "YAML syntax not found".to_string())?;
-
-    let mut generator =
-        ClassedHTMLGenerator::new_with_class_style(syntax, syntax_set, ClassStyle::Spaced);
-
-    for line in pretty.lines() {
-        let _ = generator.parse_html_for_line_which_includes_newline(&format!("{line}\n"));
-    }
-
-    let highlighted = generator.finalize();
-    let html = format!(
-        "<div class=\"highlight\"><pre><code class=\"language-yaml\">{highlighted}</code></pre></div>"
-    );
-    Ok(html)
+    highlight_code(&pretty, &["YAML", "yaml", "yml"], "yaml")
 }

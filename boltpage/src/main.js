@@ -8,7 +8,30 @@ import {
     escapeHtml,
     createFindOverlay,
     updateFindCount,
+    nextFindIndex,
+    applyThemeToDocument,
+    setupKeyboardShortcuts,
 } from './shared.js';
+import {
+    EVENT_FILE_CHANGED,
+    EVENT_THEME_CHANGED,
+    EVENT_SCROLL_SYNC,
+    EVENT_MENU_OPEN,
+    EVENT_MENU_CLOSE,
+    EVENT_MENU_FIND,
+    EVENT_MENU_EDIT,
+    EVENT_MENU_EXPORT_HTML,
+    ACTION_UNDO,
+    ACTION_REDO,
+    ACTION_CUT,
+    ACTION_COPY,
+    ACTION_PASTE,
+    ACTION_SELECT_ALL,
+    KIND_MARKDOWN,
+    KIND_JSON,
+    KIND_YAML,
+    KIND_TXT,
+} from './constants.js';
 
 const { invoke } = window.__TAURI__.core;
 const { getCurrentWindow } = window.__TAURI__.window;
@@ -18,7 +41,7 @@ const appWindow = getCurrentWindow();
 
 let currentFilePath = null;
 let currentTheme = 'drac';
-let currentKind = 'markdown'; // 'json' | 'markdown' | 'txt' | 'pdf'
+let currentKind = KIND_MARKDOWN; // KIND_JSON | KIND_MARKDOWN | KIND_TXT | 'pdf'
 let currentPdfUrl = null;
 let isProgrammaticScroll = false;
 let scrollDebounce = null;
@@ -62,7 +85,7 @@ async function savePreference(key, value) {
 
 function applyTheme(theme) {
     currentTheme = theme;
-    document.documentElement.setAttribute('data-theme', theme);
+    applyThemeToDocument(theme);
     savePreference('theme', theme);
     // Ensure syntax CSS for this theme is loaded
     ensureSyntaxCss(theme);
@@ -115,7 +138,7 @@ function buildTOC() {
 
     tocNav.innerHTML = '';
 
-    if (currentKind !== 'markdown') {
+    if (currentKind !== KIND_MARKDOWN) {
         if (tocBtn) { tocBtn.style.display = 'none'; tocBtn.classList.remove('active'); }
         if (tocSidebar) tocSidebar.classList.remove('show');
         return;
@@ -209,10 +232,10 @@ async function openFile(filePath) {
     try {
         const lowerPath = String(filePath).toLowerCase();
         if (lowerPath.endsWith('.pdf')) currentKind = 'pdf';
-        else if (lowerPath.endsWith('.json')) currentKind = 'json';
-        else if (lowerPath.endsWith('.yaml') || lowerPath.endsWith('.yml')) currentKind = 'yaml';
-        else if (lowerPath.endsWith('.txt')) currentKind = 'txt';
-        else currentKind = 'markdown';
+        else if (lowerPath.endsWith('.json')) currentKind = KIND_JSON;
+        else if (lowerPath.endsWith('.yaml') || lowerPath.endsWith('.yml')) currentKind = KIND_YAML;
+        else if (lowerPath.endsWith('.txt')) currentKind = KIND_TXT;
+        else currentKind = KIND_MARKDOWN;
 
         // Preserve scroll anchor if reloading same file
         let anchor = null;
@@ -273,7 +296,7 @@ async function openFile(filePath) {
         buildTOC();
         // Restore scroll position if applicable
         if (anchor) {
-            if ((anchor.kind === 'json' || anchor.kind === 'yaml' || anchor.kind === 'txt') && typeof anchor.line === 'number') {
+            if ((anchor.kind === KIND_JSON || anchor.kind === KIND_YAML || anchor.kind === KIND_TXT) && typeof anchor.line === 'number') {
                 scrollPreviewToLine(anchor.line);
             } else if (typeof anchor.percent === 'number') {
                 const scrollableHeight = contentEl.scrollHeight - contentEl.clientHeight;
@@ -324,9 +347,9 @@ function getPreAndMetrics() {
     }
 
     let pre = null;
-    if (currentKind === 'json' || currentKind === 'yaml') {
+    if (currentKind === KIND_JSON || currentKind === KIND_YAML) {
         pre = document.querySelector('#markdown-content .highlight pre');
-    } else if (currentKind === 'txt') {
+    } else if (currentKind === KIND_TXT) {
         pre = document.querySelector('#markdown-content pre.plain-text');
     }
     if (!pre) {
@@ -345,7 +368,7 @@ function getPreAndMetrics() {
 }
 
 function getTopLineForPreview() {
-    if (currentKind === 'json' || currentKind === 'yaml' || currentKind === 'txt') {
+    if (currentKind === KIND_JSON || currentKind === KIND_YAML || currentKind === KIND_TXT) {
         const m = getPreAndMetrics();
         if (!m) return null;
         const offset = Math.max(0, contentEl.scrollTop - m.preTop);
@@ -355,7 +378,7 @@ function getTopLineForPreview() {
     // Fallback: percent scroll for markdown
     const maxScroll = Math.max(1, contentEl.scrollHeight - contentEl.clientHeight);
     const percent = Math.max(0, Math.min(1, contentEl.scrollTop / maxScroll));
-    return { kind: 'markdown', percent };
+    return { kind: KIND_MARKDOWN, percent };
 }
 
 function scrollPreviewToLine(line) {
@@ -502,56 +525,19 @@ function setupEventListeners() {
         }
     });
     
-    // Keyboard shortcuts
-    document.addEventListener('keydown', async (e) => {
-        const ctrl = e.ctrlKey || e.metaKey;
-        
-        if (ctrl && e.key.toLowerCase() === 'f') {
-            if (currentKind !== 'pdf') {
-                e.preventDefault();
-                openFindOverlay();
-            }
-        } else if (ctrl && e.key.toLowerCase() === 'p') {
-            if (currentKind !== 'pdf') {
-                e.preventDefault();
-                invoke('print_current_window').catch(err => console.error('Print failed:', err));
-            }
-        } else if (ctrl && e.key === 'o') {
-            e.preventDefault();
-            openFile();
-        } else if (ctrl && e.key === 'r') {
-            e.preventDefault();
-            refreshFile();
-        } else if (ctrl && e.key === 't') {
-            e.preventDefault();
-            toggleThemeMenu();
-        } else if (ctrl && e.shiftKey && e.key.toLowerCase() === 'e') {
-            e.preventDefault();
-            exportHtml();
-        } else if (ctrl && e.key === 'e') {
-            e.preventDefault();
-            openEditor();
-        } else if (ctrl && e.shiftKey && e.key.toLowerCase() === 'n') {
-            e.preventDefault();
-            // Create new window
-            try {
-                await invoke('create_new_window_command');
-            } catch (err) {
-                console.error('Failed to create new window:', err);
-            }
-        } else if (ctrl && e.key.toLowerCase() === 'n') {
-            e.preventDefault();
-            await createNewMarkdownFile();
-        } else if (ctrl && e.key === 'w') {
-            e.preventDefault();
-            // Close current window
-            try {
-                await appWindow.close();
-            } catch (err) {
-                console.error('Failed to close window:', err);
-            }
-        }
-    });
+    // Keyboard shortcuts (table-driven, shift variants before non-shift for same key)
+    setupKeyboardShortcuts([
+        { key: 'f', ctrl: true, action: () => { if (currentKind !== 'pdf') openFindOverlay(); } },
+        { key: 'p', ctrl: true, action: () => { if (currentKind !== 'pdf') invoke('print_current_window').catch(err => console.error('Print failed:', err)); } },
+        { key: 'o', ctrl: true, action: () => openFile() },
+        { key: 'r', ctrl: true, action: () => refreshFile() },
+        { key: 't', ctrl: true, action: () => toggleThemeMenu() },
+        { key: 'e', ctrl: true, shift: true, action: () => exportHtml() },
+        { key: 'e', ctrl: true, action: () => openEditor() },
+        { key: 'n', ctrl: true, shift: true, action: () => invoke('create_new_window_command').catch(err => console.error('Failed to create new window:', err)) },
+        { key: 'n', ctrl: true, action: () => createNewMarkdownFile() },
+        { key: 'w', ctrl: true, action: () => appWindow.close() },
+    ]);
 }
 
 function isAllowedExternalUrl(url) {
@@ -668,17 +654,17 @@ window.addEventListener('DOMContentLoaded', async () => {
         setTimeout(() => checkAndPromptCliSetup(), 2000);
     
         // Listen for file change events -- auto-refresh the preview
-        await listen('file-changed', async () => {
+        await listen(EVENT_FILE_CHANGED, async () => {
             await refreshFile();
         });
-        
+
         // Listen for theme change events from other windows
-        await listen('theme-changed', async (event) => {
+        await listen(EVENT_THEME_CHANGED, async (event) => {
             // Skip if this window already applied this theme (avoids redundant
             // DOM work from our own broadcast echo).
             if (event.payload === currentTheme) return;
             currentTheme = event.payload;
-            document.documentElement.setAttribute('data-theme', currentTheme);
+            applyThemeToDocument(currentTheme);
             await ensureSyntaxCss(currentTheme);
 
             // Update active theme indicator
@@ -688,14 +674,14 @@ window.addEventListener('DOMContentLoaded', async () => {
         });
 
         // Listen for edit menu actions (cut/copy/paste/select-all)
-        await listen('menu-edit', async (event) => {
+        await listen(EVENT_MENU_EDIT, async (event) => {
             if (!document.hasFocus()) return;
             const action = String(event.payload || '');
             performEditAction(action);
         });
 
         // Listen for HTML export menu requests
-        await listen('menu-export-html', () => {
+        await listen(EVENT_MENU_EXPORT_HTML, () => {
             setTimeout(() => {
                 if (!document.hasFocus()) return;
                 exportHtml();
@@ -703,30 +689,30 @@ window.addEventListener('DOMContentLoaded', async () => {
         });
 
         // Listen for menu find
-        await listen('menu-find', () => {
+        await listen(EVENT_MENU_FIND, () => {
             if (!document.hasFocus()) return;
             if (currentKind !== 'pdf') openFindOverlay();
         });
 
         // Listen for File > Open menu action
-        await listen('menu-open', () => {
+        await listen(EVENT_MENU_OPEN, () => {
             if (!document.hasFocus()) return;
             openFile();
         });
 
         // Listen for File > Close Window menu action
-        await listen('menu-close', async () => {
+        await listen(EVENT_MENU_CLOSE, async () => {
             if (!document.hasFocus()) return;
             await appWindow.close();
         });
 
         // Listen for scroll sync events from other windows
-        await listen('scroll-sync', async (event) => {
+        await listen(EVENT_SCROLL_SYNC, async (event) => {
             const payload = event.payload || {};
             if (!currentFilePath) return;
             if (payload.source === appWindow.label) return; // ignore self
             if (payload.file_path !== currentFilePath) return;
-            if ((payload.kind === 'json' || payload.kind === 'yaml' || payload.kind === 'txt') && typeof payload.line === 'number') {
+            if ((payload.kind === KIND_JSON || payload.kind === KIND_YAML || payload.kind === KIND_TXT) && typeof payload.line === 'number') {
                 // Scroll preview to the requested line
                 scrollPreviewToLine(payload.line);
                 lastSyncedLine = payload.line;
@@ -820,22 +806,22 @@ async function performEditAction(action) {
         const activeEl = document.activeElement;
 
         switch (action) {
-            case 'undo':
-            case 'redo':
+            case ACTION_UNDO:
+            case ACTION_REDO:
                 // Preview is read-only: undo/redo are not applicable
                 break;
-            case 'copy':
+            case ACTION_COPY:
                 if (selection && selection.toString()) {
                     await navigator.clipboard.writeText(selection.toString());
                 }
                 break;
-            case 'cut':
+            case ACTION_CUT:
                 // Preview is read-only: copy selection to clipboard without modifying DOM
                 if (selection && selection.toString()) {
                     await navigator.clipboard.writeText(selection.toString());
                 }
                 break;
-            case 'paste':
+            case ACTION_PASTE:
                 try {
                     const text = await navigator.clipboard.readText();
                     if (activeEl && (activeEl.tagName === 'TEXTAREA' ||
@@ -852,7 +838,7 @@ async function performEditAction(action) {
                     console.error('Paste failed:', err);
                 }
                 break;
-            case 'select-all':
+            case ACTION_SELECT_ALL:
                 if (activeEl && (activeEl.tagName === 'TEXTAREA' || activeEl.tagName === 'INPUT')) {
                     activeEl.select();
                 } else {
@@ -950,40 +936,22 @@ function performFind(query) {
 
 function findNext() {
     const currentQuery = findInput.value;
-    
-    // If query changed, perform new search
-    if (currentQuery !== lastSearchQuery) {
+    if (currentQuery !== lastSearchQuery || findResults.length === 0) {
         performFind(currentQuery);
         return;
     }
-    
-    // If no results, perform search
-    if (findResults.length === 0) {
-        performFind(currentQuery);
-        return;
-    }
-    
-    currentFindIndex = (currentFindIndex + 1) % findResults.length;
+    currentFindIndex = nextFindIndex(currentFindIndex, findResults.length, 1);
     highlightCurrentFind();
     updateFindCountDisplay();
 }
 
 function findPrevious() {
     const currentQuery = findInput.value;
-    
-    // If query changed, perform new search
-    if (currentQuery !== lastSearchQuery) {
+    if (currentQuery !== lastSearchQuery || findResults.length === 0) {
         performFind(currentQuery);
         return;
     }
-    
-    // If no results, perform search
-    if (findResults.length === 0) {
-        performFind(currentQuery);
-        return;
-    }
-    
-    currentFindIndex = currentFindIndex <= 0 ? findResults.length - 1 : currentFindIndex - 1;
+    currentFindIndex = nextFindIndex(currentFindIndex, findResults.length, -1);
     highlightCurrentFind();
     updateFindCountDisplay();
 }
