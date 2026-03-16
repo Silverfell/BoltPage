@@ -52,6 +52,11 @@ let lineGutter = null;
 let lineMirror = null;
 let lastLineCount = 0;
 let wordWrapEnabled = false;
+let lineNumberRafId = null;
+let prevLines = [];
+let mirrorDivs = [];
+let gutterDivs = [];
+let lineHeights = [];
 
 // Track last synced position to filter micro-scrolls
 let lastSyncedLine = null;
@@ -180,6 +185,31 @@ function setupEditorWrapper() {
     wrapper.appendChild(lineMirror);
 }
 
+function scheduleLineNumberUpdate() {
+    if (lineNumberRafId) return;
+    lineNumberRafId = requestAnimationFrame(() => {
+        lineNumberRafId = null;
+        updateLineNumbers();
+    });
+}
+
+function fullRebuildLineNumbers(newLines) {
+    lineMirror.innerHTML = newLines
+        .map(line => `<div>${escapeHtml(line) || '&nbsp;'}</div>`)
+        .join('');
+    mirrorDivs = Array.from(lineMirror.children);
+
+    lineHeights = mirrorDivs.map(d => d.offsetHeight);
+
+    lineGutter.innerHTML = lineHeights
+        .map((h, i) => `<div class="line-num" style="height:${h}px">${i + 1}</div>`)
+        .join('');
+    gutterDivs = Array.from(lineGutter.children);
+
+    prevLines = newLines;
+    lastLineCount = newLines.length;
+}
+
 function updateLineNumbers() {
     if (!lineGutter) return;
     const ta = document.getElementById('editor-textarea');
@@ -194,34 +224,32 @@ function updateLineNumbers() {
         return;
     }
 
-    // Wrapped mode: measure each logical line's rendered height via mirror
+    // Wrapped mode
     const cs = window.getComputedStyle(ta);
     const textWidth = ta.clientWidth - parseFloat(cs.paddingLeft) - parseFloat(cs.paddingRight);
     lineMirror.style.width = textWidth + 'px';
 
-    // Batch: put all lines in mirror as separate divs, single reflow
-    const logicalLines = ta.value.split('\n');
-    lineMirror.innerHTML = '';
-    const divs = [];
-    for (let i = 0; i < logicalLines.length; i++) {
-        const d = document.createElement('div');
-        d.textContent = logicalLines[i] || '\u00A0';
-        lineMirror.appendChild(d);
-        divs.push(d);
+    const newLines = ta.value.split('\n');
+
+    // Differential update: same line count and existing mirror divs
+    if (newLines.length === prevLines.length && mirrorDivs.length === newLines.length) {
+        for (let i = 0; i < newLines.length; i++) {
+            if (newLines[i] !== prevLines[i]) {
+                mirrorDivs[i].textContent = newLines[i] || '\u00A0';
+                const newHeight = mirrorDivs[i].offsetHeight;
+                if (newHeight !== lineHeights[i]) {
+                    lineHeights[i] = newHeight;
+                    gutterDivs[i].style.height = newHeight + 'px';
+                }
+            }
+        }
+        prevLines = newLines;
+        lastLineCount = newLines.length;
+        return;
     }
 
-    // Single reflow: read all heights
-    const heights = divs.map(d => d.offsetHeight);
-
-    // Build gutter with matching heights
-    lineGutter.innerHTML = '';
-    for (let i = 0; i < heights.length; i++) {
-        const numDiv = document.createElement('div');
-        numDiv.className = 'line-num';
-        numDiv.style.height = heights[i] + 'px';
-        numDiv.textContent = i + 1;
-        lineGutter.appendChild(numDiv);
-    }
+    // Full rebuild: line count changed or first render in wrap mode
+    fullRebuildLineNumbers(newLines);
 }
 
 function toggleWordWrap() {
@@ -245,6 +273,10 @@ function applyWordWrap() {
         findHighlightOverlay.style.wordBreak = wordWrapEnabled ? 'break-word' : 'normal';
     }
     if (wrapBtn) wrapBtn.classList.toggle('active', wordWrapEnabled);
+    prevLines = [];
+    mirrorDivs = [];
+    gutterDivs = [];
+    lineHeights = [];
     lastLineCount = -1;
     updateLineNumbers();
 }
@@ -272,7 +304,7 @@ document.addEventListener('DOMContentLoaded', async () => {
     textarea.addEventListener('input', () => {
         markDirty();
         scheduleAutoSave();
-        updateLineNumbers();
+        scheduleLineNumberUpdate();
     });
 
     // Close button just triggers close -- onCloseRequested handles the save
@@ -284,8 +316,11 @@ document.addEventListener('DOMContentLoaded', async () => {
 
     new ResizeObserver(() => {
         if (wordWrapEnabled) {
-            lastLineCount = -1;
-            updateLineNumbers();
+            prevLines = [];
+            mirrorDivs = [];
+            gutterDivs = [];
+            lineHeights = [];
+            scheduleLineNumberUpdate();
         }
     }).observe(textarea);
 
