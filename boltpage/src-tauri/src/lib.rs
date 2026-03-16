@@ -1,6 +1,7 @@
 use lru::LruCache;
 use std::collections::{HashMap, HashSet};
 use std::fs;
+#[cfg(any(target_os = "macos", target_os = "windows"))]
 use std::path::PathBuf;
 use std::sync::{Arc, RwLock as StdRwLock};
 use tauri::{Emitter, Manager};
