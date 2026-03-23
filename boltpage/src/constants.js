@@ -1,6 +1,8 @@
 // Event names (must match Rust constants in src-tauri/src/constants.rs)
 export const EVENT_FILE_CHANGED = 'file-changed';
 export const EVENT_THEME_CHANGED = 'theme-changed';
+export const EVENT_FONT_SIZE_CHANGED = 'font-size-changed';
+export const EVENT_EDITOR_WINDOW_CLOSED = 'editor-window-closed';
 export const EVENT_SCROLL_SYNC = 'scroll-sync';
 export const EVENT_MENU_OPEN = 'menu-open';
 export const EVENT_MENU_CLOSE = 'menu-close';

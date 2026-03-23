@@ -266,6 +266,8 @@ pub fn run() {
             prefs::mark_cli_setup_declined,
             menu::broadcast_scroll_sync,
             menu::broadcast_theme_change,
+            menu::broadcast_font_size_change,
+            menu::broadcast_editor_window_closed,
             menu::get_syntax_css,
             watchers::start_file_watcher,
             watchers::stop_file_watcher,
@@ -466,6 +468,19 @@ pub fn run() {
                 let window_label = win.label().to_string();
 
                 tauri::async_runtime::spawn(async move {
+                    if window::is_editor_window_label(&window_label) {
+                        if let Ok(Some(file_path)) =
+                            window::decode_editor_file_path_from_window_label_str(&window_label)
+                        {
+                            let _ = menu::broadcast_editor_window_closed(
+                                app.clone(),
+                                menu::EditorWindowClosedPayload {
+                                    preview_window: String::new(),
+                                    file_path,
+                                },
+                            );
+                        }
+                    }
                     let _ = watchers::stop_file_watcher(app.clone(), window_label.clone()).await;
                     let _ = window::remove_window_from_tracking(app.clone(), window_label).await;
                     let _ = menu::rebuild_app_menu(&app);

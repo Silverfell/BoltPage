@@ -19,6 +19,8 @@
   --danger: #b34747;
   --app-shadow: 0 24px 60px rgba(18, 24, 37, 0.12);
   --overlay-shadow: 0 18px 42px rgba(18, 24, 37, 0.18);
+  --editor-font-size: 14px;
+  --editor-gutter-font-size: 13px;
 
   font-family: "Avenir Next", "Segoe UI", "Helvetica Neue", sans-serif;
   font-size: 14px;
@@ -215,6 +217,53 @@ body {
   flex-wrap: wrap;
 }
 
+.font-size-controls {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.font-size-button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 32px;
+  height: 32px;
+  padding: 0 10px;
+  border: 1px solid var(--border-color);
+  border-radius: 10px;
+  background: transparent;
+  color: var(--text-color);
+  font-family: inherit;
+  font-size: 13px;
+  font-weight: 700;
+  cursor: pointer;
+}
+
+.font-size-button:hover {
+  background: var(--button-hover-bg);
+}
+
+.font-size-button[disabled] {
+  opacity: 0.45;
+  cursor: default;
+}
+
+.font-size-indicator {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 52px;
+  height: 32px;
+  padding: 0 8px;
+  border-radius: 10px;
+  background: rgba(255, 255, 255, 0.04);
+  color: var(--text-secondary);
+  font-size: 12px;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+}
+
 .toolbar-btn {
   position: relative;
   display: inline-flex;
@@ -285,7 +334,7 @@ body {
   background-color: transparent;
   color: var(--text-color);
   font-family: "IBM Plex Mono", "SFMono-Regular", Consolas, monospace;
-  font-size: 14px;
+  font-size: var(--editor-font-size);
   line-height: 1.6;
   overflow-y: auto;
   overflow-x: auto;
@@ -321,7 +370,7 @@ body {
   user-select: none;
   z-index: 2;
   font-family: "IBM Plex Mono", "SFMono-Regular", Consolas, monospace;
-  font-size: 13px;
+  font-size: var(--editor-gutter-font-size);
   line-height: 1.6;
 }
 
@@ -340,7 +389,7 @@ body {
   height: 0;
   overflow: hidden;
   font-family: "IBM Plex Mono", "SFMono-Regular", Consolas, monospace;
-  font-size: 14px;
+  font-size: var(--editor-font-size);
   line-height: 1.6;
   white-space: pre-wrap;
   word-break: break-word;
@@ -358,7 +407,7 @@ body {
   color: transparent;
   white-space: pre;
   font-family: "IBM Plex Mono", "SFMono-Regular", Consolas, monospace;
-  font-size: 14px;
+  font-size: var(--editor-font-size);
   line-height: 1.6;
   z-index: 1;
 }

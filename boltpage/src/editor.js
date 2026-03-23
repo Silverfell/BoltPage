@@ -14,6 +14,7 @@ import {
 } from './shared.js';
 import {
     EVENT_THEME_CHANGED,
+    EVENT_FONT_SIZE_CHANGED,
     EVENT_SCROLL_SYNC,
     EVENT_MENU_CLOSE,
     EVENT_MENU_FIND,
@@ -59,6 +60,12 @@ let prevLines = [];
 let mirrorDivs = [];
 let gutterDivs = [];
 let lineHeights = [];
+let currentFontSize = 18;
+let closeEventSent = false;
+
+const DEFAULT_FONT_SIZE = 18;
+const MIN_FONT_SIZE = 14;
+const MAX_FONT_SIZE = 24;
 
 // Track last synced position to filter micro-scrolls
 let lastSyncedLine = null;
@@ -97,6 +104,21 @@ function kindLabel(kind) {
     }
 }
 
+function clampFontSize(fontSize) {
+    const parsed = Number.parseInt(fontSize, 10);
+    if (!Number.isFinite(parsed)) return DEFAULT_FONT_SIZE;
+    return Math.min(MAX_FONT_SIZE, Math.max(MIN_FONT_SIZE, parsed));
+}
+
+function updateFontSizeControls() {
+    const indicator = document.getElementById('editor-font-size-indicator');
+    const decreaseBtn = document.getElementById('editor-font-size-decrease-btn');
+    const increaseBtn = document.getElementById('editor-font-size-increase-btn');
+    if (indicator) indicator.textContent = `${currentFontSize}px`;
+    if (decreaseBtn) decreaseBtn.disabled = currentFontSize <= MIN_FONT_SIZE;
+    if (increaseBtn) increaseBtn.disabled = currentFontSize >= MAX_FONT_SIZE;
+}
+
 function setBadgeState(element, text, tone = null, hidden = false) {
     if (!element) return;
     element.hidden = hidden;
@@ -117,11 +139,66 @@ function renderEditorHeader() {
     if (titleEl) titleEl.textContent = baseNameFromPath(currentFilePath);
     if (subtitleEl) {
         subtitleEl.textContent = currentFilePath
-            ? directoryFromPath(currentFilePath)
+            ? `${directoryFromPath(currentFilePath)}${previewWindow ? ' · Autosaves into a linked preview window.' : ''}`
             : 'Plaintext editing with autosave and preview sync.';
     }
     setBadgeState(kindBadge, kindLabel(currentFileKind), null, false);
-    setBadgeState(syncBadge, 'Linked Preview', null, !previewWindow);
+    setBadgeState(syncBadge, previewWindow ? 'Linked Preview' : 'No Preview Link', previewWindow ? 'accent' : 'warning', false);
+}
+
+function editorFontSizePx(fontSize = currentFontSize) {
+    return Math.max(12, clampFontSize(fontSize) - 4);
+}
+
+function applyFontSize(fontSize, options = {}) {
+    const { save = false, broadcast = false } = options;
+    const nextFontSize = clampFontSize(fontSize);
+    const anchorLine = currentFilePath ? getTopLineForEditor() : null;
+    currentFontSize = nextFontSize;
+
+    document.documentElement.style.setProperty('--editor-font-size', `${editorFontSizePx(currentFontSize)}px`);
+    document.documentElement.style.setProperty('--editor-gutter-font-size', `${Math.max(11, editorFontSizePx(currentFontSize) - 1)}px`);
+
+    prevLines = [];
+    mirrorDivs = [];
+    gutterDivs = [];
+    lineHeights = [];
+    lastLineCount = -1;
+    updateFontSizeControls();
+    if (showLineNumbers) updateLineNumbers();
+
+    if (typeof anchorLine === 'number') {
+        requestAnimationFrame(() => scrollEditorToLine(anchorLine));
+    }
+
+    if (save) {
+        invoke('save_preference_key', { key: 'font_size', value: currentFontSize })
+            .catch(err => console.error('Failed to save font_size preference:', err));
+    }
+    if (broadcast) {
+        invoke('broadcast_font_size_change', { fontSize: currentFontSize })
+            .catch(err => console.error('Failed to broadcast font size change:', err));
+    }
+}
+
+function changeFontSize(delta) {
+    applyFontSize(currentFontSize + delta, { save: true, broadcast: true });
+}
+
+async function notifyPreviewEditorClosed() {
+    if (closeEventSent || !previewWindow || !currentFilePath) return;
+    closeEventSent = true;
+    try {
+        await invoke('broadcast_editor_window_closed', {
+            payload: {
+                preview_window: previewWindow,
+                file_path: currentFilePath,
+            }
+        });
+    } catch (err) {
+        closeEventSent = false;
+        console.error('Failed to broadcast editor close event:', err);
+    }
 }
 
 function applyLineNumberVisibility() {
@@ -184,11 +261,13 @@ async function initialize() {
     try {
         const prefs = await invoke('get_preferences');
         applyThemeToDocument(prefs.theme);
+        applyFontSize(prefs.font_size);
         wordWrapEnabled = prefs.word_wrap === true;
         showLineNumbers = prefs.show_line_numbers !== false;
         applyWordWrap();
     } catch (err) {
         console.error('Failed to load preferences:', err);
+        applyFontSize(DEFAULT_FONT_SIZE);
     }
 }
 
@@ -408,6 +487,8 @@ function scheduleAutoSave() {
         appWindow.close();
     });
 
+    document.getElementById('editor-font-size-decrease-btn').addEventListener('click', () => changeFontSize(-1));
+    document.getElementById('editor-font-size-increase-btn').addEventListener('click', () => changeFontSize(1));
     document.getElementById('line-numbers-btn').addEventListener('click', toggleLineNumbers);
     document.getElementById('wrap-btn').addEventListener('click', toggleWordWrap);
 
@@ -510,6 +591,11 @@ function scheduleAutoSave() {
         applyThemeToDocument(event.payload);
     });
 
+    await listen(EVENT_FONT_SIZE_CHANGED, (event) => {
+        if (Number(event.payload) === currentFontSize) return;
+        applyFontSize(event.payload);
+    });
+
     // Listen for close menu action -- onCloseRequested handles the save
     await listen(EVENT_MENU_CLOSE, async () => {
         if (!document.hasFocus()) return;
@@ -541,6 +627,7 @@ function scheduleAutoSave() {
         if (isDirty) {
             await saveFile();
         }
+        await notifyPreviewEditorClosed();
         appWindow.destroy();
     });
 
