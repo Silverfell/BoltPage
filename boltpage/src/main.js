@@ -43,6 +43,7 @@ let currentFilePath = null;
 let currentTheme = 'drac';
 let currentKind = KIND_MARKDOWN; // KIND_JSON | KIND_MARKDOWN | KIND_TXT | 'pdf'
 let currentPdfUrl = null;
+let currentWritable = null;
 let isProgrammaticScroll = false;
 let scrollDebounce = null;
 let contentEl = null; // scrolling container (.content-wrapper)
@@ -80,6 +81,89 @@ async function savePreference(key, value) {
         await invoke('save_preference_key', { key, value });
     } catch (err) {
         console.error('Failed to save preference:', err);
+    }
+}
+
+function baseNameFromPath(filePath) {
+    if (!filePath) return 'No Document Open';
+    return String(filePath).split(/[/\\]/).pop() || filePath;
+}
+
+function directoryFromPath(filePath) {
+    if (!filePath) return '';
+    const normalized = String(filePath).replace(/\\/g, '/');
+    const idx = normalized.lastIndexOf('/');
+    return idx > 0 ? normalized.slice(0, idx) : normalized;
+}
+
+function kindLabel(kind) {
+    switch (kind) {
+        case 'pdf':
+            return 'PDF';
+        case KIND_JSON:
+            return 'JSON';
+        case KIND_YAML:
+            return 'YAML';
+        case KIND_TXT:
+            return 'Text';
+        default:
+            return 'Markdown';
+    }
+}
+
+function setBadgeState(element, text, tone = null, hidden = false) {
+    if (!element) return;
+    element.hidden = hidden;
+    if (hidden) return;
+    element.textContent = text;
+    element.classList.remove('badge-tone-accent', 'badge-tone-success', 'badge-tone-warning');
+    if (tone) {
+        element.classList.add(`badge-tone-${tone}`);
+    }
+}
+
+function renderPreviewHeader() {
+    const titleEl = document.getElementById('document-title');
+    const subtitleEl = document.getElementById('document-subtitle');
+    const modeBadge = document.getElementById('preview-mode-badge');
+    const kindBadge = document.getElementById('file-kind-badge');
+    const permissionBadge = document.getElementById('permission-badge');
+
+    if (!currentFilePath) {
+        if (titleEl) titleEl.textContent = 'No Document Open';
+        if (subtitleEl) {
+            subtitleEl.textContent = 'Open a Markdown file to start viewing. BoltPage keeps preview and editing lightweight.';
+        }
+        setBadgeState(modeBadge, 'Preview', 'accent', false);
+        setBadgeState(kindBadge, 'Workspace', null, false);
+        setBadgeState(permissionBadge, '', null, true);
+        return;
+    }
+
+    if (titleEl) titleEl.textContent = baseNameFromPath(currentFilePath);
+    if (subtitleEl) subtitleEl.textContent = directoryFromPath(currentFilePath);
+
+    setBadgeState(modeBadge, currentKind === 'pdf' ? 'Viewer' : 'Preview', 'accent', false);
+    setBadgeState(kindBadge, kindLabel(currentKind), null, false);
+
+    if (currentKind === 'pdf' || !isEditableType(currentFilePath)) {
+        setBadgeState(permissionBadge, 'Read Only', 'warning', false);
+    } else if (currentWritable === true) {
+        setBadgeState(permissionBadge, 'Writable', 'success', false);
+    } else if (currentWritable === false) {
+        setBadgeState(permissionBadge, 'Read Only', 'warning', false);
+    } else {
+        setBadgeState(permissionBadge, 'Access Unknown', null, false);
+    }
+}
+
+function updateExportButtonState() {
+    const exportBtn = document.getElementById('export-btn');
+    if (!exportBtn) return;
+    if (!currentFilePath || currentKind === 'pdf') {
+        exportBtn.setAttribute('disabled', 'true');
+    } else {
+        exportBtn.removeAttribute('disabled');
     }
 }
 
@@ -291,7 +375,9 @@ async function openFile(filePath) {
         // Ensure link interception remains active after content swap (non-PDF only)
         if (!usedPdf) attachLinkInterceptor();
         // Update edit button availability based on file writability
-        updateEditButtonState();
+        currentWritable = await updateEditButtonState();
+        updateExportButtonState();
+        renderPreviewHeader();
         // Build table of contents from headings
         buildTOC();
         // Restore scroll position if applicable
@@ -463,15 +549,15 @@ async function createNewMarkdownFile() {
 
 async function updateEditButtonState() {
     const editBtn = document.getElementById('edit-btn');
-    if (!editBtn) return;
+    if (!editBtn) return null;
     if (!currentFilePath) {
         editBtn.setAttribute('disabled', 'true');
-        return;
+        return null;
     }
     // Disable for non-editable types
     if (!isEditableType(currentFilePath)) {
         editBtn.setAttribute('disabled', 'true');
-        return;
+        return false;
     }
     try {
         const writable = await invoke('is_writable', { path: currentFilePath });
@@ -480,9 +566,11 @@ async function updateEditButtonState() {
         } else {
             editBtn.setAttribute('disabled', 'true');
         }
+        return writable;
     } catch (e) {
         // On error, be conservative and disable
         editBtn.setAttribute('disabled', 'true');
+        return null;
     }
 }
 
@@ -501,9 +589,11 @@ function isEditableType(filePath) {
 function setupEventListeners() {
     // Toolbar buttons
     document.getElementById('open-btn').addEventListener('click', () => openFile());
+    document.getElementById('new-btn').addEventListener('click', createNewMarkdownFile);
     document.getElementById('refresh-btn').addEventListener('click', refreshFile);
     document.getElementById('theme-btn').addEventListener('click', toggleThemeMenu);
     document.getElementById('edit-btn').addEventListener('click', openEditor);
+    document.getElementById('export-btn').addEventListener('click', exportHtml);
     const findBtn = document.getElementById('find-btn');
     if (findBtn) findBtn.addEventListener('click', toggleFindOverlay);
     const tocBtn = document.getElementById('toc-btn');
@@ -645,7 +735,9 @@ window.addEventListener('DOMContentLoaded', async () => {
         attachLinkInterceptor();
         await loadPreferences();
         // Initial button states
-        updateEditButtonState();
+        currentWritable = await updateEditButtonState();
+        updateExportButtonState();
+        renderPreviewHeader();
         // Cache content wrapper and attach scroll sync listener
         contentEl = document.querySelector('.content-wrapper');
         attachPreviewScrollSync();
@@ -655,6 +747,8 @@ window.addEventListener('DOMContentLoaded', async () => {
     
         // Listen for file change events -- auto-refresh the preview
         await listen(EVENT_FILE_CHANGED, async () => {
+            const indicator = document.getElementById('refresh-indicator');
+            if (indicator) indicator.classList.add('show');
             await refreshFile();
         });
 
@@ -1013,4 +1107,3 @@ function closeFindOverlay() {
     findVisible = false;
     clearFindResults();
 }
-

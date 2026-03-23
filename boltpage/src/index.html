@@ -8,70 +8,117 @@
     <script type="module" src="/main.js" defer></script>
 </head>
 <body>
-    <div class="toolbar">
-        <div class="toolbar-left">
-            <button id="open-btn" class="toolbar-btn" title="Open file (Ctrl+O)">
-                <svg width="20" height="20" viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="2">
-                    <path d="M3 7V4a1 1 0 011-1h5l2 2h5a1 1 0 011 1v1M3 7v9a1 1 0 001 1h12a1 1 0 001-1V8a1 1 0 00-1-1h-6l-2-2H4a1 1 0 00-1 1v1z"/>
-                </svg>
-                Open
-            </button>
-            <button id="refresh-btn" class="toolbar-btn" title="Refresh">
-                <svg width="20" height="20" viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="2">
-                    <path d="M4 10a6 6 0 1011.18-3H12v3M16 10a6 6 0 10-11.18 3H8v-3"/>
-                </svg>
-                <span class="refresh-indicator" id="refresh-indicator">!</span>
-            </button>
-            <div class="theme-btn-wrapper">
-                <button id="theme-btn" class="toolbar-btn" title="Theme (Ctrl+T)">
-                    <svg width="20" height="20" viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="2">
-                        <circle cx="10" cy="10" r="4"/>
-                        <path d="M10 2v2m0 12v2m8-8h-2M4 10H2m14.14-5.66l-1.41 1.41M5.27 14.73l-1.41 1.41m14.14 0l-1.41-1.41M5.27 5.27L3.86 3.86"/>
-                    </svg>
-                    Theme
-                </button>
-                <div id="theme-menu" class="theme-menu">
-                    <button class="theme-option" data-theme="light">Light</button>
-                    <button class="theme-option" data-theme="dark">Dark</button>
-                    <button class="theme-option" data-theme="drac">Drac</button>
+    <div class="app-shell">
+        <header class="app-header">
+            <div class="header-main">
+                <div class="header-lead">
+                    <div class="brand-block">
+                        <img src="/assets/boltpage_icon.png" alt="BoltPage" class="brand-icon">
+                    </div>
+                    <div class="document-identity">
+                        <div class="document-title-row">
+                            <h1 id="document-title" class="document-title">No Document Open</h1>
+                            <div class="document-badges">
+                                <span id="preview-mode-badge" class="meta-badge badge-tone-accent">Preview</span>
+                                <span id="file-kind-badge" class="meta-badge">Workspace</span>
+                                <span id="permission-badge" class="meta-badge" hidden>Read Only</span>
+                            </div>
+                        </div>
+                        <p id="document-subtitle" class="document-subtitle">
+                            Open a Markdown file to start viewing. BoltPage keeps preview and editing lightweight.
+                        </p>
+                    </div>
+                </div>
+                <div class="header-utility-actions">
+                    <button id="find-btn" class="toolbar-btn" title="Find (Ctrl+F)">
+                        <svg width="20" height="20" viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="2">
+                            <circle cx="8.5" cy="8.5" r="5.5"/>
+                            <path d="M13 13l4 4"/>
+                        </svg>
+                        Find
+                    </button>
+                    <button id="refresh-btn" class="toolbar-btn" title="Refresh">
+                        <svg width="20" height="20" viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="2">
+                            <path d="M4 10a6 6 0 1011.18-3H12v3M16 10a6 6 0 10-11.18 3H8v-3"/>
+                        </svg>
+                        Refresh
+                        <span class="refresh-indicator" id="refresh-indicator">!</span>
+                    </button>
+                    <div class="theme-btn-wrapper">
+                        <button id="theme-btn" class="toolbar-btn" title="Theme (Ctrl+T)">
+                            <svg width="20" height="20" viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="2">
+                                <circle cx="10" cy="10" r="4"/>
+                                <path d="M10 2v2m0 12v2m8-8h-2M4 10H2m14.14-5.66l-1.41 1.41M5.27 14.73l-1.41 1.41m14.14 0l-1.41-1.41M5.27 5.27L3.86 3.86"/>
+                            </svg>
+                            Theme
+                        </button>
+                        <div id="theme-menu" class="theme-menu">
+                            <button class="theme-option" data-theme="light">Light</button>
+                            <button class="theme-option" data-theme="dark">Dark</button>
+                            <button class="theme-option" data-theme="drac">Drac</button>
+                        </div>
+                    </div>
                 </div>
             </div>
-        </div>
-        <div class="toolbar-right">
-            <div class="toolbar-buttons">
-                <button id="find-btn" class="toolbar-btn" title="Find (Ctrl+F)">
-                    <svg width="20" height="20" viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="2">
-                        <circle cx="8.5" cy="8.5" r="5.5"/>
-                        <path d="M13 13l4 4"/>
-                    </svg>
-                    Find
-                </button>
-                <button id="edit-btn" class="toolbar-btn" title="Edit (Ctrl+E)">
-                    <svg width="20" height="20" viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="2">
-                        <path d="M14.5 2.5a2.121 2.121 0 113 3L6 17H3v-3L14.5 2.5z"/>
-                    </svg>
-                    Edit
-                </button>
-            </div>
-            <button id="toc-btn" class="toolbar-btn" title="Table of Contents">
-                <svg width="20" height="20" viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="2">
-                    <path d="M3 4h14M3 8h10M3 12h12M3 16h8"/>
-                </svg>
-                TOC
-            </button>
-        </div>
-    </div>
 
-    <div class="main-area">
-        <aside id="toc-sidebar" class="toc-sidebar">
-            <nav id="toc-nav"></nav>
-        </aside>
-        <div class="content-wrapper">
-            <div id="markdown-content" class="markdown-body">
-                <div class="welcome-message">
-                    <h1>Welcome to BoltPage</h1>
-                    <p>Open a Markdown file to start viewing.</p>
-                    <p>Use <kbd>Ctrl+O</kbd> to open a file.</p>
+            <div class="toolbar">
+                <div class="toolbar-left">
+                    <button id="open-btn" class="toolbar-btn button-prominent" title="Open file (Ctrl+O)">
+                        <svg width="20" height="20" viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="2">
+                            <path d="M3 7V4a1 1 0 011-1h5l2 2h5a1 1 0 011 1v1M3 7v9a1 1 0 001 1h12a1 1 0 001-1V8a1 1 0 00-1-1h-6l-2-2H4a1 1 0 00-1 1v1z"/>
+                        </svg>
+                        Open
+                    </button>
+                    <button id="new-btn" class="toolbar-btn" title="New file (Ctrl+N)">
+                        <svg width="20" height="20" viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="2">
+                            <path d="M10 4v12M4 10h12"/>
+                        </svg>
+                        New
+                    </button>
+                    <button id="edit-btn" class="toolbar-btn" title="Edit (Ctrl+E)">
+                        <svg width="20" height="20" viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="2">
+                            <path d="M14.5 2.5a2.121 2.121 0 113 3L6 17H3v-3L14.5 2.5z"/>
+                        </svg>
+                        Edit
+                    </button>
+                    <button id="export-btn" class="toolbar-btn" title="Export HTML (Ctrl+Shift+E)">
+                        <svg width="20" height="20" viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="2">
+                            <path d="M10 3v9"/>
+                            <path d="M6.5 8.5L10 12l3.5-3.5"/>
+                            <path d="M4 15.5h12"/>
+                        </svg>
+                        Export
+                    </button>
+                </div>
+                <div class="toolbar-right">
+                    <button id="toc-btn" class="toolbar-btn" title="Table of Contents">
+                        <svg width="20" height="20" viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="2">
+                            <path d="M3 4h14M3 8h10M3 12h12M3 16h8"/>
+                        </svg>
+                        Contents
+                    </button>
+                </div>
+            </div>
+        </header>
+
+        <div class="main-area">
+            <aside id="toc-sidebar" class="toc-sidebar">
+                <div class="sidebar-header">
+                    <span class="sidebar-label">Contents</span>
+                    <span class="sidebar-caption">Markdown outline</span>
+                </div>
+                <nav id="toc-nav"></nav>
+            </aside>
+            <div class="content-stage">
+                <div class="content-wrapper">
+                    <div id="markdown-content" class="markdown-body">
+                        <div class="welcome-message">
+                            <span class="welcome-eyebrow">BoltPage</span>
+                            <h2>Open a document and keep the interface out of the way.</h2>
+                            <p>Preview Markdown, structured text, and PDFs in a focused desktop workspace.</p>
+                            <p>Use <kbd>Ctrl+O</kbd> to open a file or <kbd>Ctrl+N</kbd> to create one.</p>
+                        </div>
+                    </div>
                 </div>
             </div>
         </div>

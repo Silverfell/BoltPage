@@ -38,6 +38,7 @@ const { listen } = window.__TAURI__.event;
 
 const appWindow = getCurrentWindow();
 let currentFilePath = null;
+let currentFileKind = KIND_MARKDOWN;
 let isDirty = false;
 let saveTimeout = null;
 let previewWindow = null;
@@ -62,10 +63,72 @@ let lineHeights = [];
 let lastSyncedLine = null;
 let lastSyncedPercent = null;
 
+function baseNameFromPath(filePath) {
+    if (!filePath) return 'No Document Loaded';
+    return String(filePath).split(/[/\\]/).pop() || filePath;
+}
+
+function directoryFromPath(filePath) {
+    if (!filePath) return '';
+    const normalized = String(filePath).replace(/\\/g, '/');
+    const idx = normalized.lastIndexOf('/');
+    return idx > 0 ? normalized.slice(0, idx) : normalized;
+}
+
+function detectFileKind(filePath) {
+    const lower = String(filePath || '').toLowerCase();
+    if (lower.endsWith('.json')) return KIND_JSON;
+    if (lower.endsWith('.yaml') || lower.endsWith('.yml')) return KIND_YAML;
+    if (lower.endsWith('.txt')) return KIND_TXT;
+    return KIND_MARKDOWN;
+}
+
+function kindLabel(kind) {
+    switch (kind) {
+        case KIND_JSON:
+            return 'JSON';
+        case KIND_YAML:
+            return 'YAML';
+        case KIND_TXT:
+            return 'Text';
+        default:
+            return 'Markdown';
+    }
+}
+
+function setBadgeState(element, text, tone = null, hidden = false) {
+    if (!element) return;
+    element.hidden = hidden;
+    if (hidden) return;
+    element.textContent = text;
+    element.classList.remove('badge-tone-accent', 'badge-tone-success', 'badge-tone-warning');
+    if (tone) {
+        element.classList.add(`badge-tone-${tone}`);
+    }
+}
+
+function renderEditorHeader() {
+    const titleEl = document.getElementById('editor-document-title');
+    const subtitleEl = document.getElementById('editor-document-subtitle');
+    const kindBadge = document.getElementById('editor-kind-badge');
+    const syncBadge = document.getElementById('editor-sync-badge');
+
+    if (titleEl) titleEl.textContent = baseNameFromPath(currentFilePath);
+    if (subtitleEl) {
+        subtitleEl.textContent = currentFilePath
+            ? directoryFromPath(currentFilePath)
+            : 'Plaintext editing with autosave and preview sync.';
+    }
+    setBadgeState(kindBadge, kindLabel(currentFileKind), null, false);
+    setBadgeState(syncBadge, 'Linked Preview', null, !previewWindow);
+}
+
 async function initialize() {
     // Get file path from initialization script
     currentFilePath = window.__INITIAL_FILE_PATH__;
     previewWindow = window.__PREVIEW_WINDOW__;
+    currentFileKind = detectFileKind(currentFilePath);
+    renderEditorHeader();
     
     // Load file content
     if (currentFilePath) {
@@ -104,7 +167,12 @@ async function initialize() {
 }
 
 function updateStatus(status) {
-    document.getElementById('editor-status').textContent = status;
+    const statusBadge = document.getElementById('editor-status-badge');
+    let tone = null;
+    if (/saved|loaded/i.test(status)) tone = 'success';
+    if (/modified/i.test(status)) tone = 'warning';
+    if (/error/i.test(status)) tone = 'warning';
+    setBadgeState(statusBadge, status, tone, false);
 }
 
 function markDirty() {
@@ -292,7 +360,7 @@ function scheduleAutoSave() {
 }
 
 // Set up event listeners
-document.addEventListener('DOMContentLoaded', async () => {
+    document.addEventListener('DOMContentLoaded', async () => {
   try {
     await initialize();
 
@@ -744,4 +812,3 @@ function closeFindOverlay() {
     clearFindResults();
     if (replaceInput) replaceInput.value = '';
 }
-
