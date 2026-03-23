@@ -248,6 +248,15 @@ body {
   border-color: var(--border-color);
 }
 
+.line-numbers-hidden .line-number-gutter {
+  display: none;
+}
+
+.line-numbers-hidden .editor-textarea,
+.line-numbers-hidden .find-highlight-overlay {
+  padding-left: 24px;
+}
+
 .editor-container {
   display: flex;
   flex-direction: column;

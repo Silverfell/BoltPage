@@ -53,6 +53,7 @@ let lineGutter = null;
 let lineMirror = null;
 let lastLineCount = 0;
 let wordWrapEnabled = false;
+let showLineNumbers = true;
 let lineNumberRafId = null;
 let prevLines = [];
 let mirrorDivs = [];
@@ -123,6 +124,30 @@ function renderEditorHeader() {
     setBadgeState(syncBadge, 'Linked Preview', null, !previewWindow);
 }
 
+function applyLineNumberVisibility() {
+    const wrapBtn = document.getElementById('line-numbers-btn');
+    document.body.classList.toggle('line-numbers-hidden', !showLineNumbers);
+    if (lineGutter) {
+        lineGutter.style.display = showLineNumbers ? '' : 'none';
+    }
+    if (wrapBtn) wrapBtn.classList.toggle('active', showLineNumbers);
+    if (showLineNumbers) {
+        prevLines = [];
+        mirrorDivs = [];
+        gutterDivs = [];
+        lineHeights = [];
+        lastLineCount = -1;
+        updateLineNumbers();
+    }
+}
+
+function toggleLineNumbers() {
+    showLineNumbers = !showLineNumbers;
+    applyLineNumberVisibility();
+    invoke('save_preference_key', { key: 'show_line_numbers', value: showLineNumbers })
+        .catch(err => console.error('Failed to save show_line_numbers preference:', err));
+}
+
 async function initialize() {
     // Get file path from initialization script
     currentFilePath = window.__INITIAL_FILE_PATH__;
@@ -160,6 +185,7 @@ async function initialize() {
         const prefs = await invoke('get_preferences');
         applyThemeToDocument(prefs.theme);
         wordWrapEnabled = prefs.word_wrap === true;
+        showLineNumbers = prefs.show_line_numbers !== false;
         applyWordWrap();
     } catch (err) {
         console.error('Failed to load preferences:', err);
@@ -280,6 +306,7 @@ function fullRebuildLineNumbers(newLines) {
 
 function updateLineNumbers() {
     if (!lineGutter) return;
+    if (!showLineNumbers) return;
     const ta = document.getElementById('editor-textarea');
     const count = ta.value.split('\n').length;
     if (count === lastLineCount && !wordWrapEnabled) return;
@@ -367,6 +394,7 @@ function scheduleAutoSave() {
     setupEditorWrapper();
     const textarea = document.getElementById('editor-textarea');
     updateLineNumbers();
+    applyLineNumberVisibility();
 
     // Track changes
     textarea.addEventListener('input', () => {
@@ -380,6 +408,7 @@ function scheduleAutoSave() {
         appWindow.close();
     });
 
+    document.getElementById('line-numbers-btn').addEventListener('click', toggleLineNumbers);
     document.getElementById('wrap-btn').addEventListener('click', toggleWordWrap);
 
     new ResizeObserver(() => {

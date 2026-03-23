@@ -50,6 +50,7 @@ let contentEl = null; // scrolling container (.content-wrapper)
 let findOverlay = null;
 let findInput = null;
 let findVisible = false;
+let noticeTimeout = null;
 
 // Track last synced position to filter micro-scrolls
 let lastSyncedLine = null;
@@ -157,6 +158,47 @@ function renderPreviewHeader() {
     }
 }
 
+function clearPreviewNotice() {
+    const noticeEl = document.getElementById('preview-notice');
+    if (!noticeEl) return;
+    noticeEl.hidden = true;
+    noticeEl.classList.remove('notice-info', 'notice-success', 'notice-warning');
+    if (noticeTimeout) {
+        clearTimeout(noticeTimeout);
+        noticeTimeout = null;
+    }
+}
+
+function showPreviewNotice(message, tone = 'info', timeoutMs = 2600) {
+    const noticeEl = document.getElementById('preview-notice');
+    const textEl = document.getElementById('preview-notice-text');
+    if (!noticeEl || !textEl) return;
+    noticeEl.hidden = false;
+    textEl.textContent = message;
+    noticeEl.classList.remove('notice-info', 'notice-success', 'notice-warning');
+    noticeEl.classList.add(`notice-${tone}`);
+    if (noticeTimeout) clearTimeout(noticeTimeout);
+    if (timeoutMs > 0) {
+        noticeTimeout = setTimeout(() => {
+            clearPreviewNotice();
+        }, timeoutMs);
+    }
+}
+
+function renderSidebarMeta(items) {
+    const metaEl = document.getElementById('sidebar-meta');
+    if (!metaEl) return;
+    metaEl.innerHTML = items
+        .filter(item => item && item.value)
+        .map(item => `
+            <div class="sidebar-meta-item">
+                <span class="sidebar-meta-label">${escapeHtml(item.label)}</span>
+                <span class="sidebar-meta-value">${escapeHtml(item.value)}</span>
+            </div>
+        `)
+        .join('');
+}
+
 function updateExportButtonState() {
     const exportBtn = document.getElementById('export-btn');
     if (!exportBtn) return;
@@ -202,12 +244,16 @@ async function exportHtml() {
     if (!currentFilePath) return;
     if (currentKind === 'pdf') return;
     try {
-        await invoke('save_html_export', {
+        const result = await invoke('save_html_export', {
             path: currentFilePath,
             theme: currentTheme,
         });
+        if (result) {
+            showPreviewNotice('HTML export complete.', 'success');
+        }
     } catch (err) {
         console.error('HTML export failed:', err);
+        showPreviewNotice('HTML export failed.', 'warning', 3600);
     }
 }
 
@@ -218,22 +264,43 @@ function buildTOC() {
     const tocNav = document.getElementById('toc-nav');
     const tocBtn = document.getElementById('toc-btn');
     const tocSidebar = document.getElementById('toc-sidebar');
+    const sidebarLabel = document.querySelector('.sidebar-label');
+    const sidebarCaption = document.querySelector('.sidebar-caption');
+    const sidebarToggleLabel = document.getElementById('sidebar-toggle-label');
     if (!tocNav) return;
 
     tocNav.innerHTML = '';
 
-    if (currentKind !== KIND_MARKDOWN) {
+    if (!currentFilePath) {
+        renderSidebarMeta([]);
         if (tocBtn) { tocBtn.style.display = 'none'; tocBtn.classList.remove('active'); }
         if (tocSidebar) tocSidebar.classList.remove('show');
         return;
     }
 
     const headings = document.querySelectorAll('#markdown-content h1, #markdown-content h2, #markdown-content h3, #markdown-content h4, #markdown-content h5, #markdown-content h6');
-    if (headings.length === 0) {
-        if (tocBtn) { tocBtn.style.display = 'none'; tocBtn.classList.remove('active'); }
-        if (tocSidebar) tocSidebar.classList.remove('show');
-        return;
-    }
+    const isMarkdownWithHeadings = currentKind === KIND_MARKDOWN && headings.length > 0;
+
+    renderSidebarMeta([
+        { label: 'File Type', value: kindLabel(currentKind) },
+        { label: 'Path', value: directoryFromPath(currentFilePath) || currentFilePath },
+        {
+            label: 'Access',
+            value: currentKind === 'pdf' || !isEditableType(currentFilePath)
+                ? 'Read Only'
+                : (currentWritable === true ? 'Writable' : (currentWritable === false ? 'Read Only' : 'Unknown'))
+        },
+        {
+            label: 'Shortcuts',
+            value: currentKind === KIND_MARKDOWN
+                ? 'Ctrl+F search, Ctrl+E edit, Ctrl+Shift+E export'
+                : 'Ctrl+F search, Ctrl+E edit'
+        }
+    ]);
+
+    if (sidebarLabel) sidebarLabel.textContent = isMarkdownWithHeadings ? 'Contents' : 'Document';
+    if (sidebarCaption) sidebarCaption.textContent = isMarkdownWithHeadings ? 'Markdown outline' : 'Document details';
+    if (sidebarToggleLabel) sidebarToggleLabel.textContent = isMarkdownWithHeadings ? 'Contents' : 'Info';
 
     if (tocBtn) tocBtn.style.display = '';
     if (tocVisible) {
@@ -242,6 +309,10 @@ function buildTOC() {
     } else {
         if (tocSidebar) tocSidebar.classList.remove('show');
         if (tocBtn) tocBtn.classList.remove('active');
+    }
+
+    if (!isMarkdownWithHeadings) {
+        return;
     }
 
     headings.forEach((heading, i) => {
@@ -422,7 +493,7 @@ async function openFile(filePath) {
         
     } catch (err) {
         console.error('[DEBUG] Failed to open file:', err);
-        alert(`Failed to open file: ${err}`);
+        showPreviewNotice(`Failed to open file: ${err}`, 'warning', 4200);
     }
 }
 
@@ -504,24 +575,24 @@ function toggleThemeMenu() {
 
 async function openEditor() {
     if (!currentFilePath) {
-        alert('Please open a file first');
+        showPreviewNotice('Open a file first.', 'warning');
         return;
     }
     // Block if file type isn't editable
     if (!isEditableType(currentFilePath)) {
-        alert('This file type is view-only and cannot be edited.');
+        showPreviewNotice('This file type is view-only and cannot be edited.', 'warning', 3600);
         return;
     }
     // Block if file is not writable
     try {
         const writable = await invoke('is_writable', { path: currentFilePath });
         if (!writable) {
-            alert('This file is write-protected and cannot be edited.');
+            showPreviewNotice('This file is write-protected and cannot be edited.', 'warning', 3600);
             return;
         }
     } catch (_) {
         // If we cannot confirm writability, be conservative and block
-        alert('Unable to verify edit permission for this file.');
+        showPreviewNotice('Unable to verify edit permission for this file.', 'warning', 3600);
         return;
     }
     
@@ -530,9 +601,10 @@ async function openEditor() {
             filePath: currentFilePath,
             previewWindow: appWindow.label
         });
+        showPreviewNotice('Editor opened.', 'success');
     } catch (err) {
         console.error('Failed to open editor:', err);
-        alert('Failed to open editor: ' + err);
+        showPreviewNotice(`Failed to open editor: ${err}`, 'warning', 4200);
     }
 }
 
@@ -542,7 +614,7 @@ async function createNewMarkdownFile() {
         return windowLabel || null;
     } catch (err) {
         console.error('Failed to create new file:', err);
-        alert('Failed to create new file: ' + err);
+        showPreviewNotice(`Failed to create new file: ${err}`, 'warning', 4200);
         return null;
     }
 }
@@ -594,6 +666,8 @@ function setupEventListeners() {
     document.getElementById('theme-btn').addEventListener('click', toggleThemeMenu);
     document.getElementById('edit-btn').addEventListener('click', openEditor);
     document.getElementById('export-btn').addEventListener('click', exportHtml);
+    const noticeCloseBtn = document.getElementById('preview-notice-close');
+    if (noticeCloseBtn) noticeCloseBtn.addEventListener('click', clearPreviewNotice);
     const findBtn = document.getElementById('find-btn');
     if (findBtn) findBtn.addEventListener('click', toggleFindOverlay);
     const tocBtn = document.getElementById('toc-btn');
@@ -750,6 +824,7 @@ window.addEventListener('DOMContentLoaded', async () => {
             const indicator = document.getElementById('refresh-indicator');
             if (indicator) indicator.classList.add('show');
             await refreshFile();
+            showPreviewNotice('File updated on disk and refreshed.', 'info', 3200);
         });
 
         // Listen for theme change events from other windows

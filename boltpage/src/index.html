@@ -95,9 +95,13 @@
                         <svg width="20" height="20" viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="2">
                             <path d="M3 4h14M3 8h10M3 12h12M3 16h8"/>
                         </svg>
-                        Contents
+                        <span id="sidebar-toggle-label">Contents</span>
                     </button>
                 </div>
+            </div>
+            <div id="preview-notice" class="notice-banner" hidden>
+                <span id="preview-notice-text"></span>
+                <button id="preview-notice-close" class="notice-close" title="Dismiss notice">×</button>
             </div>
         </header>
 
@@ -107,6 +111,7 @@
                     <span class="sidebar-label">Contents</span>
                     <span class="sidebar-caption">Markdown outline</span>
                 </div>
+                <div id="sidebar-meta" class="sidebar-meta"></div>
                 <nav id="toc-nav"></nav>
             </aside>
             <div class="content-stage">
