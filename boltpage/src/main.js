@@ -4,8 +4,14 @@ import {
     MIN_SCROLL_DELTA_LINES,
     MIN_SCROLL_DELTA_PERCENT,
     LINE_HEIGHT_FALLBACK_MULTIPLIER,
+    DEFAULT_FONT_SIZE,
+    MIN_FONT_SIZE,
+    MAX_FONT_SIZE,
     parsePx,
     escapeHtml,
+    directoryFromPath,
+    kindLabel,
+    clampFontSize,
     createFindOverlay,
     updateFindCount,
     nextFindIndex,
@@ -15,6 +21,7 @@ import {
 import {
     EVENT_FILE_CHANGED,
     EVENT_THEME_CHANGED,
+    EVENT_FONT_SIZE_CHANGED,
     EVENT_SCROLL_SYNC,
     EVENT_MENU_OPEN,
     EVENT_MENU_CLOSE,
@@ -43,12 +50,14 @@ let currentFilePath = null;
 let currentTheme = 'drac';
 let currentKind = KIND_MARKDOWN; // KIND_JSON | KIND_MARKDOWN | KIND_TXT | 'pdf'
 let currentPdfUrl = null;
+let currentWritable = null;
 let isProgrammaticScroll = false;
 let scrollDebounce = null;
 let contentEl = null; // scrolling container (.content-wrapper)
 let findOverlay = null;
 let findInput = null;
 let findVisible = false;
+let currentFontSize = 18;
 
 // Track last synced position to filter micro-scrolls
 let lastSyncedLine = null;
@@ -59,10 +68,13 @@ let cachedPreMetrics = null;
 async function loadPreferences() {
     try {
         const prefs = await invoke('get_preferences');
+        applyFontSize(prefs.font_size);
         applyTheme(prefs.theme);
         tocVisible = prefs.toc_visible !== false;
+        updateViewMenuState();
     } catch (err) {
         console.error('Failed to load preferences:', err);
+        applyFontSize(DEFAULT_FONT_SIZE);
         applyTheme('drac');
     }
 }
@@ -75,6 +87,14 @@ async function broadcastThemeChange(theme) {
     }
 }
 
+async function broadcastFontSizeChange(fontSize) {
+    try {
+        await invoke('broadcast_font_size_change', { fontSize });
+    } catch (err) {
+        console.error('Failed to broadcast font size change:', err);
+    }
+}
+
 async function savePreference(key, value) {
     try {
         await invoke('save_preference_key', { key, value });
@@ -83,17 +103,133 @@ async function savePreference(key, value) {
     }
 }
 
+function restorePreviewAnchor(anchor) {
+    if (!anchor || !contentEl) return;
+    if ((anchor.kind === KIND_JSON || anchor.kind === KIND_YAML || anchor.kind === KIND_TXT) && typeof anchor.line === 'number') {
+        scrollPreviewToLine(anchor.line);
+        return;
+    }
+    if (typeof anchor.percent === 'number') {
+        const scrollableHeight = contentEl.scrollHeight - contentEl.clientHeight;
+        if (scrollableHeight > 0) {
+            isProgrammaticScroll = true;
+            contentEl.scrollTop = anchor.percent * scrollableHeight;
+            setTimeout(() => { isProgrammaticScroll = false; }, PROGRAMMATIC_SCROLL_TIMEOUT_MS);
+        }
+    }
+}
+
+function applyFontSize(fontSize, options = {}) {
+    const { save = false, broadcast = false } = options;
+    const nextFontSize = clampFontSize(fontSize);
+    const anchor = currentFilePath && contentEl ? getTopLineForPreview() : null;
+    currentFontSize = nextFontSize;
+    document.documentElement.style.setProperty('--document-font-size', `${currentFontSize}px`);
+    cachedPreMetrics = null;
+    updateViewMenuState();
+    requestAnimationFrame(() => restorePreviewAnchor(anchor));
+    if (save) savePreference('font_size', currentFontSize);
+    if (broadcast) broadcastFontSizeChange(currentFontSize);
+}
+
+function changeFontSize(delta) {
+    applyFontSize(currentFontSize + delta, { save: true, broadcast: true });
+}
+
+function isCurrentFileViewOnly() {
+    return currentKind === 'pdf' || (currentFilePath && !isEditableType(currentFilePath));
+}
+
+function currentSidebarModeLabel() {
+    if (!currentFilePath) return 'Context Rail';
+    const headings = document.querySelectorAll('#markdown-content h1, #markdown-content h2, #markdown-content h3, #markdown-content h4, #markdown-content h5, #markdown-content h6');
+    return currentKind === KIND_MARKDOWN && headings.length > 0 ? 'Contents Rail' : 'Info Rail';
+}
+
+
+function updateViewMenuState() {
+    document.querySelectorAll('.theme-option').forEach(btn => {
+        btn.classList.toggle('active', btn.dataset.theme === currentTheme);
+    });
+
+    const railToggle = document.getElementById('rail-toggle-option');
+    const railTitle = document.getElementById('rail-toggle-title');
+    const railCaption = document.getElementById('rail-toggle-caption');
+    const railState = document.getElementById('rail-toggle-state');
+    if (!railToggle || !railTitle || !railCaption || !railState) return;
+
+    const railLabel = currentSidebarModeLabel();
+    railTitle.textContent = railLabel;
+    railCaption.textContent = currentFilePath
+        ? (railLabel === 'Contents Rail'
+            ? 'Keep the outline and document details visible beside the preview.'
+            : 'Keep file details and workflow state visible beside the preview.')
+        : 'Remember whether the context panel opens with each document.';
+    railState.textContent = tocVisible ? 'On' : 'Off';
+    railToggle.classList.toggle('active', tocVisible);
+    railToggle.setAttribute('aria-pressed', tocVisible ? 'true' : 'false');
+
+    const fontSizeIndicator = document.getElementById('font-size-indicator');
+    const fontSizeDecreaseBtn = document.getElementById('font-size-decrease-btn');
+    const fontSizeIncreaseBtn = document.getElementById('font-size-increase-btn');
+    if (fontSizeIndicator) fontSizeIndicator.textContent = `${currentFontSize}px`;
+    if (fontSizeDecreaseBtn) fontSizeDecreaseBtn.disabled = currentFontSize <= MIN_FONT_SIZE;
+    if (fontSizeIncreaseBtn) fontSizeIncreaseBtn.disabled = currentFontSize >= MAX_FONT_SIZE;
+}
+
+
+function renderSidebarMeta(items) {
+    const metaEl = document.getElementById('sidebar-meta');
+    if (!metaEl) return;
+    metaEl.innerHTML = items
+        .filter(item => item && item.value)
+        .map(item => `
+            <div class="sidebar-meta-item">
+                <span class="sidebar-meta-label">${escapeHtml(item.label)}</span>
+                <span class="sidebar-meta-value">${escapeHtml(item.value)}</span>
+            </div>
+        `)
+        .join('');
+}
+
+function updateExportButtonState() {
+    const exportBtn = document.getElementById('export-btn');
+    if (!exportBtn) return;
+    if (!currentFilePath || currentKind === 'pdf') {
+        exportBtn.setAttribute('disabled', 'true');
+        exportBtn.title = currentKind === 'pdf'
+            ? 'HTML export is unavailable for PDF files'
+            : 'Open a file to export HTML';
+    } else {
+        exportBtn.removeAttribute('disabled');
+        exportBtn.title = 'Export HTML (Ctrl+Shift+E)';
+    }
+}
+
+function updateFindButtonState() {
+    const findBtn = document.getElementById('find-btn');
+    if (!findBtn) return;
+    if (!currentFilePath) {
+        findBtn.setAttribute('disabled', 'true');
+        findBtn.title = 'Open a file to search';
+        return;
+    }
+    if (currentKind === 'pdf') {
+        findBtn.setAttribute('disabled', 'true');
+        findBtn.title = 'Search is unavailable for PDF files';
+        return;
+    }
+    findBtn.removeAttribute('disabled');
+    findBtn.title = 'Find (Ctrl+F)';
+}
+
 function applyTheme(theme) {
     currentTheme = theme;
     applyThemeToDocument(theme);
     savePreference('theme', theme);
     // Ensure syntax CSS for this theme is loaded
     ensureSyntaxCss(theme);
-    
-    // Update active theme indicator
-    document.querySelectorAll('.theme-option').forEach(btn => {
-        btn.classList.toggle('active', btn.dataset.theme === theme);
-    });
+    updateViewMenuState();
     
     // Notify all windows of theme change
     broadcastThemeChange(theme);
@@ -118,10 +254,11 @@ async function exportHtml() {
     if (!currentFilePath) return;
     if (currentKind === 'pdf') return;
     try {
-        await invoke('save_html_export', {
+        const result = await invoke('save_html_export', {
             path: currentFilePath,
             theme: currentTheme,
         });
+        void result;
     } catch (err) {
         console.error('HTML export failed:', err);
     }
@@ -132,32 +269,65 @@ let tocVisible = true;
 
 function buildTOC() {
     const tocNav = document.getElementById('toc-nav');
-    const tocBtn = document.getElementById('toc-btn');
     const tocSidebar = document.getElementById('toc-sidebar');
+    const tocOpenBtn = document.getElementById('toc-open-btn');
+    const sidebarLabel = document.querySelector('.sidebar-label');
+    const sidebarCaption = document.querySelector('.sidebar-caption');
     if (!tocNav) return;
 
     tocNav.innerHTML = '';
 
-    if (currentKind !== KIND_MARKDOWN) {
-        if (tocBtn) { tocBtn.style.display = 'none'; tocBtn.classList.remove('active'); }
+    if (!currentFilePath) {
+        renderSidebarMeta([]);
         if (tocSidebar) tocSidebar.classList.remove('show');
+        if (tocOpenBtn) tocOpenBtn.hidden = true;
+        updateViewMenuState();
         return;
     }
 
     const headings = document.querySelectorAll('#markdown-content h1, #markdown-content h2, #markdown-content h3, #markdown-content h4, #markdown-content h5, #markdown-content h6');
-    if (headings.length === 0) {
-        if (tocBtn) { tocBtn.style.display = 'none'; tocBtn.classList.remove('active'); }
-        if (tocSidebar) tocSidebar.classList.remove('show');
-        return;
-    }
+    const isMarkdownWithHeadings = currentKind === KIND_MARKDOWN && headings.length > 0;
 
-    if (tocBtn) tocBtn.style.display = '';
+    renderSidebarMeta([
+        { label: 'File Type', value: kindLabel(currentKind) },
+        { label: 'Path', value: directoryFromPath(currentFilePath) || currentFilePath },
+        {
+            label: 'Access',
+            value: isCurrentFileViewOnly()
+                ? 'View Only'
+                : (currentWritable === true ? 'Writable' : (currentWritable === false ? 'Read Only' : 'Unknown'))
+        },
+        {
+            label: 'Workflow',
+            value: isCurrentFileViewOnly()
+                ? 'Preview-only workspace.'
+                : 'Edit in a linked window; autosave refreshes this preview.'
+        },
+        { label: 'Type Size', value: `${currentFontSize}px` },
+        {
+            label: 'Shortcuts',
+            value: isCurrentFileViewOnly()
+                ? 'Ctrl+F search'
+                : (currentKind === KIND_MARKDOWN
+                    ? 'Ctrl+F search, Ctrl+E edit, Ctrl+Shift+E export'
+                    : 'Ctrl+F search, Ctrl+E edit')
+        }
+    ]);
+
+    if (sidebarLabel) sidebarLabel.textContent = isMarkdownWithHeadings ? 'Contents' : 'Document';
+    if (sidebarCaption) sidebarCaption.textContent = isMarkdownWithHeadings ? 'Markdown outline' : 'Document details';
+
     if (tocVisible) {
         if (tocSidebar) tocSidebar.classList.add('show');
-        if (tocBtn) tocBtn.classList.add('active');
+        if (tocOpenBtn) tocOpenBtn.hidden = true;
     } else {
         if (tocSidebar) tocSidebar.classList.remove('show');
-        if (tocBtn) tocBtn.classList.remove('active');
+        if (tocOpenBtn) tocOpenBtn.hidden = false;
+    }
+    updateViewMenuState();
+
+    if (!isMarkdownWithHeadings) {
+        return;
     }
 
     headings.forEach((heading, i) => {
@@ -216,11 +386,16 @@ function updateActiveTOCLink() {
 
 function toggleTOC() {
     const sidebar = document.getElementById('toc-sidebar');
-    const tocBtn = document.getElementById('toc-btn');
-    if (sidebar) sidebar.classList.toggle('show');
-    tocVisible = sidebar && sidebar.classList.contains('show');
-    if (tocBtn) tocBtn.classList.toggle('active', tocVisible);
+    const tocOpenBtn = document.getElementById('toc-open-btn');
+    if (currentFilePath && sidebar) {
+        sidebar.classList.toggle('show');
+        tocVisible = sidebar.classList.contains('show');
+    } else {
+        tocVisible = !tocVisible;
+    }
+    if (tocOpenBtn) tocOpenBtn.hidden = tocVisible;
     savePreference('toc_visible', tocVisible);
+    updateViewMenuState();
 }
 
 async function openFile(filePath) {
@@ -291,7 +466,9 @@ async function openFile(filePath) {
         // Ensure link interception remains active after content swap (non-PDF only)
         if (!usedPdf) attachLinkInterceptor();
         // Update edit button availability based on file writability
-        updateEditButtonState();
+        currentWritable = await updateEditButtonState();
+        updateFindButtonState();
+        updateExportButtonState();
         // Build table of contents from headings
         buildTOC();
         // Restore scroll position if applicable
@@ -317,9 +494,7 @@ async function openFile(filePath) {
         } catch (e) {
             console.warn('Failed to set window title:', e);
         }
-        
-        // Title is already set during window creation - no need to set it again
-        
+
         // Show the window only if it's not yet visible (first load)
         try {
             const visible = await appWindow.isVisible();
@@ -332,11 +507,9 @@ async function openFile(filePath) {
         
         // Start file watching
         await startFileWatcher();
-        console.log('[DEBUG] File watcher started');
         
     } catch (err) {
         console.error('[DEBUG] Failed to open file:', err);
-        alert(`Failed to open file: ${err}`);
     }
 }
 
@@ -417,25 +590,14 @@ function toggleThemeMenu() {
 }
 
 async function openEditor() {
-    if (!currentFilePath) {
-        alert('Please open a file first');
-        return;
-    }
+    if (!currentFilePath) return;
     // Block if file type isn't editable
-    if (!isEditableType(currentFilePath)) {
-        alert('This file type is view-only and cannot be edited.');
-        return;
-    }
+    if (!isEditableType(currentFilePath)) return;
     // Block if file is not writable
     try {
         const writable = await invoke('is_writable', { path: currentFilePath });
-        if (!writable) {
-            alert('This file is write-protected and cannot be edited.');
-            return;
-        }
+        if (!writable) return;
     } catch (_) {
-        // If we cannot confirm writability, be conservative and block
-        alert('Unable to verify edit permission for this file.');
         return;
     }
     
@@ -446,7 +608,6 @@ async function openEditor() {
         });
     } catch (err) {
         console.error('Failed to open editor:', err);
-        alert('Failed to open editor: ' + err);
     }
 }
 
@@ -456,33 +617,39 @@ async function createNewMarkdownFile() {
         return windowLabel || null;
     } catch (err) {
         console.error('Failed to create new file:', err);
-        alert('Failed to create new file: ' + err);
         return null;
     }
 }
 
 async function updateEditButtonState() {
     const editBtn = document.getElementById('edit-btn');
-    if (!editBtn) return;
+    if (!editBtn) return null;
     if (!currentFilePath) {
         editBtn.setAttribute('disabled', 'true');
-        return;
+        editBtn.title = 'Open a file to edit';
+        return null;
     }
     // Disable for non-editable types
     if (!isEditableType(currentFilePath)) {
         editBtn.setAttribute('disabled', 'true');
-        return;
+        editBtn.title = 'This file type is view-only';
+        return false;
     }
     try {
         const writable = await invoke('is_writable', { path: currentFilePath });
         if (writable) {
             editBtn.removeAttribute('disabled');
+            editBtn.title = 'Edit (Ctrl+E)';
         } else {
             editBtn.setAttribute('disabled', 'true');
+            editBtn.title = 'This file is write-protected';
         }
+        return writable;
     } catch (e) {
         // On error, be conservative and disable
         editBtn.setAttribute('disabled', 'true');
+        editBtn.title = 'Unable to verify edit permission';
+        return null;
     }
 }
 
@@ -501,13 +668,23 @@ function isEditableType(filePath) {
 function setupEventListeners() {
     // Toolbar buttons
     document.getElementById('open-btn').addEventListener('click', () => openFile());
+    document.getElementById('new-btn').addEventListener('click', createNewMarkdownFile);
     document.getElementById('refresh-btn').addEventListener('click', refreshFile);
     document.getElementById('theme-btn').addEventListener('click', toggleThemeMenu);
+    const fontSizeDecreaseBtn = document.getElementById('font-size-decrease-btn');
+    const fontSizeIncreaseBtn = document.getElementById('font-size-increase-btn');
+    if (fontSizeDecreaseBtn) fontSizeDecreaseBtn.addEventListener('click', () => changeFontSize(-1));
+    if (fontSizeIncreaseBtn) fontSizeIncreaseBtn.addEventListener('click', () => changeFontSize(1));
+    const railToggleBtn = document.getElementById('rail-toggle-option');
+    if (railToggleBtn) railToggleBtn.addEventListener('click', toggleTOC);
     document.getElementById('edit-btn').addEventListener('click', openEditor);
+    document.getElementById('export-btn').addEventListener('click', exportHtml);
     const findBtn = document.getElementById('find-btn');
     if (findBtn) findBtn.addEventListener('click', toggleFindOverlay);
-    const tocBtn = document.getElementById('toc-btn');
-    if (tocBtn) tocBtn.addEventListener('click', toggleTOC);
+    const tocCloseBtn = document.getElementById('toc-close-btn');
+    if (tocCloseBtn) tocCloseBtn.addEventListener('click', toggleTOC);
+    const tocOpenBtn = document.getElementById('toc-open-btn');
+    if (tocOpenBtn) tocOpenBtn.addEventListener('click', toggleTOC);
     // Theme menu
     document.querySelectorAll('.theme-option').forEach(btn => {
         btn.addEventListener('click', (e) => {
@@ -524,6 +701,7 @@ function setupEventListeners() {
             themeMenu.classList.remove('show');
         }
     });
+
     
     // Keyboard shortcuts (table-driven, shift variants before non-shift for same key)
     setupKeyboardShortcuts([
@@ -594,48 +772,6 @@ async function stopFileWatcher() {
 
 // Window size persistence handled in Rust with debounce.
 
-async function checkAndPromptCliSetup() {
-    try {
-        // Check if CLI is actually installed
-        const isInstalled = await invoke('is_cli_installed');
-
-        if (isInstalled) {
-            // CLI is installed, nothing to do
-            return;
-        }
-
-        // CLI not installed - reset the declined flag in case it was set from a failed previous attempt
-        // Check if user has declined THIS SESSION
-        const prefs = await invoke('get_preferences');
-        if (prefs.cli_setup_prompted === true) {
-            // User declined in this session, don't ask again
-            return;
-        }
-
-        // Show dialog asking if user wants to set up CLI access
-        const message = 'Command-line access for BoltPage is not configured.\n\n' +
-                       'Would you like to enable it? This will allow you to open files from your terminal:\n' +
-                       '  boltpage myfile.md\n\n' +
-                       'You can set this up later from the Help menu.';
-
-        if (confirm(message)) {
-            try {
-                const result = await invoke('setup_cli_access');
-                console.log('CLI setup:', result);
-            } catch (err) {
-                if (!String(err).includes('cancelled')) {
-                    console.error('CLI setup failed:', err);
-                }
-                await invoke('mark_cli_setup_declined');
-            }
-        } else {
-            // User declined, remember for this session
-            await invoke('mark_cli_setup_declined');
-        }
-    } catch (err) {
-        console.error('Failed to check CLI setup:', err);
-    }
-}
 
 // Initialize app
 window.addEventListener('DOMContentLoaded', async () => {
@@ -645,16 +781,17 @@ window.addEventListener('DOMContentLoaded', async () => {
         attachLinkInterceptor();
         await loadPreferences();
         // Initial button states
-        updateEditButtonState();
+        currentWritable = await updateEditButtonState();
+        updateFindButtonState();
+        updateExportButtonState();
         // Cache content wrapper and attach scroll sync listener
         contentEl = document.querySelector('.content-wrapper');
         attachPreviewScrollSync();
 
-        // Check if we should prompt for CLI setup (first run)
-        setTimeout(() => checkAndPromptCliSetup(), 2000);
-    
         // Listen for file change events -- auto-refresh the preview
         await listen(EVENT_FILE_CHANGED, async () => {
+            const indicator = document.getElementById('refresh-indicator');
+            if (indicator) indicator.classList.add('show');
             await refreshFile();
         });
 
@@ -666,12 +803,14 @@ window.addEventListener('DOMContentLoaded', async () => {
             currentTheme = event.payload;
             applyThemeToDocument(currentTheme);
             await ensureSyntaxCss(currentTheme);
-
-            // Update active theme indicator
-            document.querySelectorAll('.theme-option').forEach(btn => {
-                btn.classList.toggle('active', btn.dataset.theme === currentTheme);
-            });
+            updateViewMenuState();
         });
+
+        await listen(EVENT_FONT_SIZE_CHANGED, async (event) => {
+            if (Number(event.payload) === currentFontSize) return;
+            applyFontSize(event.payload);
+        });
+
 
         // Listen for edit menu actions (cut/copy/paste/select-all)
         await listen(EVENT_MENU_EDIT, async (event) => {
@@ -865,6 +1004,7 @@ function ensureFindOverlay() {
     findOverlay = els.overlay;
     findInput = els.input;
 
+    findInput.addEventListener('input', () => performFind(findInput.value));
     findInput.addEventListener('keydown', (e) => {
         if (e.key === 'Enter') {
             e.preventDefault();
@@ -1013,4 +1153,3 @@ function closeFindOverlay() {
     findVisible = false;
     clearFindResults();
 }
-

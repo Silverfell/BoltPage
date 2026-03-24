@@ -1,6 +1,8 @@
 // Event names (emitted via app.emit)
 pub const EVENT_FILE_CHANGED: &str = "file-changed";
 pub const EVENT_THEME_CHANGED: &str = "theme-changed";
+pub const EVENT_FONT_SIZE_CHANGED: &str = "font-size-changed";
+pub const EVENT_EDITOR_WINDOW_CLOSED: &str = "editor-window-closed";
 pub const EVENT_SCROLL_SYNC: &str = "scroll-sync";
 pub const EVENT_MENU_OPEN: &str = "menu-open";
 pub const EVENT_MENU_CLOSE: &str = "menu-close";

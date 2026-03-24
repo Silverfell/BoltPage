@@ -35,6 +35,22 @@ pub(crate) fn decode_file_path_from_window_label_str(
     }
 }
 
+pub(crate) fn decode_editor_file_path_from_window_label_str(
+    window_label: &str,
+) -> Result<Option<String>, String> {
+    if let Some(encoded_path) = window_label.strip_prefix(WINDOW_PREFIX_EDITOR) {
+        match base64::engine::general_purpose::URL_SAFE_NO_PAD.decode(encoded_path) {
+            Ok(decoded_bytes) => match String::from_utf8(decoded_bytes) {
+                Ok(file_path) => Ok(Some(file_path)),
+                Err(e) => Err(format!("Failed to decode UTF-8: {e}")),
+            },
+            Err(e) => Err(format!("Failed to decode base64: {e}")),
+        }
+    } else {
+        Ok(None)
+    }
+}
+
 // --- Size helpers ---
 
 fn is_reasonable_window_size(
