@@ -4,8 +4,14 @@ import {
     MIN_SCROLL_DELTA_LINES,
     MIN_SCROLL_DELTA_PERCENT,
     LINE_HEIGHT_FALLBACK_MULTIPLIER,
+    DEFAULT_FONT_SIZE,
+    MIN_FONT_SIZE,
+    MAX_FONT_SIZE,
     parsePx,
     escapeHtml,
+    directoryFromPath,
+    kindLabel,
+    clampFontSize,
     createFindOverlay,
     updateFindCount,
     nextFindIndex,
@@ -16,7 +22,6 @@ import {
     EVENT_FILE_CHANGED,
     EVENT_THEME_CHANGED,
     EVENT_FONT_SIZE_CHANGED,
-    EVENT_EDITOR_WINDOW_CLOSED,
     EVENT_SCROLL_SYNC,
     EVENT_MENU_OPEN,
     EVENT_MENU_CLOSE,
@@ -52,14 +57,7 @@ let contentEl = null; // scrolling container (.content-wrapper)
 let findOverlay = null;
 let findInput = null;
 let findVisible = false;
-let noticeTimeout = null;
-let noticeExpiresAt = 0;
-let noticeActionToken = 0;
 let currentFontSize = 18;
-
-const DEFAULT_FONT_SIZE = 18;
-const MIN_FONT_SIZE = 14;
-const MAX_FONT_SIZE = 24;
 
 // Track last synced position to filter micro-scrolls
 let lastSyncedLine = null;
@@ -105,39 +103,6 @@ async function savePreference(key, value) {
     }
 }
 
-function baseNameFromPath(filePath) {
-    if (!filePath) return 'No Document Open';
-    return String(filePath).split(/[/\\]/).pop() || filePath;
-}
-
-function directoryFromPath(filePath) {
-    if (!filePath) return '';
-    const normalized = String(filePath).replace(/\\/g, '/');
-    const idx = normalized.lastIndexOf('/');
-    return idx > 0 ? normalized.slice(0, idx) : normalized;
-}
-
-function kindLabel(kind) {
-    switch (kind) {
-        case 'pdf':
-            return 'PDF';
-        case KIND_JSON:
-            return 'JSON';
-        case KIND_YAML:
-            return 'YAML';
-        case KIND_TXT:
-            return 'Text';
-        default:
-            return 'Markdown';
-    }
-}
-
-function clampFontSize(fontSize) {
-    const parsed = Number.parseInt(fontSize, 10);
-    if (!Number.isFinite(parsed)) return DEFAULT_FONT_SIZE;
-    return Math.min(MAX_FONT_SIZE, Math.max(MIN_FONT_SIZE, parsed));
-}
-
 function restorePreviewAnchor(anchor) {
     if (!anchor || !contentEl) return;
     if ((anchor.kind === KIND_JSON || anchor.kind === KIND_YAML || anchor.kind === KIND_TXT) && typeof anchor.line === 'number') {
@@ -181,51 +146,6 @@ function currentSidebarModeLabel() {
     return currentKind === KIND_MARKDOWN && headings.length > 0 ? 'Contents Rail' : 'Info Rail';
 }
 
-function setBadgeState(element, text, tone = null, hidden = false) {
-    if (!element) return;
-    element.hidden = hidden;
-    if (hidden) return;
-    element.textContent = text;
-    element.classList.remove('badge-tone-accent', 'badge-tone-success', 'badge-tone-warning');
-    if (tone) {
-        element.classList.add(`badge-tone-${tone}`);
-    }
-}
-
-function renderPreviewHeader() {
-    const titleEl = document.getElementById('document-title');
-    const subtitleEl = document.getElementById('document-subtitle');
-    const modeBadge = document.getElementById('preview-mode-badge');
-    const kindBadge = document.getElementById('file-kind-badge');
-    const permissionBadge = document.getElementById('permission-badge');
-
-    if (!currentFilePath) {
-        if (titleEl) titleEl.textContent = 'No Document Open';
-        if (subtitleEl) {
-            subtitleEl.textContent = 'Open a Markdown file to start viewing. BoltPage keeps preview and editing lightweight.';
-        }
-        setBadgeState(modeBadge, 'Preview', 'accent', false);
-        setBadgeState(kindBadge, 'Workspace', null, false);
-        setBadgeState(permissionBadge, '', null, true);
-        return;
-    }
-
-    if (titleEl) titleEl.textContent = baseNameFromPath(currentFilePath);
-    if (subtitleEl) subtitleEl.textContent = directoryFromPath(currentFilePath);
-
-    setBadgeState(modeBadge, currentKind === 'pdf' ? 'Viewer' : 'Preview', 'accent', false);
-    setBadgeState(kindBadge, kindLabel(currentKind), null, false);
-
-    if (isCurrentFileViewOnly()) {
-        setBadgeState(permissionBadge, 'View Only', 'warning', false);
-    } else if (currentWritable === true) {
-        setBadgeState(permissionBadge, 'Writable', 'success', false);
-    } else if (currentWritable === false) {
-        setBadgeState(permissionBadge, 'Read Only', 'warning', false);
-    } else {
-        setBadgeState(permissionBadge, 'Access Unknown', null, false);
-    }
-}
 
 function updateViewMenuState() {
     document.querySelectorAll('.theme-option').forEach(btn => {
@@ -257,91 +177,6 @@ function updateViewMenuState() {
     if (fontSizeIncreaseBtn) fontSizeIncreaseBtn.disabled = currentFontSize >= MAX_FONT_SIZE;
 }
 
-function clearPreviewNotice() {
-    const noticeEl = document.getElementById('preview-notice');
-    const actionsEl = document.getElementById('preview-notice-actions');
-    if (!noticeEl) return;
-    noticeEl.hidden = true;
-    noticeEl.classList.remove('notice-info', 'notice-success', 'notice-warning');
-    if (actionsEl) {
-        actionsEl.hidden = true;
-        actionsEl.innerHTML = '';
-    }
-    if (noticeTimeout) {
-        clearTimeout(noticeTimeout);
-        noticeTimeout = null;
-    }
-    noticeExpiresAt = 0;
-    noticeActionToken += 1;
-}
-
-function clearEditorOpenedNotice() {
-    const noticeEl = document.getElementById('preview-notice');
-    const textEl = document.getElementById('preview-notice-text');
-    if (!noticeEl || !textEl || noticeEl.hidden) return;
-    if (textEl.textContent === 'Linked editor opened.') {
-        clearPreviewNotice();
-    }
-}
-
-function schedulePreviewNoticeClear(timeoutMs) {
-    if (noticeTimeout) {
-        clearTimeout(noticeTimeout);
-        noticeTimeout = null;
-    }
-    if (timeoutMs > 0) {
-        noticeExpiresAt = Date.now() + timeoutMs;
-        noticeTimeout = setTimeout(() => {
-            clearPreviewNotice();
-        }, timeoutMs);
-    } else {
-        noticeExpiresAt = 0;
-    }
-}
-
-function syncPreviewNoticeTimer() {
-    const noticeEl = document.getElementById('preview-notice');
-    if (!noticeEl || noticeEl.hidden || !noticeExpiresAt) return;
-    const remainingMs = noticeExpiresAt - Date.now();
-    if (remainingMs <= 0) {
-        clearPreviewNotice();
-        return;
-    }
-    schedulePreviewNoticeClear(remainingMs);
-}
-
-function showPreviewNotice(message, tone = 'info', timeoutMs = 2600, options = {}) {
-    const noticeEl = document.getElementById('preview-notice');
-    const textEl = document.getElementById('preview-notice-text');
-    const actionsEl = document.getElementById('preview-notice-actions');
-    if (!noticeEl || !textEl) return;
-    noticeEl.hidden = false;
-    textEl.textContent = message;
-    noticeEl.classList.remove('notice-info', 'notice-success', 'notice-warning');
-    noticeEl.classList.add(`notice-${tone}`);
-    const actions = Array.isArray(options.actions) ? options.actions : [];
-    const currentToken = ++noticeActionToken;
-    if (actionsEl) {
-        actionsEl.innerHTML = '';
-        if (actions.length > 0) {
-            actions.forEach(action => {
-                const button = document.createElement('button');
-                button.type = 'button';
-                button.className = `notice-action${action.tone === 'primary' ? ' notice-action-primary' : ''}`;
-                button.textContent = action.label;
-                button.addEventListener('click', async () => {
-                    if (currentToken !== noticeActionToken) return;
-                    await action.onClick();
-                });
-                actionsEl.appendChild(button);
-            });
-            actionsEl.hidden = false;
-        } else {
-            actionsEl.hidden = true;
-        }
-    }
-    schedulePreviewNoticeClear(timeoutMs);
-}
 
 function renderSidebarMeta(items) {
     const metaEl = document.getElementById('sidebar-meta');
@@ -423,12 +258,9 @@ async function exportHtml() {
             path: currentFilePath,
             theme: currentTheme,
         });
-        if (result) {
-            showPreviewNotice('HTML export complete.', 'success');
-        }
+        void result;
     } catch (err) {
         console.error('HTML export failed:', err);
-        showPreviewNotice('HTML export failed.', 'warning', 3600);
     }
 }
 
@@ -437,19 +269,18 @@ let tocVisible = true;
 
 function buildTOC() {
     const tocNav = document.getElementById('toc-nav');
-    const tocBtn = document.getElementById('toc-btn');
     const tocSidebar = document.getElementById('toc-sidebar');
+    const tocOpenBtn = document.getElementById('toc-open-btn');
     const sidebarLabel = document.querySelector('.sidebar-label');
     const sidebarCaption = document.querySelector('.sidebar-caption');
-    const sidebarToggleLabel = document.getElementById('sidebar-toggle-label');
     if (!tocNav) return;
 
     tocNav.innerHTML = '';
 
     if (!currentFilePath) {
         renderSidebarMeta([]);
-        if (tocBtn) { tocBtn.style.display = 'none'; tocBtn.classList.remove('active'); }
         if (tocSidebar) tocSidebar.classList.remove('show');
+        if (tocOpenBtn) tocOpenBtn.hidden = true;
         updateViewMenuState();
         return;
     }
@@ -485,15 +316,13 @@ function buildTOC() {
 
     if (sidebarLabel) sidebarLabel.textContent = isMarkdownWithHeadings ? 'Contents' : 'Document';
     if (sidebarCaption) sidebarCaption.textContent = isMarkdownWithHeadings ? 'Markdown outline' : 'Document details';
-    if (sidebarToggleLabel) sidebarToggleLabel.textContent = isMarkdownWithHeadings ? 'Contents' : 'Info';
 
-    if (tocBtn) tocBtn.style.display = '';
     if (tocVisible) {
         if (tocSidebar) tocSidebar.classList.add('show');
-        if (tocBtn) tocBtn.classList.add('active');
+        if (tocOpenBtn) tocOpenBtn.hidden = true;
     } else {
         if (tocSidebar) tocSidebar.classList.remove('show');
-        if (tocBtn) tocBtn.classList.remove('active');
+        if (tocOpenBtn) tocOpenBtn.hidden = false;
     }
     updateViewMenuState();
 
@@ -557,14 +386,14 @@ function updateActiveTOCLink() {
 
 function toggleTOC() {
     const sidebar = document.getElementById('toc-sidebar');
-    const tocBtn = document.getElementById('toc-btn');
+    const tocOpenBtn = document.getElementById('toc-open-btn');
     if (currentFilePath && sidebar) {
         sidebar.classList.toggle('show');
         tocVisible = sidebar.classList.contains('show');
     } else {
         tocVisible = !tocVisible;
     }
-    if (tocBtn) tocBtn.classList.toggle('active', tocVisible);
+    if (tocOpenBtn) tocOpenBtn.hidden = tocVisible;
     savePreference('toc_visible', tocVisible);
     updateViewMenuState();
 }
@@ -640,7 +469,6 @@ async function openFile(filePath) {
         currentWritable = await updateEditButtonState();
         updateFindButtonState();
         updateExportButtonState();
-        renderPreviewHeader();
         // Build table of contents from headings
         buildTOC();
         // Restore scroll position if applicable
@@ -666,9 +494,7 @@ async function openFile(filePath) {
         } catch (e) {
             console.warn('Failed to set window title:', e);
         }
-        
-        // Title is already set during window creation - no need to set it again
-        
+
         // Show the window only if it's not yet visible (first load)
         try {
             const visible = await appWindow.isVisible();
@@ -681,11 +507,9 @@ async function openFile(filePath) {
         
         // Start file watching
         await startFileWatcher();
-        console.log('[DEBUG] File watcher started');
         
     } catch (err) {
         console.error('[DEBUG] Failed to open file:', err);
-        showPreviewNotice(`Failed to open file: ${err}`, 'warning', 4200);
     }
 }
 
@@ -766,25 +590,14 @@ function toggleThemeMenu() {
 }
 
 async function openEditor() {
-    if (!currentFilePath) {
-        showPreviewNotice('Open a file first.', 'warning');
-        return;
-    }
+    if (!currentFilePath) return;
     // Block if file type isn't editable
-    if (!isEditableType(currentFilePath)) {
-        showPreviewNotice('This file type is view-only and cannot be edited.', 'warning', 3600);
-        return;
-    }
+    if (!isEditableType(currentFilePath)) return;
     // Block if file is not writable
     try {
         const writable = await invoke('is_writable', { path: currentFilePath });
-        if (!writable) {
-            showPreviewNotice('This file is write-protected and cannot be edited.', 'warning', 3600);
-            return;
-        }
+        if (!writable) return;
     } catch (_) {
-        // If we cannot confirm writability, be conservative and block
-        showPreviewNotice('Unable to verify edit permission for this file.', 'warning', 3600);
         return;
     }
     
@@ -793,10 +606,8 @@ async function openEditor() {
             filePath: currentFilePath,
             previewWindow: appWindow.label
         });
-        showPreviewNotice('Linked editor opened.', 'success');
     } catch (err) {
         console.error('Failed to open editor:', err);
-        showPreviewNotice(`Failed to open editor: ${err}`, 'warning', 4200);
     }
 }
 
@@ -806,7 +617,6 @@ async function createNewMarkdownFile() {
         return windowLabel || null;
     } catch (err) {
         console.error('Failed to create new file:', err);
-        showPreviewNotice(`Failed to create new file: ${err}`, 'warning', 4200);
         return null;
     }
 }
@@ -869,12 +679,12 @@ function setupEventListeners() {
     if (railToggleBtn) railToggleBtn.addEventListener('click', toggleTOC);
     document.getElementById('edit-btn').addEventListener('click', openEditor);
     document.getElementById('export-btn').addEventListener('click', exportHtml);
-    const noticeCloseBtn = document.getElementById('preview-notice-close');
-    if (noticeCloseBtn) noticeCloseBtn.addEventListener('click', clearPreviewNotice);
     const findBtn = document.getElementById('find-btn');
     if (findBtn) findBtn.addEventListener('click', toggleFindOverlay);
-    const tocBtn = document.getElementById('toc-btn');
-    if (tocBtn) tocBtn.addEventListener('click', toggleTOC);
+    const tocCloseBtn = document.getElementById('toc-close-btn');
+    if (tocCloseBtn) tocCloseBtn.addEventListener('click', toggleTOC);
+    const tocOpenBtn = document.getElementById('toc-open-btn');
+    if (tocOpenBtn) tocOpenBtn.addEventListener('click', toggleTOC);
     // Theme menu
     document.querySelectorAll('.theme-option').forEach(btn => {
         btn.addEventListener('click', (e) => {
@@ -892,10 +702,6 @@ function setupEventListeners() {
         }
     });
 
-    document.addEventListener('visibilitychange', () => {
-        if (!document.hidden) syncPreviewNoticeTimer();
-    });
-    window.addEventListener('focus', syncPreviewNoticeTimer);
     
     // Keyboard shortcuts (table-driven, shift variants before non-shift for same key)
     setupKeyboardShortcuts([
@@ -966,63 +772,6 @@ async function stopFileWatcher() {
 
 // Window size persistence handled in Rust with debounce.
 
-async function checkAndPromptCliSetup() {
-    try {
-        // Check if CLI is actually installed
-        const isInstalled = await invoke('is_cli_installed');
-
-        if (isInstalled) {
-            // CLI is installed, nothing to do
-            return;
-        }
-
-        // CLI not installed - reset the declined flag in case it was set from a failed previous attempt
-        // Check if user has declined THIS SESSION
-        const prefs = await invoke('get_preferences');
-        if (prefs.cli_setup_prompted === true) {
-            // User declined in this session, don't ask again
-            return;
-        }
-
-        showPreviewNotice(
-            'Command-line access is not configured. Enable it to open files from Terminal with `boltpage myfile.md`.',
-            'info',
-            0,
-            {
-                actions: [
-                    {
-                        label: 'Set Up CLI',
-                        tone: 'primary',
-                        onClick: async () => {
-                            try {
-                                const result = await invoke('setup_cli_access');
-                                console.log('CLI setup:', result);
-                                showPreviewNotice(result || 'CLI access configured successfully.', 'success', 4200);
-                            } catch (err) {
-                                if (!String(err).includes('cancelled')) {
-                                    console.error('CLI setup failed:', err);
-                                    showPreviewNotice('CLI setup failed. You can try again from the Help menu.', 'warning', 4200);
-                                } else {
-                                    clearPreviewNotice();
-                                }
-                                await invoke('mark_cli_setup_declined');
-                            }
-                        }
-                    },
-                    {
-                        label: 'Later',
-                        onClick: async () => {
-                            await invoke('mark_cli_setup_declined');
-                            clearPreviewNotice();
-                        }
-                    }
-                ]
-            }
-        );
-    } catch (err) {
-        console.error('Failed to check CLI setup:', err);
-    }
-}
 
 // Initialize app
 window.addEventListener('DOMContentLoaded', async () => {
@@ -1035,20 +784,15 @@ window.addEventListener('DOMContentLoaded', async () => {
         currentWritable = await updateEditButtonState();
         updateFindButtonState();
         updateExportButtonState();
-        renderPreviewHeader();
         // Cache content wrapper and attach scroll sync listener
         contentEl = document.querySelector('.content-wrapper');
         attachPreviewScrollSync();
 
-        // Check if we should prompt for CLI setup (first run)
-        setTimeout(() => checkAndPromptCliSetup(), 2000);
-    
         // Listen for file change events -- auto-refresh the preview
         await listen(EVENT_FILE_CHANGED, async () => {
             const indicator = document.getElementById('refresh-indicator');
             if (indicator) indicator.classList.add('show');
             await refreshFile();
-            showPreviewNotice('File updated on disk and refreshed.', 'info', 3200);
         });
 
         // Listen for theme change events from other windows
@@ -1067,12 +811,6 @@ window.addEventListener('DOMContentLoaded', async () => {
             applyFontSize(event.payload);
         });
 
-        await listen(EVENT_EDITOR_WINDOW_CLOSED, async (event) => {
-            const payload = event.payload || {};
-            if (payload.preview_window && payload.preview_window !== appWindow.label) return;
-            if (payload.file_path && currentFilePath && payload.file_path !== currentFilePath) return;
-            clearEditorOpenedNotice();
-        });
 
         // Listen for edit menu actions (cut/copy/paste/select-all)
         await listen(EVENT_MENU_EDIT, async (event) => {
@@ -1266,6 +1004,7 @@ function ensureFindOverlay() {
     findOverlay = els.overlay;
     findInput = els.input;
 
+    findInput.addEventListener('input', () => performFind(findInput.value));
     findInput.addEventListener('keydown', (e) => {
         if (e.key === 'Enter') {
             e.preventDefault();

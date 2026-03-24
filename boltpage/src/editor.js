@@ -4,8 +4,17 @@ import {
     MIN_SCROLL_DELTA_LINES,
     MIN_SCROLL_DELTA_PERCENT,
     LINE_HEIGHT_FALLBACK_MULTIPLIER,
+    DEFAULT_FONT_SIZE,
+    MIN_FONT_SIZE,
+    MAX_FONT_SIZE,
+    EDITOR_FONT_SIZE_OFFSET,
     parsePx,
     escapeHtml,
+    baseNameFromPath,
+    directoryFromPath,
+    kindLabel,
+    clampFontSize,
+    setBadgeState,
     createFindOverlay,
     updateFindCount,
     nextFindIndex,
@@ -19,7 +28,6 @@ import {
     EVENT_MENU_CLOSE,
     EVENT_MENU_FIND,
     EVENT_MENU_EDIT,
-    EVENT_MENU_OPEN,
     EVENT_MENU_PRINT,
     ACTION_UNDO,
     ACTION_REDO,
@@ -63,25 +71,9 @@ let lineHeights = [];
 let currentFontSize = 18;
 let closeEventSent = false;
 
-const DEFAULT_FONT_SIZE = 18;
-const MIN_FONT_SIZE = 14;
-const MAX_FONT_SIZE = 24;
-
 // Track last synced position to filter micro-scrolls
 let lastSyncedLine = null;
 let lastSyncedPercent = null;
-
-function baseNameFromPath(filePath) {
-    if (!filePath) return 'No Document Loaded';
-    return String(filePath).split(/[/\\]/).pop() || filePath;
-}
-
-function directoryFromPath(filePath) {
-    if (!filePath) return '';
-    const normalized = String(filePath).replace(/\\/g, '/');
-    const idx = normalized.lastIndexOf('/');
-    return idx > 0 ? normalized.slice(0, idx) : normalized;
-}
 
 function detectFileKind(filePath) {
     const lower = String(filePath || '').toLowerCase();
@@ -91,25 +83,6 @@ function detectFileKind(filePath) {
     return KIND_MARKDOWN;
 }
 
-function kindLabel(kind) {
-    switch (kind) {
-        case KIND_JSON:
-            return 'JSON';
-        case KIND_YAML:
-            return 'YAML';
-        case KIND_TXT:
-            return 'Text';
-        default:
-            return 'Markdown';
-    }
-}
-
-function clampFontSize(fontSize) {
-    const parsed = Number.parseInt(fontSize, 10);
-    if (!Number.isFinite(parsed)) return DEFAULT_FONT_SIZE;
-    return Math.min(MAX_FONT_SIZE, Math.max(MIN_FONT_SIZE, parsed));
-}
-
 function updateFontSizeControls() {
     const indicator = document.getElementById('editor-font-size-indicator');
     const decreaseBtn = document.getElementById('editor-font-size-decrease-btn');
@@ -117,17 +90,6 @@ function updateFontSizeControls() {
     if (indicator) indicator.textContent = `${currentFontSize}px`;
     if (decreaseBtn) decreaseBtn.disabled = currentFontSize <= MIN_FONT_SIZE;
     if (increaseBtn) increaseBtn.disabled = currentFontSize >= MAX_FONT_SIZE;
-}
-
-function setBadgeState(element, text, tone = null, hidden = false) {
-    if (!element) return;
-    element.hidden = hidden;
-    if (hidden) return;
-    element.textContent = text;
-    element.classList.remove('badge-tone-accent', 'badge-tone-success', 'badge-tone-warning');
-    if (tone) {
-        element.classList.add(`badge-tone-${tone}`);
-    }
 }
 
 function renderEditorHeader() {
@@ -147,7 +109,7 @@ function renderEditorHeader() {
 }
 
 function editorFontSizePx(fontSize = currentFontSize) {
-    return Math.max(12, clampFontSize(fontSize) - 4);
+    return Math.max(12, clampFontSize(fontSize) - EDITOR_FONT_SIZE_OFFSET);
 }
 
 function applyFontSize(fontSize, options = {}) {
@@ -344,18 +306,9 @@ function scrollEditorToLine(line) {
 
 function setupEditorWrapper() {
     const ta = document.getElementById('editor-textarea');
-    const wrapper = document.createElement('div');
-    wrapper.className = 'editor-textarea-wrapper';
-    ta.parentElement.insertBefore(wrapper, ta);
-    wrapper.appendChild(ta);
-
-    lineGutter = document.createElement('div');
-    lineGutter.className = 'line-number-gutter';
-    wrapper.insertBefore(lineGutter, ta);
-
-    lineMirror = document.createElement('div');
-    lineMirror.className = 'line-mirror';
-    wrapper.appendChild(lineMirror);
+    const wrapper = ta.closest('.editor-textarea-wrapper');
+    lineGutter = wrapper.querySelector('.line-number-gutter');
+    lineMirror = wrapper.querySelector('.line-mirror');
 }
 
 function scheduleLineNumberUpdate() {
@@ -608,11 +561,6 @@ function scheduleAutoSave() {
         window.print();
     });
 
-    // Listen for open menu action (editor ignores; only preview handles it)
-    await listen(EVENT_MENU_OPEN, () => {
-        // No-op in editor window — open is handled by preview windows
-    });
-
     const findBtn = document.getElementById('find-btn');
     if (findBtn) findBtn.addEventListener('click', toggleFindOverlay);
 
@@ -719,6 +667,7 @@ function ensureFindOverlay() {
     findOverlay.appendChild(replaceRow);
     replaceInput = replaceRow.querySelector('#replace-input');
 
+    findInput.addEventListener('input', () => performFind(findInput.value));
     findInput.addEventListener('keydown', (e) => {
         if (e.key === 'Enter') {
             e.preventDefault();
