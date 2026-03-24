@@ -4,8 +4,17 @@ import {
     MIN_SCROLL_DELTA_LINES,
     MIN_SCROLL_DELTA_PERCENT,
     LINE_HEIGHT_FALLBACK_MULTIPLIER,
+    DEFAULT_FONT_SIZE,
+    MIN_FONT_SIZE,
+    MAX_FONT_SIZE,
+    EDITOR_FONT_SIZE_OFFSET,
     parsePx,
     escapeHtml,
+    baseNameFromPath,
+    directoryFromPath,
+    kindLabel,
+    clampFontSize,
+    setBadgeState,
     createFindOverlay,
     updateFindCount,
     nextFindIndex,
@@ -14,11 +23,11 @@ import {
 } from './shared.js';
 import {
     EVENT_THEME_CHANGED,
+    EVENT_FONT_SIZE_CHANGED,
     EVENT_SCROLL_SYNC,
     EVENT_MENU_CLOSE,
     EVENT_MENU_FIND,
     EVENT_MENU_EDIT,
-    EVENT_MENU_OPEN,
     EVENT_MENU_PRINT,
     ACTION_UNDO,
     ACTION_REDO,
@@ -38,6 +47,7 @@ const { listen } = window.__TAURI__.event;
 
 const appWindow = getCurrentWindow();
 let currentFilePath = null;
+let currentFileKind = KIND_MARKDOWN;
 let isDirty = false;
 let saveTimeout = null;
 let previewWindow = null;
@@ -52,20 +62,137 @@ let lineGutter = null;
 let lineMirror = null;
 let lastLineCount = 0;
 let wordWrapEnabled = false;
+let showLineNumbers = true;
 let lineNumberRafId = null;
 let prevLines = [];
 let mirrorDivs = [];
 let gutterDivs = [];
 let lineHeights = [];
+let currentFontSize = 18;
+let closeEventSent = false;
 
 // Track last synced position to filter micro-scrolls
 let lastSyncedLine = null;
 let lastSyncedPercent = null;
 
+function detectFileKind(filePath) {
+    const lower = String(filePath || '').toLowerCase();
+    if (lower.endsWith('.json')) return KIND_JSON;
+    if (lower.endsWith('.yaml') || lower.endsWith('.yml')) return KIND_YAML;
+    if (lower.endsWith('.txt')) return KIND_TXT;
+    return KIND_MARKDOWN;
+}
+
+function updateFontSizeControls() {
+    const indicator = document.getElementById('editor-font-size-indicator');
+    const decreaseBtn = document.getElementById('editor-font-size-decrease-btn');
+    const increaseBtn = document.getElementById('editor-font-size-increase-btn');
+    if (indicator) indicator.textContent = `${currentFontSize}px`;
+    if (decreaseBtn) decreaseBtn.disabled = currentFontSize <= MIN_FONT_SIZE;
+    if (increaseBtn) increaseBtn.disabled = currentFontSize >= MAX_FONT_SIZE;
+}
+
+function renderEditorHeader() {
+    const titleEl = document.getElementById('editor-document-title');
+    const subtitleEl = document.getElementById('editor-document-subtitle');
+    const kindBadge = document.getElementById('editor-kind-badge');
+    const syncBadge = document.getElementById('editor-sync-badge');
+
+    if (titleEl) titleEl.textContent = baseNameFromPath(currentFilePath);
+    if (subtitleEl) {
+        subtitleEl.textContent = currentFilePath
+            ? `${directoryFromPath(currentFilePath)}${previewWindow ? ' · Autosaves into a linked preview window.' : ''}`
+            : 'Plaintext editing with autosave and preview sync.';
+    }
+    setBadgeState(kindBadge, kindLabel(currentFileKind), null, false);
+    setBadgeState(syncBadge, previewWindow ? 'Linked Preview' : 'No Preview Link', previewWindow ? 'accent' : 'warning', false);
+}
+
+function editorFontSizePx(fontSize = currentFontSize) {
+    return Math.max(12, clampFontSize(fontSize) - EDITOR_FONT_SIZE_OFFSET);
+}
+
+function applyFontSize(fontSize, options = {}) {
+    const { save = false, broadcast = false } = options;
+    const nextFontSize = clampFontSize(fontSize);
+    const anchorLine = currentFilePath ? getTopLineForEditor() : null;
+    currentFontSize = nextFontSize;
+
+    document.documentElement.style.setProperty('--editor-font-size', `${editorFontSizePx(currentFontSize)}px`);
+    document.documentElement.style.setProperty('--editor-gutter-font-size', `${Math.max(11, editorFontSizePx(currentFontSize) - 1)}px`);
+
+    prevLines = [];
+    mirrorDivs = [];
+    gutterDivs = [];
+    lineHeights = [];
+    lastLineCount = -1;
+    updateFontSizeControls();
+    if (showLineNumbers) updateLineNumbers();
+
+    if (typeof anchorLine === 'number') {
+        requestAnimationFrame(() => scrollEditorToLine(anchorLine));
+    }
+
+    if (save) {
+        invoke('save_preference_key', { key: 'font_size', value: currentFontSize })
+            .catch(err => console.error('Failed to save font_size preference:', err));
+    }
+    if (broadcast) {
+        invoke('broadcast_font_size_change', { fontSize: currentFontSize })
+            .catch(err => console.error('Failed to broadcast font size change:', err));
+    }
+}
+
+function changeFontSize(delta) {
+    applyFontSize(currentFontSize + delta, { save: true, broadcast: true });
+}
+
+async function notifyPreviewEditorClosed() {
+    if (closeEventSent || !previewWindow || !currentFilePath) return;
+    closeEventSent = true;
+    try {
+        await invoke('broadcast_editor_window_closed', {
+            payload: {
+                preview_window: previewWindow,
+                file_path: currentFilePath,
+            }
+        });
+    } catch (err) {
+        closeEventSent = false;
+        console.error('Failed to broadcast editor close event:', err);
+    }
+}
+
+function applyLineNumberVisibility() {
+    const wrapBtn = document.getElementById('line-numbers-btn');
+    document.body.classList.toggle('line-numbers-hidden', !showLineNumbers);
+    if (lineGutter) {
+        lineGutter.style.display = showLineNumbers ? '' : 'none';
+    }
+    if (wrapBtn) wrapBtn.classList.toggle('active', showLineNumbers);
+    if (showLineNumbers) {
+        prevLines = [];
+        mirrorDivs = [];
+        gutterDivs = [];
+        lineHeights = [];
+        lastLineCount = -1;
+        updateLineNumbers();
+    }
+}
+
+function toggleLineNumbers() {
+    showLineNumbers = !showLineNumbers;
+    applyLineNumberVisibility();
+    invoke('save_preference_key', { key: 'show_line_numbers', value: showLineNumbers })
+        .catch(err => console.error('Failed to save show_line_numbers preference:', err));
+}
+
 async function initialize() {
     // Get file path from initialization script
     currentFilePath = window.__INITIAL_FILE_PATH__;
     previewWindow = window.__PREVIEW_WINDOW__;
+    currentFileKind = detectFileKind(currentFilePath);
+    renderEditorHeader();
     
     // Load file content
     if (currentFilePath) {
@@ -96,15 +223,23 @@ async function initialize() {
     try {
         const prefs = await invoke('get_preferences');
         applyThemeToDocument(prefs.theme);
+        applyFontSize(prefs.font_size);
         wordWrapEnabled = prefs.word_wrap === true;
+        showLineNumbers = prefs.show_line_numbers !== false;
         applyWordWrap();
     } catch (err) {
         console.error('Failed to load preferences:', err);
+        applyFontSize(DEFAULT_FONT_SIZE);
     }
 }
 
 function updateStatus(status) {
-    document.getElementById('editor-status').textContent = status;
+    const statusBadge = document.getElementById('editor-status-badge');
+    let tone = null;
+    if (/saved|loaded/i.test(status)) tone = 'success';
+    if (/modified/i.test(status)) tone = 'warning';
+    if (/error/i.test(status)) tone = 'warning';
+    setBadgeState(statusBadge, status, tone, false);
 }
 
 function markDirty() {
@@ -171,18 +306,9 @@ function scrollEditorToLine(line) {
 
 function setupEditorWrapper() {
     const ta = document.getElementById('editor-textarea');
-    const wrapper = document.createElement('div');
-    wrapper.className = 'editor-textarea-wrapper';
-    ta.parentElement.insertBefore(wrapper, ta);
-    wrapper.appendChild(ta);
-
-    lineGutter = document.createElement('div');
-    lineGutter.className = 'line-number-gutter';
-    wrapper.insertBefore(lineGutter, ta);
-
-    lineMirror = document.createElement('div');
-    lineMirror.className = 'line-mirror';
-    wrapper.appendChild(lineMirror);
+    const wrapper = ta.closest('.editor-textarea-wrapper');
+    lineGutter = wrapper.querySelector('.line-number-gutter');
+    lineMirror = wrapper.querySelector('.line-mirror');
 }
 
 function scheduleLineNumberUpdate() {
@@ -212,6 +338,7 @@ function fullRebuildLineNumbers(newLines) {
 
 function updateLineNumbers() {
     if (!lineGutter) return;
+    if (!showLineNumbers) return;
     const ta = document.getElementById('editor-textarea');
     const count = ta.value.split('\n').length;
     if (count === lastLineCount && !wordWrapEnabled) return;
@@ -292,13 +419,14 @@ function scheduleAutoSave() {
 }
 
 // Set up event listeners
-document.addEventListener('DOMContentLoaded', async () => {
+    document.addEventListener('DOMContentLoaded', async () => {
   try {
     await initialize();
 
     setupEditorWrapper();
     const textarea = document.getElementById('editor-textarea');
     updateLineNumbers();
+    applyLineNumberVisibility();
 
     // Track changes
     textarea.addEventListener('input', () => {
@@ -312,6 +440,9 @@ document.addEventListener('DOMContentLoaded', async () => {
         appWindow.close();
     });
 
+    document.getElementById('editor-font-size-decrease-btn').addEventListener('click', () => changeFontSize(-1));
+    document.getElementById('editor-font-size-increase-btn').addEventListener('click', () => changeFontSize(1));
+    document.getElementById('line-numbers-btn').addEventListener('click', toggleLineNumbers);
     document.getElementById('wrap-btn').addEventListener('click', toggleWordWrap);
 
     new ResizeObserver(() => {
@@ -413,6 +544,11 @@ document.addEventListener('DOMContentLoaded', async () => {
         applyThemeToDocument(event.payload);
     });
 
+    await listen(EVENT_FONT_SIZE_CHANGED, (event) => {
+        if (Number(event.payload) === currentFontSize) return;
+        applyFontSize(event.payload);
+    });
+
     // Listen for close menu action -- onCloseRequested handles the save
     await listen(EVENT_MENU_CLOSE, async () => {
         if (!document.hasFocus()) return;
@@ -423,11 +559,6 @@ document.addEventListener('DOMContentLoaded', async () => {
     await listen(EVENT_MENU_PRINT, () => {
         if (!document.hasFocus()) return;
         window.print();
-    });
-
-    // Listen for open menu action (editor ignores; only preview handles it)
-    await listen(EVENT_MENU_OPEN, () => {
-        // No-op in editor window — open is handled by preview windows
     });
 
     const findBtn = document.getElementById('find-btn');
@@ -444,6 +575,7 @@ document.addEventListener('DOMContentLoaded', async () => {
         if (isDirty) {
             await saveFile();
         }
+        await notifyPreviewEditorClosed();
         appWindow.destroy();
     });
 
@@ -535,6 +667,7 @@ function ensureFindOverlay() {
     findOverlay.appendChild(replaceRow);
     replaceInput = replaceRow.querySelector('#replace-input');
 
+    findInput.addEventListener('input', () => performFind(findInput.value));
     findInput.addEventListener('keydown', (e) => {
         if (e.key === 'Enter') {
             e.preventDefault();
@@ -744,4 +877,3 @@ function closeFindOverlay() {
     clearFindResults();
     if (replaceInput) replaceInput.value = '';
 }
-

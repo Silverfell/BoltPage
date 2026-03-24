@@ -1,11 +1,25 @@
 // Shared constants and utilities for preview (main.js) and editor (editor.js)
 
+import {
+    KIND_JSON,
+    KIND_YAML,
+    KIND_TXT,
+} from './constants.js';
+
 // Scroll sync configuration
 export const SCROLL_SYNC_DEBOUNCE_MS = 50;
 export const PROGRAMMATIC_SCROLL_TIMEOUT_MS = 100;
 export const MIN_SCROLL_DELTA_LINES = 0.5;
 export const MIN_SCROLL_DELTA_PERCENT = 0.01;
 export const LINE_HEIGHT_FALLBACK_MULTIPLIER = 1.4;
+
+// Font size boundaries (shared between preview and editor windows)
+export const DEFAULT_FONT_SIZE = 18;
+export const MIN_FONT_SIZE = 14;
+export const MAX_FONT_SIZE = 24;
+
+// Editor textarea font is this many px smaller than the synced preview font size
+export const EDITOR_FONT_SIZE_OFFSET = 4;
 
 export function parsePx(v) {
     const n = parseFloat(v);
@@ -21,6 +35,45 @@ export function escapeHtml(str) {
         .replace(/'/g, '&#039;');
 }
 
+export function baseNameFromPath(filePath) {
+    if (!filePath) return 'No Document Loaded';
+    return String(filePath).split(/[/\\]/).pop() || filePath;
+}
+
+export function directoryFromPath(filePath) {
+    if (!filePath) return '';
+    const normalized = String(filePath).replace(/\\/g, '/');
+    const idx = normalized.lastIndexOf('/');
+    return idx > 0 ? normalized.slice(0, idx) : normalized;
+}
+
+export function kindLabel(kind) {
+    switch (kind) {
+        case 'pdf': return 'PDF';
+        case KIND_JSON: return 'JSON';
+        case KIND_YAML: return 'YAML';
+        case KIND_TXT: return 'Text';
+        default: return 'Markdown';
+    }
+}
+
+export function clampFontSize(fontSize) {
+    const parsed = Number.parseInt(fontSize, 10);
+    if (!Number.isFinite(parsed)) return DEFAULT_FONT_SIZE;
+    return Math.min(MAX_FONT_SIZE, Math.max(MIN_FONT_SIZE, parsed));
+}
+
+export function setBadgeState(element, text, tone = null, hidden = false) {
+    if (!element) return;
+    element.hidden = hidden;
+    if (hidden) return;
+    element.textContent = text;
+    element.classList.remove('badge-tone-accent', 'badge-tone-success', 'badge-tone-warning');
+    if (tone) {
+        element.classList.add(`badge-tone-${tone}`);
+    }
+}
+
 /**
  * Creates the find overlay DOM and appends it to document.body.
  * Returns { overlay, input } for the caller to wire up event handlers.
@@ -31,9 +84,9 @@ export function createFindOverlay() {
     overlay.innerHTML = `
         <input id="find-input" class="find-input" type="text" placeholder="Find..." />
         <span class="find-count" id="find-count"></span>
-        <button class="find-btn" id="find-prev" title="Previous">&#8593;</button>
-        <button class="find-btn" id="find-next" title="Next">&#8595;</button>
-        <button class="find-btn" id="find-close" title="Close">&#10005;</button>
+        <button class="find-btn" id="find-prev" title="Previous" aria-label="Previous match">&#8593;</button>
+        <button class="find-btn" id="find-next" title="Next" aria-label="Next match">&#8595;</button>
+        <button class="find-btn" id="find-close" title="Close" aria-label="Close find">&#10005;</button>
     `;
     document.body.appendChild(overlay);
     const input = overlay.querySelector('#find-input');

@@ -136,10 +136,23 @@ pub(crate) struct ScrollSyncPayload {
     pub percent: Option<f64>,
 }
 
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub(crate) struct EditorWindowClosedPayload {
+    pub preview_window: String,
+    pub file_path: String,
+}
+
 #[tauri::command]
 pub(crate) fn broadcast_theme_change(app: AppHandle, theme: String) -> Result<(), String> {
     app.emit(EVENT_THEME_CHANGED, &theme)
         .map_err(|e| format!("Failed to broadcast theme change: {e}"))?;
+    Ok(())
+}
+
+#[tauri::command]
+pub(crate) fn broadcast_font_size_change(app: AppHandle, font_size: u16) -> Result<(), String> {
+    app.emit(EVENT_FONT_SIZE_CHANGED, &font_size)
+        .map_err(|e| format!("Failed to broadcast font size change: {e}"))?;
     Ok(())
 }
 
@@ -150,6 +163,15 @@ pub(crate) fn broadcast_scroll_sync(
 ) -> Result<(), String> {
     app.emit(EVENT_SCROLL_SYNC, &payload)
         .map_err(|e| format!("Failed to broadcast scroll sync: {e}"))
+}
+
+#[tauri::command]
+pub(crate) fn broadcast_editor_window_closed(
+    app: AppHandle,
+    payload: EditorWindowClosedPayload,
+) -> Result<(), String> {
+    app.emit(EVENT_EDITOR_WINDOW_CLOSED, &payload)
+        .map_err(|e| format!("Failed to broadcast editor close event: {e}"))
 }
 
 #[tauri::command]
