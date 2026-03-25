@@ -103,15 +103,17 @@ body {
 }
 
 .editor-header {
-  padding: 22px 22px 0;
+  padding: 22px 24px 0;
 }
 
 .editor-header-main {
+  position: relative;
+  z-index: 20;
   display: flex;
-  align-items: flex-start;
+  align-items: center;
   justify-content: space-between;
-  gap: 24px;
-  padding: 20px 22px;
+  gap: 16px;
+  padding: 14px 22px;
   border: 1px solid var(--toolbar-border);
   border-radius: 24px;
   background: var(--surface-panel);
@@ -122,8 +124,8 @@ body {
 
 .header-lead {
   display: flex;
-  align-items: flex-start;
-  gap: 18px;
+  align-items: center;
+  gap: 10px;
   flex: 1;
   min-width: 0;
 }
@@ -135,38 +137,17 @@ body {
 }
 
 .brand-icon {
-  width: 44px;
-  height: 44px;
+  width: 32px;
+  height: 32px;
   object-fit: contain;
-  border-radius: 14px;
-  box-shadow: 0 12px 24px rgba(8, 19, 31, 0.14);
+  border-radius: 10px;
+  box-shadow: 0 8px 18px rgba(8, 19, 31, 0.12);
 }
 
-.document-identity {
-  flex: 1;
-  min-width: 0;
-}
-
-.document-title-row {
+.header-utility-actions {
   display: flex;
   align-items: center;
-  gap: 12px;
-  flex-wrap: wrap;
-}
-
-.document-title {
-  margin: 0;
-  font-size: clamp(1.4rem, 2vw, 1.95rem);
-  line-height: 1.06;
-  letter-spacing: -0.05em;
-  font-weight: 700;
-}
-
-.document-badges {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  flex-wrap: wrap;
+  gap: 10px;
 }
 
 .meta-badge {
@@ -199,22 +180,6 @@ body {
   background: var(--accent-warning-soft);
   border-color: transparent;
   color: var(--accent-warning);
-}
-
-.document-subtitle {
-  margin: 8px 0 0;
-  color: var(--text-secondary);
-  font-size: 13px;
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
-}
-
-.editor-header-actions {
-  display: flex;
-  align-items: center;
-  gap: 10px;
-  flex-wrap: wrap;
 }
 
 .font-size-controls {
@@ -421,7 +386,7 @@ body {
 
 .find-overlay {
   position: fixed;
-  top: 108px;
+  top: 90px;
   right: 24px;
   display: none;
   align-items: center;
@@ -495,8 +460,9 @@ body {
   }
 
   .editor-header-main {
-    flex-direction: column;
-    padding: 16px;
+    padding-left: 16px;
+    padding-right: 16px;
+    flex-wrap: wrap;
   }
 
   .editor-container {
@@ -504,17 +470,17 @@ body {
   }
 
   .find-overlay {
-    top: 150px;
+    top: 100px;
     right: 16px;
   }
 }
 
 @media (max-width: 768px) {
   .header-lead {
-    flex-direction: column;
+    flex-wrap: wrap;
   }
 
-  .editor-header-actions {
+  .header-utility-actions {
     width: 100%;
     justify-content: flex-start;
   }
@@ -523,7 +489,7 @@ body {
     left: 16px;
     right: 16px;
     width: auto;
-    top: 176px;
+    top: 120px;
   }
 
   .find-input {

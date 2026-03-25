@@ -175,6 +175,10 @@ pub(crate) async fn create_window_with_file(
         .title(&title)
         .inner_size(width, height)
         .visible(file_path.is_none())
+        .initialization_script(format!(
+            "document.documentElement.setAttribute('data-theme', {});",
+            serde_json::to_string(&prefs.theme).unwrap()
+        ))
         .build()?;
 
     let _ = menu::rebuild_app_menu(app);
@@ -265,9 +269,10 @@ pub(crate) async fn open_editor_window(
             .title(format!("BoltPage Editor - {file_name}"))
             .inner_size(editor_width, editor_height)
             .initialization_script(format!(
-                "window.__INITIAL_FILE_PATH__ = {}; window.__PREVIEW_WINDOW__ = {};",
+                "window.__INITIAL_FILE_PATH__ = {}; window.__PREVIEW_WINDOW__ = {}; document.documentElement.setAttribute('data-theme', {});",
                 serde_json::to_string(&file_path).unwrap(),
-                serde_json::to_string(&preview_window).unwrap()
+                serde_json::to_string(&preview_window).unwrap(),
+                serde_json::to_string(&prefs.theme).unwrap()
             ))
             .build()
             .map_err(|e| format!("Failed to create editor window: {e}"))?;
