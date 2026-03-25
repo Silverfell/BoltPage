@@ -10,9 +10,6 @@ import {
     EDITOR_FONT_SIZE_OFFSET,
     parsePx,
     escapeHtml,
-    baseNameFromPath,
-    directoryFromPath,
-    kindLabel,
     clampFontSize,
     setBadgeState,
     createFindOverlay,
@@ -93,19 +90,7 @@ function updateFontSizeControls() {
 }
 
 function renderEditorHeader() {
-    const titleEl = document.getElementById('editor-document-title');
-    const subtitleEl = document.getElementById('editor-document-subtitle');
-    const kindBadge = document.getElementById('editor-kind-badge');
-    const syncBadge = document.getElementById('editor-sync-badge');
-
-    if (titleEl) titleEl.textContent = baseNameFromPath(currentFilePath);
-    if (subtitleEl) {
-        subtitleEl.textContent = currentFilePath
-            ? `${directoryFromPath(currentFilePath)}${previewWindow ? ' · Autosaves into a linked preview window.' : ''}`
-            : 'Plaintext editing with autosave and preview sync.';
-    }
-    setBadgeState(kindBadge, kindLabel(currentFileKind), null, false);
-    setBadgeState(syncBadge, previewWindow ? 'Linked Preview' : 'No Preview Link', previewWindow ? 'accent' : 'warning', false);
+    // Compact header: no document identity display
 }
 
 function editorFontSizePx(fontSize = currentFontSize) {
