@@ -1,0 +1,1826 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>BoltPage — UI Redesign Proposal</title>
+<style>
+  /* ==========================================================
+     Document chrome (the redesign brief itself)
+     ========================================================== */
+  :root {
+    --doc-bg: #f6f6f7;
+    --doc-fg: #1d1d1f;
+    --doc-muted: #6e6e73;
+    --doc-card: #ffffff;
+    --doc-border: rgba(0, 0, 0, 0.08);
+    --doc-accent: #0066cc;
+    --doc-warn: #b8590a;
+    --doc-good: #197a4b;
+    --doc-mono: ui-monospace, "SF Mono", "JetBrains Mono", Menlo, Consolas, monospace;
+    --doc-sans: -apple-system, BlinkMacSystemFont, "SF Pro Text", "Helvetica Neue", "Segoe UI", system-ui, sans-serif;
+  }
+
+  * { box-sizing: border-box; }
+
+  html, body { margin: 0; padding: 0; }
+  body {
+    background: var(--doc-bg);
+    color: var(--doc-fg);
+    font-family: var(--doc-sans);
+    font-size: 15px;
+    line-height: 1.55;
+    -webkit-font-smoothing: antialiased;
+    -moz-osx-font-smoothing: grayscale;
+  }
+
+  .doc {
+    max-width: 1180px;
+    margin: 0 auto;
+    padding: 56px 32px 96px;
+  }
+
+  .doc-header {
+    border-bottom: 1px solid var(--doc-border);
+    padding-bottom: 28px;
+    margin-bottom: 40px;
+  }
+  .doc-header .eyebrow {
+    color: var(--doc-muted);
+    font-size: 11px;
+    font-weight: 600;
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+  }
+  .doc-header h1 {
+    margin: 8px 0 6px;
+    font-family: -apple-system, "SF Pro Display", "Helvetica Neue", system-ui, sans-serif;
+    font-size: 34px;
+    font-weight: 700;
+    letter-spacing: -0.02em;
+  }
+  .doc-header .subtitle {
+    color: var(--doc-muted);
+    font-size: 17px;
+    max-width: 720px;
+  }
+
+  h2 {
+    font-family: -apple-system, "SF Pro Display", "Helvetica Neue", system-ui, sans-serif;
+    font-size: 22px;
+    font-weight: 700;
+    letter-spacing: -0.01em;
+    margin: 56px 0 14px;
+  }
+  h3 {
+    font-size: 16px;
+    font-weight: 700;
+    margin: 28px 0 8px;
+  }
+  p { margin: 0 0 12px; }
+  ul { margin: 0 0 12px; padding-left: 1.2em; }
+  li { margin: 4px 0; }
+  code, kbd {
+    font-family: var(--doc-mono);
+    font-size: 0.88em;
+    background: rgba(0,0,0,0.05);
+    padding: 1px 5px;
+    border-radius: 4px;
+  }
+
+  .lede {
+    font-size: 16px;
+    color: var(--doc-fg);
+    background: var(--doc-card);
+    border: 1px solid var(--doc-border);
+    border-radius: 10px;
+    padding: 18px 22px;
+  }
+
+  .pillar-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(260px, 1fr));
+    gap: 14px;
+    margin-top: 8px;
+  }
+  .pillar {
+    background: var(--doc-card);
+    border: 1px solid var(--doc-border);
+    border-radius: 10px;
+    padding: 16px 18px;
+  }
+  .pillar h4 {
+    margin: 0 0 6px;
+    font-size: 14px;
+    font-weight: 700;
+  }
+  .pillar p { font-size: 14px; color: var(--doc-muted); margin: 0; }
+
+  .figure {
+    margin: 24px 0 12px;
+    background: var(--doc-card);
+    border: 1px solid var(--doc-border);
+    border-radius: 14px;
+    overflow: hidden;
+  }
+  .figure-caption {
+    padding: 12px 18px;
+    border-top: 1px solid var(--doc-border);
+    background: rgba(0,0,0,0.02);
+    color: var(--doc-muted);
+    font-size: 13px;
+  }
+  .figure-caption strong {
+    color: var(--doc-fg);
+    font-weight: 600;
+  }
+
+  .compare {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 14px;
+  }
+  @media (max-width: 880px) {
+    .compare { grid-template-columns: 1fr; }
+  }
+  .compare > .figure { margin: 0; }
+
+  .label-row {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    padding: 10px 18px;
+    border-bottom: 1px solid var(--doc-border);
+    background: rgba(0,0,0,0.02);
+  }
+  .tag {
+    display: inline-flex;
+    align-items: center;
+    height: 20px;
+    padding: 0 8px;
+    border-radius: 999px;
+    font-size: 11px;
+    font-weight: 700;
+    letter-spacing: 0.04em;
+    text-transform: uppercase;
+  }
+  .tag-before { background: rgba(184, 89, 10, 0.12); color: var(--doc-warn); }
+  .tag-after { background: rgba(25, 122, 75, 0.14); color: var(--doc-good); }
+  .tag-neutral { background: rgba(0,0,0,0.06); color: var(--doc-muted); }
+  .label-row .meta { color: var(--doc-muted); font-size: 13px; }
+
+  .audit {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 24px;
+    margin-top: 12px;
+  }
+  @media (max-width: 880px) { .audit { grid-template-columns: 1fr; } }
+  .audit-col h3 { margin-top: 0; }
+  .audit-col ul li { font-size: 14px; line-height: 1.5; }
+  .audit-col.warn ul li { color: #4a3110; }
+  .audit-col.good ul li { color: #133922; }
+
+  .token-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+    gap: 12px;
+  }
+  .token {
+    background: var(--doc-card);
+    border: 1px solid var(--doc-border);
+    border-radius: 10px;
+    padding: 12px 14px;
+    font-size: 13px;
+  }
+  .token .swatch {
+    display: block;
+    height: 40px;
+    border-radius: 6px;
+    border: 1px solid var(--doc-border);
+    margin-bottom: 8px;
+  }
+  .token .name { font-family: var(--doc-mono); font-size: 12px; color: var(--doc-muted); }
+  .token .value { font-family: var(--doc-mono); font-size: 12px; }
+
+  .annotation {
+    position: absolute;
+    background: #fff8d6;
+    color: #4a3110;
+    border: 1px solid rgba(184, 89, 10, 0.3);
+    border-radius: 6px;
+    padding: 4px 8px;
+    font-size: 11px;
+    font-weight: 600;
+    box-shadow: 0 4px 14px rgba(0,0,0,0.12);
+    z-index: 10;
+    pointer-events: none;
+  }
+  .annotation::after {
+    content: "";
+    position: absolute;
+    width: 8px; height: 8px;
+    background: #fff8d6;
+    border-right: 1px solid rgba(184, 89, 10, 0.3);
+    border-bottom: 1px solid rgba(184, 89, 10, 0.3);
+  }
+
+  .source-list { font-size: 13px; color: var(--doc-muted); }
+  .source-list a { color: var(--doc-accent); text-decoration: none; }
+  .source-list a:hover { text-decoration: underline; }
+
+  /* ==========================================================
+     Shared mock window chrome (used inside .stage)
+     ========================================================== */
+  .stage {
+    position: relative;
+    background:
+      linear-gradient(180deg, rgba(0,0,0,0.04), transparent 32%),
+      var(--stage-bg, #d6d6d8);
+    padding: 14px;
+  }
+  .stage.dark { --stage-bg: #18181a; }
+
+  .mac-window {
+    display: flex;
+    flex-direction: column;
+    height: 100%;
+    border-radius: 10px;
+    overflow: hidden;
+    background: var(--win-bg, #ffffff);
+    box-shadow:
+      0 0 0 0.5px rgba(0,0,0,0.18),
+      0 16px 40px rgba(0,0,0,0.18);
+  }
+  .stage.dark .mac-window {
+    box-shadow:
+      0 0 0 0.5px rgba(255,255,255,0.06),
+      0 16px 40px rgba(0,0,0,0.55);
+  }
+
+  .titlebar {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    height: 38px;
+    padding: 0 14px;
+    background: var(--titlebar-bg, rgba(246,246,246,0.92));
+    border-bottom: 1px solid var(--separator, rgba(0,0,0,0.08));
+    backdrop-filter: blur(20px) saturate(180%);
+    -webkit-backdrop-filter: blur(20px) saturate(180%);
+  }
+  .traffic { display: flex; gap: 8px; }
+  .traffic span {
+    width: 12px; height: 12px;
+    border-radius: 50%;
+    box-shadow: inset 0 0 0 0.5px rgba(0,0,0,0.18);
+  }
+  .traffic .close { background: #ff5f57; }
+  .traffic .min   { background: #febc2e; }
+  .traffic .max   { background: #28c840; }
+  .titlebar .title {
+    flex: 1;
+    text-align: center;
+    font-size: 13px;
+    font-weight: 600;
+    color: var(--text-primary);
+    letter-spacing: -0.01em;
+  }
+  .titlebar .doc-meta {
+    color: var(--text-muted);
+    font-weight: 400;
+    margin-left: 6px;
+  }
+
+  /* ==========================================================
+     Redesigned BoltPage — light theme tokens
+     ========================================================== */
+  .bp-light {
+    --win-bg: #ffffff;
+    --titlebar-bg: rgba(246,246,246,0.92);
+    --toolbar-bg: rgba(246,246,246,0.96);
+    --sidebar-bg: rgba(243,243,244,0.85);
+    --content-bg: #ffffff;
+    --separator: rgba(0,0,0,0.08);
+    --separator-strong: rgba(0,0,0,0.14);
+    --text-primary: #1d1d1f;
+    --text-muted: #6e6e73;
+    --text-tertiary: #8e8e93;
+    --accent: #0066cc;
+    --accent-tint: rgba(0,102,204,0.10);
+    --hover: rgba(0,0,0,0.05);
+    --selected: rgba(0,102,204,0.12);
+    --kbd-bg: #f2f2f4;
+    --kbd-border: rgba(0,0,0,0.12);
+  }
+
+  .bp-dark {
+    --win-bg: #1e1e20;
+    --titlebar-bg: rgba(40,40,42,0.92);
+    --toolbar-bg: rgba(40,40,42,0.96);
+    --sidebar-bg: rgba(34,34,36,0.85);
+    --content-bg: #1c1c1e;
+    --separator: rgba(255,255,255,0.08);
+    --separator-strong: rgba(255,255,255,0.14);
+    --text-primary: #f5f5f7;
+    --text-muted: #a1a1a6;
+    --text-tertiary: #6e6e73;
+    --accent: #0a84ff;
+    --accent-tint: rgba(10,132,255,0.18);
+    --hover: rgba(255,255,255,0.06);
+    --selected: rgba(10,132,255,0.20);
+    --kbd-bg: #2c2c2e;
+    --kbd-border: rgba(255,255,255,0.14);
+  }
+
+  /* ==========================================================
+     BoltPage redesign — toolbar
+     ========================================================== */
+  .bp-toolbar {
+    display: flex;
+    align-items: center;
+    gap: 4px;
+    padding: 6px 10px;
+    background: var(--toolbar-bg);
+    border-bottom: 1px solid var(--separator);
+    backdrop-filter: blur(20px) saturate(180%);
+    -webkit-backdrop-filter: blur(20px) saturate(180%);
+  }
+  .bp-toolbar .group {
+    display: flex;
+    align-items: center;
+    gap: 2px;
+    padding: 0 4px;
+    border-right: 1px solid var(--separator);
+    height: 28px;
+  }
+  .bp-toolbar .group:last-of-type,
+  .bp-toolbar .group.no-divider { border-right: none; }
+  .bp-toolbar .spacer { flex: 1; }
+
+  .tb-btn {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    height: 26px;
+    padding: 0 8px;
+    border: none;
+    background: transparent;
+    border-radius: 6px;
+    color: var(--text-primary);
+    font-family: inherit;
+    font-size: 12px;
+    font-weight: 500;
+    letter-spacing: -0.005em;
+    cursor: pointer;
+    transition: background-color 0.12s ease;
+  }
+  .tb-btn:hover { background: var(--hover); }
+  .tb-btn.is-active { background: var(--selected); color: var(--accent); }
+  .tb-btn svg { width: 15px; height: 15px; flex-shrink: 0; }
+  .tb-btn.icon-only { padding: 0; width: 26px; justify-content: center; }
+  .tb-btn.primary {
+    background: var(--accent);
+    color: #ffffff;
+  }
+  .tb-btn.primary:hover { background: color-mix(in srgb, var(--accent) 92%, white); }
+
+  .tb-status {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    height: 22px;
+    padding: 0 8px;
+    border-radius: 999px;
+    background: rgba(25,122,75,0.14);
+    color: #1f7a4d;
+    font-size: 11px;
+    font-weight: 600;
+  }
+  .bp-dark .tb-status { background: rgba(48,209,88,0.16); color: #5eda94; }
+  .tb-status .dot {
+    width: 6px; height: 6px; border-radius: 50%;
+    background: currentColor;
+  }
+
+  /* ==========================================================
+     BoltPage redesign — main split (sidebar + content)
+     ========================================================== */
+  .bp-body {
+    display: flex;
+    flex: 1;
+    min-height: 0;
+    background: var(--content-bg);
+  }
+
+  .bp-sidebar {
+    width: 220px;
+    flex-shrink: 0;
+    background: var(--sidebar-bg);
+    border-right: 1px solid var(--separator);
+    backdrop-filter: blur(20px) saturate(180%);
+    -webkit-backdrop-filter: blur(20px) saturate(180%);
+    overflow: hidden;
+    display: flex;
+    flex-direction: column;
+  }
+  .sb-section {
+    padding: 12px 12px 4px;
+  }
+  .sb-section-label {
+    color: var(--text-tertiary);
+    font-size: 10.5px;
+    font-weight: 700;
+    letter-spacing: 0.06em;
+    text-transform: uppercase;
+    padding: 0 8px 4px;
+  }
+  .sb-link {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 5px 8px;
+    border-radius: 6px;
+    color: var(--text-primary);
+    font-size: 12.5px;
+    line-height: 1.35;
+    cursor: pointer;
+  }
+  .sb-link:hover { background: var(--hover); }
+  .sb-link.is-active {
+    background: var(--selected);
+    color: var(--accent);
+    font-weight: 600;
+  }
+  .sb-link.lvl-2 { padding-left: 22px; font-size: 12px; color: var(--text-muted); }
+  .sb-link.lvl-3 { padding-left: 36px; font-size: 12px; color: var(--text-muted); }
+
+  .sb-meta {
+    margin-top: auto;
+    padding: 12px 16px;
+    border-top: 1px solid var(--separator);
+    color: var(--text-muted);
+    font-size: 11.5px;
+    line-height: 1.5;
+  }
+  .sb-meta .filename {
+    color: var(--text-primary);
+    font-weight: 600;
+    font-size: 12px;
+    margin-bottom: 2px;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  /* ==========================================================
+     BoltPage redesign — content / document
+     ========================================================== */
+  .bp-content {
+    flex: 1;
+    min-width: 0;
+    overflow: hidden;
+    display: flex;
+    flex-direction: column;
+  }
+  .bp-document {
+    flex: 1;
+    overflow-y: auto;
+    padding: 40px clamp(24px, 5vw, 64px);
+    color: var(--text-primary);
+    font-family: -apple-system, "New York", "Iowan Old Style", Georgia, serif;
+    font-size: 16px;
+    line-height: 1.65;
+    max-width: 760px;
+    margin: 0 auto;
+    width: 100%;
+  }
+  .bp-document h1 {
+    font-family: -apple-system, "SF Pro Display", "Helvetica Neue", sans-serif;
+    font-size: 30px;
+    font-weight: 700;
+    letter-spacing: -0.02em;
+    margin: 0 0 4px;
+  }
+  .bp-document .doc-tag {
+    display: inline-block;
+    color: var(--text-muted);
+    font-family: -apple-system, "SF Pro Text", sans-serif;
+    font-size: 12px;
+    font-weight: 600;
+    margin-bottom: 18px;
+  }
+  .bp-document h2 {
+    font-family: -apple-system, "SF Pro Display", "Helvetica Neue", sans-serif;
+    font-size: 22px;
+    font-weight: 700;
+    letter-spacing: -0.01em;
+    margin: 28px 0 8px;
+  }
+  .bp-document p { margin: 0 0 12px; }
+  .bp-document code {
+    font-family: var(--doc-mono);
+    background: var(--hover);
+    padding: 1px 6px;
+    border-radius: 4px;
+    font-size: 14px;
+  }
+  .bp-document pre {
+    background: var(--hover);
+    padding: 14px 16px;
+    border-radius: 8px;
+    overflow: auto;
+    font-family: var(--doc-mono);
+    font-size: 13px;
+    line-height: 1.55;
+  }
+  .bp-document blockquote {
+    margin: 12px 0;
+    padding: 0 14px;
+    border-left: 3px solid var(--separator-strong);
+    color: var(--text-muted);
+  }
+
+  /* Welcome state */
+  .bp-welcome {
+    flex: 1;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    padding: 40px 32px;
+  }
+  .welcome-card {
+    text-align: center;
+    max-width: 460px;
+  }
+  .welcome-card .icon {
+    width: 72px; height: 72px;
+    border-radius: 18px;
+    background: linear-gradient(180deg, #ffd460 0%, #ff9a3c 100%);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    margin: 0 auto 16px;
+    box-shadow: 0 6px 16px rgba(255,154,60,0.35);
+  }
+  .welcome-card .icon svg { width: 36px; height: 36px; color: #fff; }
+  .welcome-card h1 {
+    font-family: -apple-system, "SF Pro Display", "Helvetica Neue", sans-serif;
+    font-size: 22px;
+    font-weight: 700;
+    letter-spacing: -0.01em;
+    margin: 0 0 4px;
+    color: var(--text-primary);
+  }
+  .welcome-card .tagline {
+    color: var(--text-muted);
+    font-size: 13px;
+    margin: 0 0 22px;
+  }
+  .welcome-actions {
+    display: flex;
+    gap: 8px;
+    justify-content: center;
+    margin-bottom: 26px;
+  }
+  .wel-btn {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    height: 30px;
+    padding: 0 14px;
+    border-radius: 6px;
+    font-size: 13px;
+    font-weight: 500;
+    border: none;
+    cursor: pointer;
+    font-family: inherit;
+  }
+  .wel-btn.primary { background: var(--accent); color: #fff; }
+  .wel-btn.secondary { background: var(--hover); color: var(--text-primary); }
+  .wel-btn svg { width: 14px; height: 14px; }
+
+  .recent-list {
+    text-align: left;
+    border-top: 1px solid var(--separator);
+    padding-top: 14px;
+  }
+  .recent-list .lbl {
+    color: var(--text-tertiary);
+    font-size: 10.5px;
+    font-weight: 700;
+    letter-spacing: 0.06em;
+    text-transform: uppercase;
+    margin-bottom: 6px;
+  }
+  .recent-item {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    padding: 6px 8px;
+    border-radius: 6px;
+    cursor: pointer;
+  }
+  .recent-item:hover { background: var(--hover); }
+  .recent-item .ri-name { font-size: 13px; color: var(--text-primary); }
+  .recent-item .ri-path { font-size: 11.5px; color: var(--text-muted); margin-left: auto; }
+
+  .kbd-hint {
+    color: var(--text-muted);
+    font-size: 12px;
+    margin-top: 18px;
+  }
+  .kbd-hint kbd {
+    display: inline-block;
+    padding: 1px 6px;
+    border-radius: 4px;
+    background: var(--kbd-bg);
+    border: 1px solid var(--kbd-border);
+    color: var(--text-primary);
+    font-family: var(--doc-mono);
+    font-size: 11px;
+    box-shadow: inset 0 -1px 0 var(--kbd-border);
+  }
+
+  /* ==========================================================
+     BoltPage redesign — Editor mock
+     ========================================================== */
+  .bp-editor-body {
+    flex: 1;
+    display: flex;
+    background: var(--content-bg);
+    overflow: hidden;
+  }
+  .ed-gutter {
+    width: 44px;
+    flex-shrink: 0;
+    padding: 16px 8px 16px 0;
+    text-align: right;
+    color: var(--text-tertiary);
+    font-family: var(--doc-mono);
+    font-size: 11px;
+    line-height: 1.65;
+    background: transparent;
+    border-right: 1px solid var(--separator);
+    user-select: none;
+  }
+  .ed-gutter span { display: block; }
+  .ed-canvas {
+    flex: 1;
+    padding: 16px 20px;
+    color: var(--text-primary);
+    font-family: var(--doc-mono);
+    font-size: 13px;
+    line-height: 1.65;
+    white-space: pre;
+    overflow: auto;
+  }
+  .ed-canvas .md-h { color: var(--accent); font-weight: 700; }
+  .ed-canvas .md-em { font-style: italic; color: var(--text-muted); }
+  .ed-canvas .md-code { background: var(--hover); padding: 0 4px; border-radius: 3px; }
+  .ed-canvas .md-link { color: var(--accent); }
+  .ed-canvas .md-bullet { color: var(--text-tertiary); }
+
+  /* Inspector / right rail in editor */
+  .ed-inspector {
+    width: 180px;
+    flex-shrink: 0;
+    border-left: 1px solid var(--separator);
+    background: var(--sidebar-bg);
+    padding: 12px;
+    font-size: 11.5px;
+  }
+  .ed-inspector .stat {
+    display: flex;
+    justify-content: space-between;
+    padding: 5px 6px;
+    color: var(--text-muted);
+  }
+  .ed-inspector .stat strong {
+    color: var(--text-primary);
+    font-weight: 600;
+    font-variant-numeric: tabular-nums;
+  }
+  .ed-inspector .stat-divider {
+    height: 1px;
+    background: var(--separator);
+    margin: 8px 0;
+  }
+
+  /* Find bar inside editor */
+  .find-bar {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    padding: 6px 10px;
+    background: var(--toolbar-bg);
+    border-bottom: 1px solid var(--separator);
+  }
+  .find-bar .find-input {
+    flex: 0 1 220px;
+    height: 24px;
+    padding: 0 8px;
+    border: 1px solid var(--separator-strong);
+    border-radius: 5px;
+    background: var(--win-bg);
+    color: var(--text-primary);
+    font-family: inherit;
+    font-size: 12px;
+  }
+  .find-bar .replace-input {
+    flex: 0 1 220px;
+    height: 24px;
+    padding: 0 8px;
+    border: 1px solid var(--separator);
+    border-radius: 5px;
+    background: var(--win-bg);
+    color: var(--text-primary);
+    font-family: inherit;
+    font-size: 12px;
+  }
+  .find-bar .count {
+    font-family: var(--doc-mono);
+    font-size: 11px;
+    color: var(--text-muted);
+    padding: 0 4px;
+  }
+  .find-bar .grow { flex: 1; }
+  .find-bar .micro {
+    height: 22px;
+    padding: 0 8px;
+    border: none;
+    background: transparent;
+    color: var(--text-muted);
+    border-radius: 4px;
+    font-size: 11px;
+    cursor: pointer;
+  }
+  .find-bar .micro:hover { background: var(--hover); color: var(--text-primary); }
+  .find-bar .icon-btn {
+    width: 22px; height: 22px;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    background: transparent;
+    border: none;
+    border-radius: 4px;
+    color: var(--text-muted);
+    cursor: pointer;
+  }
+  .find-bar .icon-btn:hover { background: var(--hover); color: var(--text-primary); }
+
+  /* ==========================================================
+     View popover (right-aligned) — compact
+     ========================================================== */
+  .popover {
+    width: 248px;
+    background: var(--win-bg);
+    border: 1px solid var(--separator-strong);
+    border-radius: 10px;
+    box-shadow: 0 8px 28px rgba(0,0,0,0.18);
+    overflow: hidden;
+    font-family: var(--doc-sans);
+    color: var(--text-primary);
+  }
+  .pop-section { padding: 8px; }
+  .pop-section + .pop-section { border-top: 1px solid var(--separator); }
+  .pop-label {
+    color: var(--text-tertiary);
+    font-size: 10.5px;
+    font-weight: 700;
+    letter-spacing: 0.06em;
+    text-transform: uppercase;
+    padding: 4px 8px;
+  }
+  .pop-row {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 6px 8px;
+    border-radius: 6px;
+    font-size: 13px;
+    cursor: pointer;
+  }
+  .pop-row:hover { background: var(--hover); }
+  .pop-row .check {
+    color: var(--accent);
+    font-weight: 700;
+  }
+  .seg {
+    display: inline-flex;
+    background: var(--hover);
+    border-radius: 6px;
+    padding: 2px;
+  }
+  .seg button {
+    border: none;
+    background: transparent;
+    color: var(--text-primary);
+    font-family: inherit;
+    font-size: 12px;
+    font-weight: 500;
+    padding: 3px 10px;
+    border-radius: 4px;
+    cursor: pointer;
+  }
+  .seg button.on {
+    background: var(--win-bg);
+    box-shadow: 0 1px 2px rgba(0,0,0,0.12);
+  }
+  .stepper {
+    display: inline-flex;
+    align-items: center;
+    gap: 0;
+    background: var(--hover);
+    border-radius: 6px;
+    overflow: hidden;
+  }
+  .stepper button {
+    width: 22px; height: 22px;
+    border: none;
+    background: transparent;
+    color: var(--text-primary);
+    font-family: inherit;
+    font-size: 13px;
+    cursor: pointer;
+  }
+  .stepper button:hover { background: var(--hover); }
+  .stepper .val {
+    min-width: 38px;
+    text-align: center;
+    font-size: 11.5px;
+    color: var(--text-muted);
+    font-variant-numeric: tabular-nums;
+  }
+
+  .switch {
+    width: 30px; height: 18px;
+    background: rgba(0,0,0,0.16);
+    border-radius: 999px;
+    position: relative;
+    cursor: pointer;
+    transition: background 0.18s ease;
+  }
+  .switch::after {
+    content: "";
+    position: absolute;
+    top: 2px; left: 2px;
+    width: 14px; height: 14px;
+    background: #fff;
+    border-radius: 50%;
+    box-shadow: 0 1px 2px rgba(0,0,0,0.18);
+    transition: left 0.18s ease;
+  }
+  .switch.on { background: var(--accent); }
+  .switch.on::after { left: 14px; }
+
+  /* ==========================================================
+     "Old vs new" sized stages
+     ========================================================== */
+  .stage-large { height: 520px; }
+  .stage-medium { height: 380px; }
+  .stage-tall { height: 600px; }
+
+  /* The "old" Boltpage rendering — minimal accurate reconstruction */
+  .old-bp {
+    display: flex;
+    flex-direction: column;
+    height: 100%;
+    background:
+      radial-gradient(circle at top left, rgba(130, 210, 255, 0.10), transparent 28%),
+      radial-gradient(circle at bottom right, rgba(255, 190, 122, 0.08), transparent 24%),
+      #ebe6dc;
+    padding: 22px 24px 24px;
+    font-family: "Avenir Next", "Helvetica Neue", system-ui, sans-serif;
+  }
+  .old-bp.dark {
+    background:
+      radial-gradient(circle at top left, rgba(130, 210, 255, 0.10), transparent 28%),
+      radial-gradient(circle at bottom right, rgba(255, 190, 122, 0.08), transparent 24%),
+      #0f141c;
+    color: #e8edf7;
+  }
+  .old-bp .old-toolbar {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    padding: 14px 22px;
+    border: 1px solid rgba(120, 127, 146, 0.18);
+    border-radius: 20px;
+    background: rgba(255,250,244,0.84);
+    box-shadow: 0 24px 60px rgba(18,24,37,0.12);
+    margin-bottom: 18px;
+  }
+  .old-bp.dark .old-toolbar {
+    background: rgba(18,24,35,0.84);
+    box-shadow: 0 28px 80px rgba(0,0,0,0.35);
+    border-color: rgba(111,126,160,0.2);
+  }
+  .old-bp .old-brand {
+    width: 32px; height: 32px;
+    border-radius: 10px;
+    background: linear-gradient(180deg, #ffd460 0%, #ff9a3c 100%);
+    box-shadow: 0 8px 18px rgba(8,19,31,0.12);
+    flex-shrink: 0;
+  }
+  .old-bp .old-btn {
+    display: inline-flex;
+    align-items: center;
+    gap: 8px;
+    height: 42px;
+    padding: 0 14px;
+    border: 1px solid transparent;
+    border-radius: 14px;
+    background: transparent;
+    color: #1e2431;
+    font-size: 14px;
+    font-weight: 600;
+  }
+  .old-bp.dark .old-btn { color: #e8edf7; }
+  .old-bp .old-btn.primary {
+    background: #0f6cae;
+    color: #fff;
+  }
+  .old-bp.dark .old-btn.primary { background: #7bc0ff; color: #08131f; }
+  .old-bp .old-btn svg { width: 16px; height: 16px; }
+  .old-bp .old-spacer { flex: 1; }
+
+  .old-bp .old-stage-area {
+    flex: 1;
+    display: flex;
+    gap: 18px;
+    min-height: 0;
+  }
+  .old-bp .old-sidebar {
+    width: 240px;
+    padding: 16px;
+    border: 1px solid rgba(120,127,146,0.18);
+    border-radius: 24px;
+    background:
+      linear-gradient(180deg, rgba(255,255,255,0.04), transparent),
+      #f7f2eb;
+    box-shadow: 0 24px 60px rgba(18,24,37,0.12);
+    overflow: hidden;
+    color: #1e2431;
+  }
+  .old-bp.dark .old-sidebar {
+    background:
+      linear-gradient(180deg, rgba(255,255,255,0.04), transparent),
+      #151d29;
+    color: #e8edf7;
+    border-color: rgba(111,126,160,0.2);
+  }
+  .old-bp .old-content {
+    flex: 1;
+    border: 1px solid rgba(120,127,146,0.18);
+    border-radius: 28px;
+    background: #fffdfa;
+    box-shadow: 0 24px 60px rgba(18,24,37,0.12);
+    padding: 42px 40px;
+    overflow: hidden;
+    color: #1e2431;
+    font-family: "Iowan Old Style", "Palatino Linotype", Georgia, serif;
+  }
+  .old-bp.dark .old-content { background: #171e2a; color: #e8edf7; border-color: rgba(111,126,160,0.2); }
+  .old-bp .old-eyebrow {
+    color: #0f6cae;
+    font-size: 12px;
+    font-weight: 700;
+    letter-spacing: 0.14em;
+    text-transform: uppercase;
+  }
+  .old-bp.dark .old-eyebrow { color: #7bc0ff; }
+  .old-bp .old-headline {
+    font-size: 30px;
+    line-height: 1.05;
+    letter-spacing: -0.04em;
+    font-weight: 700;
+    margin: 12px 0 14px;
+  }
+  .old-bp .old-text { color: #677188; font-size: 15px; line-height: 1.65; }
+  .old-bp.dark .old-text { color: #9ca8c0; }
+
+  /* layout helpers */
+  .row { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+  .stack { display: flex; flex-direction: column; gap: 8px; }
+  .grid-2 { display: grid; grid-template-columns: 1fr 1fr; gap: 14px; }
+  .grid-3 { display: grid; grid-template-columns: repeat(3, 1fr); gap: 14px; }
+  @media (max-width: 880px) {
+    .grid-2, .grid-3 { grid-template-columns: 1fr; }
+  }
+</style>
+</head>
+<body>
+<div class="doc">
+
+  <header class="doc-header">
+    <div class="eyebrow">BoltPage · UI Redesign Proposal</div>
+    <h1>A quieter, native-feeling BoltPage</h1>
+    <p class="subtitle">A redesign aligned to Apple's Human Interface Guidelines for macOS: smaller toolbar, system materials over decorative gradients, native typography, and a calmer document surface so the content does the talking.</p>
+  </header>
+
+  <p class="lede">
+    BoltPage today reads as a <em>web app dressed in glass</em> — heavy blurs, large rounded panels, prominent floating shadows, custom pill buttons, and gradient backgrounds. macOS apps in the Sonoma / Sequoia era go the other direction: chrome recedes, materials are semantic, and toolbar items are compact icon-plus-label controls grouped by function. This proposal applies those principles to BoltPage's viewer, editor, and ancillary surfaces (find, view popover, welcome) without changing what the app does.
+  </p>
+
+  <!-- ============================================================ -->
+  <h2>1 · Principles being applied</h2>
+  <div class="pillar-grid">
+    <div class="pillar">
+      <h4>Chrome recedes</h4>
+      <p>"Remove background colors from custom toolbars and tab bars. Rely on layout and grouping to express hierarchy" (HIG, 2025 update). No more shadowed, rounded-rectangle floating toolbars.</p>
+    </div>
+    <div class="pillar">
+      <h4>Semantic materials</h4>
+      <p>Use materials by purpose: titlebar/toolbar material on the toolbar, sidebar material on the TOC, plain content on the document. Don't apply blur for decoration.</p>
+    </div>
+    <div class="pillar">
+      <h4>System typography</h4>
+      <p>SF Pro for UI (system stack), New York / Iowan for the document. Avenir Next is removed: it is not the macOS system face and it adds to the "web-app" feel.</p>
+    </div>
+    <div class="pillar">
+      <h4>Compact, grouped toolbar</h4>
+      <p>26pt-tall icon+label buttons with 6pt corners, separated into logical groups (file · doc actions · search) instead of one flat row of large pills.</p>
+    </div>
+    <div class="pillar">
+      <h4>Document is the hero</h4>
+      <p>Drop the gradient background, drop the inner border + shadow on the document panel. The document sits on the window background; chrome only appears at edges (toolbar, sidebar).</p>
+    </div>
+    <div class="pillar">
+      <h4>Quieter onboarding</h4>
+      <p>Replace the large display headline + eyebrow welcome with a centered icon, a one-line tagline, two CTAs, and a recent-files list — closer to Pages or Sketch's first-launch state.</p>
+    </div>
+  </div>
+
+  <!-- ============================================================ -->
+  <h2>2 · What's wrong today (audit)</h2>
+  <div class="audit">
+    <div class="audit-col warn">
+      <h3>Issues observed in current UI</h3>
+      <ul>
+        <li><strong>Floating glass toolbar</strong> with 20px corner radius, heavy shadow, and 18px backdrop blur — reads as web/iOS, not Mac.</li>
+        <li><strong>42pt-tall pill buttons</strong> with both icon and label and 14px corners are roughly twice the visual weight of native NSToolbar items.</li>
+        <li><strong>Brand icon embedded in the toolbar</strong> duplicates the Dock/title-bar identity.</li>
+        <li><strong>Three nested rounded panels</strong> (toolbar 20px, sidebar 24px, content 28px) compound shadows and steal vertical space.</li>
+        <li><strong>Decorative radial gradients</strong> on the body background have no semantic role and shift the perceived theme away from system appearance.</li>
+        <li><strong>Welcome screen</strong> uses 3.25rem display type and a small-caps eyebrow — marketing landing-page tone, not first-launch tone.</li>
+        <li><strong>"View" popover</strong> bundles theme + density + sidebar toggle in one custom dropdown; the sidebar caption ("Keep document context visible…") is over-wordy.</li>
+        <li><strong>Find overlay</strong> floats at fixed pixel coordinates from the top — collides with toolbar at narrow widths and feels detached from the document it searches.</li>
+        <li><strong>Editor toolbar duplicates</strong> the brand block and uses the same chunky pills; <code>Lines</code> / <code>Wrap</code> appear as plain text without icons or affordance.</li>
+      </ul>
+    </div>
+    <div class="audit-col good">
+      <h3>What the redesign keeps</h3>
+      <ul>
+        <li>Three-theme support (light, dark, "drac") — translated into native palettes.</li>
+        <li>TOC sidebar with active-heading tracking, file metadata, collapsibility.</li>
+        <li>Same toolbar verbs: Open, New, Edit, Export, Find, Refresh, View options.</li>
+        <li>Find + Find/Replace in editor; Ctrl-F invokes a docked find bar instead of a floating overlay.</li>
+        <li>Type-size control, theme picker, sidebar toggle — all moved into a clean popover modeled on macOS view-options menus.</li>
+        <li>Markdown content typography and code-block styling unchanged in spirit; only token values are tuned.</li>
+      </ul>
+    </div>
+  </div>
+
+  <!-- ============================================================ -->
+  <h2>3 · Token system (proposed)</h2>
+  <p>Every value below maps to a CSS custom property on <code>:root</code> for light, with a <code>[data-theme="dark"]</code> override. They mirror what AppKit exposes through <code>NSColor</code> system colors and <code>NSVisualEffectView</code> materials, so the look stays consistent if the app later moves to native rendering.</p>
+
+  <h3>Surfaces</h3>
+  <div class="token-grid">
+    <div class="token">
+      <span class="swatch" style="background:#ffffff"></span>
+      <div class="name">--content-bg (light)</div><div class="value">#FFFFFF</div>
+    </div>
+    <div class="token">
+      <span class="swatch" style="background:rgba(246,246,246,0.96); backdrop-filter:blur(10px)"></span>
+      <div class="name">--toolbar-bg (light)</div><div class="value">rgba(246,246,246,.96) + blur</div>
+    </div>
+    <div class="token">
+      <span class="swatch" style="background:rgba(243,243,244,0.85); backdrop-filter:blur(10px)"></span>
+      <div class="name">--sidebar-bg (light)</div><div class="value">rgba(243,243,244,.85) + blur</div>
+    </div>
+    <div class="token">
+      <span class="swatch" style="background:#1c1c1e"></span>
+      <div class="name">--content-bg (dark)</div><div class="value">#1C1C1E</div>
+    </div>
+    <div class="token">
+      <span class="swatch" style="background:rgba(40,40,42,0.96)"></span>
+      <div class="name">--toolbar-bg (dark)</div><div class="value">rgba(40,40,42,.96) + blur</div>
+    </div>
+    <div class="token">
+      <span class="swatch" style="background:rgba(34,34,36,0.85)"></span>
+      <div class="name">--sidebar-bg (dark)</div><div class="value">rgba(34,34,36,.85) + blur</div>
+    </div>
+  </div>
+
+  <h3>Accent &amp; text</h3>
+  <div class="token-grid">
+    <div class="token"><span class="swatch" style="background:#0066cc"></span><div class="name">--accent (light)</div><div class="value">#0066CC (system blue)</div></div>
+    <div class="token"><span class="swatch" style="background:#0a84ff"></span><div class="name">--accent (dark)</div><div class="value">#0A84FF (system blue, dark)</div></div>
+    <div class="token"><span class="swatch" style="background:#1d1d1f"></span><div class="name">--text-primary</div><div class="value">#1D1D1F / #F5F5F7</div></div>
+    <div class="token"><span class="swatch" style="background:#6e6e73"></span><div class="name">--text-muted</div><div class="value">#6E6E73 / #A1A1A6</div></div>
+  </div>
+
+  <h3>Geometry</h3>
+  <div class="token-grid">
+    <div class="token"><div class="name">Window radius</div><div class="value">10px (matches macOS window)</div></div>
+    <div class="token"><div class="name">Control radius</div><div class="value">6px (toolbar buttons, popover rows)</div></div>
+    <div class="token"><div class="name">Card / sheet radius</div><div class="value">10px</div></div>
+    <div class="token"><div class="name">Toolbar height</div><div class="value">38px</div></div>
+    <div class="token"><div class="name">Toolbar item height</div><div class="value">26px</div></div>
+    <div class="token"><div class="name">Spacing unit</div><div class="value">4pt grid</div></div>
+  </div>
+
+  <h3>Type stack</h3>
+  <div class="token-grid">
+    <div class="token"><div class="name">UI font</div><div class="value">-apple-system, "SF Pro Text", system-ui, sans-serif</div></div>
+    <div class="token"><div class="name">Display font</div><div class="value">"SF Pro Display" — for ≥20px</div></div>
+    <div class="token"><div class="name">Document serif</div><div class="value">"New York", "Iowan Old Style", Georgia, serif</div></div>
+    <div class="token"><div class="name">Mono</div><div class="value">ui-monospace, "SF Mono", Menlo, monospace</div></div>
+  </div>
+
+  <!-- ============================================================ -->
+  <h2>4 · Side-by-side: viewer window</h2>
+  <p>The same document, the same theme, the same toolbar verbs — rendered before and after.</p>
+
+  <div class="compare">
+    <!-- BEFORE: Light -->
+    <div class="figure">
+      <div class="label-row">
+        <span class="tag tag-before">Before</span>
+        <span class="meta">Viewer · Light theme · current build</span>
+      </div>
+      <div class="stage stage-large">
+        <div class="old-bp">
+          <div class="old-toolbar">
+            <div class="old-brand"></div>
+            <button class="old-btn primary">
+              <svg viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 7V4a1 1 0 011-1h5l2 2h5a1 1 0 011 1v1M3 7v9a1 1 0 001 1h12a1 1 0 001-1V8a1 1 0 00-1-1h-6l-2-2H4a1 1 0 00-1 1v1z"/></svg>
+              Open
+            </button>
+            <button class="old-btn">＋ New</button>
+            <button class="old-btn">✎ Edit</button>
+            <button class="old-btn">↧ Export</button>
+            <button class="old-btn">🔍 Find</button>
+            <button class="old-btn">↻ Refresh</button>
+            <div class="old-spacer"></div>
+            <button class="old-btn">≡ View</button>
+          </div>
+          <div class="old-stage-area">
+            <div class="old-sidebar">
+              <div style="font-size:11px;font-weight:700;letter-spacing:.12em;text-transform:uppercase;color:#677188;margin-bottom:4px;">CONTENTS</div>
+              <div style="font-size:13px;color:#1e2431;margin-bottom:14px;">Markdown outline</div>
+              <div style="font-size:13px;color:#677188;padding:6px 0;">Introduction</div>
+              <div style="font-size:13px;color:#0f6cae;padding:6px 0;font-weight:600;">Theme tokens</div>
+              <div style="font-size:13px;color:#677188;padding:6px 0;padding-left:14px;">Light palette</div>
+              <div style="font-size:13px;color:#677188;padding:6px 0;padding-left:14px;">Dark palette</div>
+              <div style="font-size:13px;color:#677188;padding:6px 0;">Typography</div>
+            </div>
+            <div class="old-content">
+              <div class="old-eyebrow">BOLTPAGE</div>
+              <h2 class="old-headline">Open a document and keep the interface out of the way.</h2>
+              <p class="old-text">Preview Markdown, structured text, and PDFs in a focused desktop workspace.</p>
+            </div>
+          </div>
+        </div>
+      </div>
+      <div class="figure-caption">Three nested rounded panels (20/24/28px), heavy shadows, decorative gradient backdrop, 42pt pill buttons, and a marketing-style welcome.</div>
+    </div>
+
+    <!-- AFTER: Light -->
+    <div class="figure">
+      <div class="label-row">
+        <span class="tag tag-after">After</span>
+        <span class="meta">Viewer · Light theme · proposed</span>
+      </div>
+      <div class="stage stage-large">
+        <div class="mac-window bp-light">
+          <div class="titlebar">
+            <div class="traffic"><span class="close"></span><span class="min"></span><span class="max"></span></div>
+            <div class="title">setup-guide.md <span class="doc-meta">— BoltPage</span></div>
+            <div style="width:54px;"></div>
+          </div>
+          <div class="bp-toolbar">
+            <div class="group">
+              <button class="tb-btn primary">
+                <svg viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.6"><path d="M3 7V4a1 1 0 011-1h5l2 2h5a1 1 0 011 1v1M3 7v9a1 1 0 001 1h12a1 1 0 001-1V8a1 1 0 00-1-1h-6l-2-2H4a1 1 0 00-1 1v1z"/></svg>
+                Open
+              </button>
+              <button class="tb-btn"><svg viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.6"><path d="M10 4v12M4 10h12"/></svg>New</button>
+            </div>
+            <div class="group">
+              <button class="tb-btn"><svg viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.6"><path d="M14.5 2.5a2.121 2.121 0 113 3L6 17H3v-3L14.5 2.5z"/></svg>Edit</button>
+              <button class="tb-btn"><svg viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.6"><path d="M10 3v9M6.5 8.5L10 12l3.5-3.5M4 15.5h12"/></svg>Export</button>
+            </div>
+            <div class="group">
+              <button class="tb-btn"><svg viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.6"><circle cx="8.5" cy="8.5" r="5.5"/><path d="M13 13l4 4"/></svg>Find</button>
+              <button class="tb-btn"><svg viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.6"><path d="M4 10a6 6 0 1011.18-3H12v3M16 10a6 6 0 10-11.18 3H8v-3"/></svg>Refresh</button>
+            </div>
+            <div class="spacer"></div>
+            <span class="tb-status"><span class="dot"></span>Saved</span>
+            <button class="tb-btn icon-only" aria-label="View options">
+              <svg viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.6"><path d="M4 5h12M4 10h12M4 15h12"/></svg>
+            </button>
+          </div>
+          <div class="bp-body">
+            <aside class="bp-sidebar">
+              <div class="sb-section">
+                <div class="sb-section-label">Contents</div>
+                <div class="sb-link">Introduction</div>
+                <div class="sb-link is-active">Theme tokens</div>
+                <div class="sb-link lvl-2">Light palette</div>
+                <div class="sb-link lvl-2">Dark palette</div>
+                <div class="sb-link">Typography</div>
+                <div class="sb-link">Components</div>
+                <div class="sb-link lvl-2">Toolbar</div>
+                <div class="sb-link lvl-2">Sidebar</div>
+              </div>
+              <div class="sb-meta">
+                <div class="filename">setup-guide.md</div>
+                <div>3.4 KB · modified 2m ago</div>
+              </div>
+            </aside>
+            <div class="bp-content">
+              <div class="bp-document">
+                <h1>BoltPage Setup Guide</h1>
+                <span class="doc-tag">Markdown · 3.4 KB</span>
+                <p>This proposal updates BoltPage's interface to align with Apple's Human Interface Guidelines for macOS, focusing on quieter chrome, semantic materials, and native typography.</p>
+                <h2>Theme tokens</h2>
+                <p>Every surface, color, and radius is exposed as a CSS custom property and themed under <code>[data-theme="dark"]</code>.</p>
+                <pre>--toolbar-bg: rgba(246,246,246,.96);
+--sidebar-bg: rgba(243,243,244,.85);
+--accent:     #0066CC;</pre>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+      <div class="figure-caption"><strong>What changed:</strong> single window with native titlebar + toolbar materials, 26pt grouped toolbar items with separators, sidebar uses sidebar material (no inner card), document sits on the window background. The "Saved" pill replaces the silent refresh-indicator and confirms file watcher state.</div>
+    </div>
+  </div>
+
+  <!-- DARK comparison -->
+  <div class="compare" style="margin-top:14px;">
+    <div class="figure">
+      <div class="label-row">
+        <span class="tag tag-before">Before</span>
+        <span class="meta">Viewer · Dark theme · current build</span>
+      </div>
+      <div class="stage stage-large dark">
+        <div class="old-bp dark">
+          <div class="old-toolbar">
+            <div class="old-brand"></div>
+            <button class="old-btn primary">📂 Open</button>
+            <button class="old-btn">＋ New</button>
+            <button class="old-btn">✎ Edit</button>
+            <button class="old-btn">↧ Export</button>
+            <button class="old-btn">🔍 Find</button>
+            <button class="old-btn">↻ Refresh</button>
+            <div class="old-spacer"></div>
+            <button class="old-btn">≡ View</button>
+          </div>
+          <div class="old-stage-area">
+            <div class="old-sidebar">
+              <div style="font-size:11px;font-weight:700;letter-spacing:.12em;text-transform:uppercase;color:#9ca8c0;margin-bottom:4px;">CONTENTS</div>
+              <div style="font-size:13px;color:#e8edf7;margin-bottom:14px;">Markdown outline</div>
+              <div style="font-size:13px;color:#9ca8c0;padding:6px 0;">Introduction</div>
+              <div style="font-size:13px;color:#7bc0ff;padding:6px 0;font-weight:600;">Theme tokens</div>
+              <div style="font-size:13px;color:#9ca8c0;padding:6px 0;padding-left:14px;">Light palette</div>
+              <div style="font-size:13px;color:#9ca8c0;padding:6px 0;padding-left:14px;">Dark palette</div>
+            </div>
+            <div class="old-content">
+              <div class="old-eyebrow">BOLTPAGE</div>
+              <h2 class="old-headline">Open a document and keep the interface out of the way.</h2>
+              <p class="old-text">Preview Markdown, structured text, and PDFs.</p>
+            </div>
+          </div>
+        </div>
+      </div>
+      <div class="figure-caption">Same heavy chrome translated to dark, with intensified outer shadow.</div>
+    </div>
+
+    <div class="figure">
+      <div class="label-row">
+        <span class="tag tag-after">After</span>
+        <span class="meta">Viewer · Dark theme · proposed</span>
+      </div>
+      <div class="stage stage-large dark">
+        <div class="mac-window bp-dark">
+          <div class="titlebar">
+            <div class="traffic"><span class="close"></span><span class="min"></span><span class="max"></span></div>
+            <div class="title">setup-guide.md <span class="doc-meta">— BoltPage</span></div>
+            <div style="width:54px;"></div>
+          </div>
+          <div class="bp-toolbar">
+            <div class="group">
+              <button class="tb-btn primary"><svg viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.6"><path d="M3 7V4a1 1 0 011-1h5l2 2h5a1 1 0 011 1v1M3 7v9a1 1 0 001 1h12a1 1 0 001-1V8a1 1 0 00-1-1h-6l-2-2H4a1 1 0 00-1 1v1z"/></svg>Open</button>
+              <button class="tb-btn"><svg viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.6"><path d="M10 4v12M4 10h12"/></svg>New</button>
+            </div>
+            <div class="group">
+              <button class="tb-btn"><svg viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.6"><path d="M14.5 2.5a2.121 2.121 0 113 3L6 17H3v-3L14.5 2.5z"/></svg>Edit</button>
+              <button class="tb-btn"><svg viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.6"><path d="M10 3v9M6.5 8.5L10 12l3.5-3.5M4 15.5h12"/></svg>Export</button>
+            </div>
+            <div class="group">
+              <button class="tb-btn"><svg viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.6"><circle cx="8.5" cy="8.5" r="5.5"/><path d="M13 13l4 4"/></svg>Find</button>
+              <button class="tb-btn"><svg viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.6"><path d="M4 10a6 6 0 1011.18-3H12v3M16 10a6 6 0 10-11.18 3H8v-3"/></svg>Refresh</button>
+            </div>
+            <div class="spacer"></div>
+            <span class="tb-status"><span class="dot"></span>Saved</span>
+            <button class="tb-btn icon-only" aria-label="View options"><svg viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.6"><path d="M4 5h12M4 10h12M4 15h12"/></svg></button>
+          </div>
+          <div class="bp-body">
+            <aside class="bp-sidebar">
+              <div class="sb-section">
+                <div class="sb-section-label">Contents</div>
+                <div class="sb-link">Introduction</div>
+                <div class="sb-link is-active">Theme tokens</div>
+                <div class="sb-link lvl-2">Light palette</div>
+                <div class="sb-link lvl-2">Dark palette</div>
+                <div class="sb-link">Typography</div>
+                <div class="sb-link">Components</div>
+              </div>
+              <div class="sb-meta">
+                <div class="filename">setup-guide.md</div>
+                <div>3.4 KB · modified 2m ago</div>
+              </div>
+            </aside>
+            <div class="bp-content">
+              <div class="bp-document">
+                <h1>BoltPage Setup Guide</h1>
+                <span class="doc-tag">Markdown · 3.4 KB</span>
+                <p>This proposal updates BoltPage's interface to align with Apple's Human Interface Guidelines for macOS, focusing on quieter chrome, semantic materials, and native typography.</p>
+                <h2>Theme tokens</h2>
+                <p>Every surface, color, and radius is exposed as a CSS custom property and themed under <code>[data-theme="dark"]</code>.</p>
+                <pre>--toolbar-bg: rgba(40,40,42,.96);
+--sidebar-bg: rgba(34,34,36,.85);
+--accent:     #0A84FF;</pre>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+      <div class="figure-caption">Same structure under dark appearance — system blue shifts to <code>#0A84FF</code>, surfaces shift to dark window/sidebar materials, accent and selected states stay readable.</div>
+    </div>
+  </div>
+
+  <!-- ============================================================ -->
+  <h2>5 · Welcome state — three options</h2>
+  <p>The current welcome screen reads as marketing copy. Three quieter options below; pick one and standardize. <strong>Recommendation: Option B</strong> — it surfaces recent files (the most-likely next action) without overpromising on first launch.</p>
+
+  <div class="grid-3">
+    <div class="figure">
+      <div class="label-row"><span class="tag tag-neutral">Option A</span><span class="meta">Minimal</span></div>
+      <div class="stage stage-medium">
+        <div class="mac-window bp-light">
+          <div class="titlebar">
+            <div class="traffic"><span class="close"></span><span class="min"></span><span class="max"></span></div>
+            <div class="title">BoltPage</div>
+            <div style="width:54px;"></div>
+          </div>
+          <div class="bp-welcome">
+            <div class="welcome-card">
+              <div class="icon">
+                <svg viewBox="0 0 24 24" fill="currentColor"><path d="M13 2L3 14h7l-1 8 11-12h-7l1-8z"/></svg>
+              </div>
+              <h1>BoltPage</h1>
+              <p class="tagline">A fast, focused Markdown reader.</p>
+              <div class="welcome-actions">
+                <button class="wel-btn primary">Open file…</button>
+                <button class="wel-btn secondary">New document</button>
+              </div>
+              <div class="kbd-hint"><kbd>⌘O</kbd> open · <kbd>⌘N</kbd> new</div>
+            </div>
+          </div>
+        </div>
+      </div>
+      <div class="figure-caption">Single CTA pair, no recent files. Use when no recents exist.</div>
+    </div>
+
+    <div class="figure">
+      <div class="label-row"><span class="tag tag-after">Option B</span><span class="meta">Recents · recommended</span></div>
+      <div class="stage stage-medium">
+        <div class="mac-window bp-light">
+          <div class="titlebar">
+            <div class="traffic"><span class="close"></span><span class="min"></span><span class="max"></span></div>
+            <div class="title">BoltPage</div>
+            <div style="width:54px;"></div>
+          </div>
+          <div class="bp-welcome">
+            <div class="welcome-card">
+              <div class="icon">
+                <svg viewBox="0 0 24 24" fill="currentColor"><path d="M13 2L3 14h7l-1 8 11-12h-7l1-8z"/></svg>
+              </div>
+              <h1>BoltPage</h1>
+              <p class="tagline">A fast, focused Markdown reader.</p>
+              <div class="welcome-actions">
+                <button class="wel-btn primary">Open file…</button>
+                <button class="wel-btn secondary">New document</button>
+              </div>
+              <div class="recent-list">
+                <div class="lbl">Recent</div>
+                <div class="recent-item"><span class="ri-name">setup-guide.md</span><span class="ri-path">~/Docs</span></div>
+                <div class="recent-item"><span class="ri-name">CHANGES.md</span><span class="ri-path">~/Projects/boltpage</span></div>
+                <div class="recent-item"><span class="ri-name">notes.md</span><span class="ri-path">~/Desktop</span></div>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+      <div class="figure-caption">Adds an inline recent-files list (max 5). Mirrors File → Open Recent menu.</div>
+    </div>
+
+    <div class="figure">
+      <div class="label-row"><span class="tag tag-neutral">Option C</span><span class="meta">Empty document</span></div>
+      <div class="stage stage-medium">
+        <div class="mac-window bp-light">
+          <div class="titlebar">
+            <div class="traffic"><span class="close"></span><span class="min"></span><span class="max"></span></div>
+            <div class="title">Untitled</div>
+            <div style="width:54px;"></div>
+          </div>
+          <div class="bp-toolbar">
+            <div class="group">
+              <button class="tb-btn primary">Open</button>
+              <button class="tb-btn">New</button>
+            </div>
+            <div class="spacer"></div>
+            <button class="tb-btn icon-only"><svg viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.6"><path d="M4 5h12M4 10h12M4 15h12"/></svg></button>
+          </div>
+          <div class="bp-body">
+            <div class="bp-content">
+              <div class="bp-welcome">
+                <div class="welcome-card" style="max-width:340px;">
+                  <p class="tagline" style="font-size:14px;">Drop a file here, or use <kbd style="background:#f2f2f4;border:1px solid rgba(0,0,0,.12);padding:1px 6px;border-radius:4px;font-family:ui-monospace, SF Mono, monospace;font-size:11px;">⌘O</kbd> to open.</p>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+      <div class="figure-caption">If the toolbar is always visible, the welcome shrinks to a single drop-target hint inside the document area.</div>
+    </div>
+  </div>
+
+  <!-- ============================================================ -->
+  <h2>6 · Editor window</h2>
+
+  <div class="compare">
+    <div class="figure">
+      <div class="label-row">
+        <span class="tag tag-before">Before</span>
+        <span class="meta">Editor · current build · light</span>
+      </div>
+      <div class="stage stage-tall">
+        <div class="old-bp" style="padding:22px 22px 22px;">
+          <div class="old-toolbar">
+            <div class="old-brand"></div>
+            <button class="old-btn">A−</button>
+            <span style="font-size:12px;font-weight:700;color:#677188;background:rgba(255,255,255,.04);border-radius:10px;padding:6px 10px;">18px</span>
+            <button class="old-btn">A+</button>
+            <button class="old-btn">Lines</button>
+            <button class="old-btn">Wrap</button>
+            <button class="old-btn">🔍 Find</button>
+            <div class="old-spacer"></div>
+            <span style="font-size:12px;font-weight:700;color:#677188;background:rgba(255,255,255,.04);border:1px solid rgba(120,127,146,.18);border-radius:999px;padding:4px 10px;">Ready</span>
+            <button class="old-btn">✕ Close</button>
+          </div>
+          <div style="flex:1;border:1px solid rgba(120,127,146,.18);border-radius:28px;background:#fffdfa;box-shadow:0 24px 60px rgba(18,24,37,.12);overflow:hidden;display:flex;">
+            <div style="width:56px;text-align:right;padding:24px 10px 0 0;color:#677188;opacity:.65;font-family:ui-monospace,SF Mono,monospace;font-size:13px;line-height:1.6;border-right:1px solid rgba(120,127,146,.18);background:rgba(255,255,255,.03);">1<br>2<br>3<br>4<br>5<br>6<br>7</div>
+            <div style="flex:1;padding:24px;color:#1e2431;font-family:ui-monospace,SF Mono,monospace;font-size:14px;line-height:1.6;white-space:pre;"># BoltPage Setup Guide
+
+A fast, focused **Markdown** reader.
+
+- Open with `⌘O`
+- Edit with `⌘E`</div>
+          </div>
+        </div>
+      </div>
+      <div class="figure-caption">Same chrome problems as the viewer; <code>Lines</code> / <code>Wrap</code> are unlabeled toggles with no on/off affordance; "Ready" badge floats inside the toolbar at all times.</div>
+    </div>
+
+    <div class="figure">
+      <div class="label-row">
+        <span class="tag tag-after">After</span>
+        <span class="meta">Editor · proposed · light</span>
+      </div>
+      <div class="stage stage-tall">
+        <div class="mac-window bp-light">
+          <div class="titlebar">
+            <div class="traffic"><span class="close"></span><span class="min"></span><span class="max"></span></div>
+            <div class="title">setup-guide.md <span class="doc-meta">— Edited</span></div>
+            <div style="width:54px;"></div>
+          </div>
+          <div class="bp-toolbar">
+            <div class="group">
+              <div class="seg" style="height:24px;align-items:center;">
+                <button>A−</button>
+                <button class="on" style="background:transparent;color:var(--text-muted);font-variant-numeric:tabular-nums;">18 px</button>
+                <button>A+</button>
+              </div>
+            </div>
+            <div class="group">
+              <button class="tb-btn is-active" title="Line numbers on">
+                <svg viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.6"><path d="M4 5h12M4 10h12M4 15h12"/><path d="M2 5h.01M2 10h.01M2 15h.01" stroke-width="2.5"/></svg>
+                Lines
+              </button>
+              <button class="tb-btn" title="Word wrap off">
+                <svg viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.6"><path d="M3 6h14M3 10h11a3 3 0 110 6h-3l2-2m-2 2l2 2M3 14h5"/></svg>
+                Wrap
+              </button>
+            </div>
+            <div class="group">
+              <button class="tb-btn"><svg viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.6"><circle cx="8.5" cy="8.5" r="5.5"/><path d="M13 13l4 4"/></svg>Find</button>
+            </div>
+            <div class="spacer"></div>
+            <span class="tb-status" style="background:rgba(184,89,10,.14);color:#a25a1f;"><span class="dot"></span>Unsaved</span>
+            <button class="tb-btn">Close</button>
+          </div>
+          <div class="bp-editor-body">
+            <div class="ed-gutter">
+              <span>1</span><span>2</span><span>3</span><span>4</span><span>5</span>
+              <span>6</span><span>7</span><span>8</span><span>9</span><span>10</span>
+              <span>11</span><span>12</span><span>13</span><span>14</span><span>15</span>
+            </div>
+            <div class="ed-canvas"><span class="md-h"># BoltPage Setup Guide</span>
+
+A fast, focused <span class="md-em">**Markdown**</span> reader for macOS.
+
+<span class="md-h">## Keyboard</span>
+
+<span class="md-bullet">-</span> Open with <span class="md-code">⌘O</span>
+<span class="md-bullet">-</span> Edit with <span class="md-code">⌘E</span>
+<span class="md-bullet">-</span> Find with <span class="md-code">⌘F</span>
+<span class="md-bullet">-</span> Replace with <span class="md-code">⌘⌥F</span>
+
+<span class="md-h">## Theme</span>
+
+Choose <span class="md-link">[light, dark, drac]</span> from the View menu.</div>
+            <aside class="ed-inspector">
+              <div class="stat"><span>Words</span><strong>184</strong></div>
+              <div class="stat"><span>Chars</span><strong>1,047</strong></div>
+              <div class="stat"><span>Lines</span><strong>32</strong></div>
+              <div class="stat-divider"></div>
+              <div class="stat"><span>Cursor</span><strong>L 7 · C 12</strong></div>
+              <div class="stat"><span>Sel</span><strong>0</strong></div>
+              <div class="stat-divider"></div>
+              <div class="stat"><span>Encoding</span><strong>UTF-8</strong></div>
+              <div class="stat"><span>EOL</span><strong>LF</strong></div>
+            </aside>
+          </div>
+        </div>
+      </div>
+      <div class="figure-caption"><strong>Editor changes:</strong> font-size becomes a segmented control (clearer than two pills + chip); <code>Lines</code> uses an active state instead of plain text; <code>Wrap</code> reads as a toggle with an icon; <code>Close</code> drops the brand block. A <em>thin right-rail inspector</em> exposes word/char counts, cursor position, and encoding — common asks that previously had no surface. <em>Optional — can hide for purist mode.</em></div>
+    </div>
+  </div>
+
+  <!-- ============================================================ -->
+  <h2>7 · Component close-ups</h2>
+
+  <h3>7.1 Toolbar variants</h3>
+  <p>Three densities so the user can pick whichever matches their screen size and habits. Default to <strong>icon + label</strong> on first launch (lowest ramp-up); allow switch via View popover.</p>
+
+  <div class="grid-3">
+    <div class="figure">
+      <div class="label-row"><span class="tag tag-neutral">Variant</span><span class="meta">Icon + label (default)</span></div>
+      <div class="stage stage-medium" style="height:90px;">
+        <div class="mac-window bp-light">
+          <div class="bp-toolbar">
+            <div class="group">
+              <button class="tb-btn primary"><svg viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.6"><path d="M3 7V4a1 1 0 011-1h5l2 2h5a1 1 0 011 1v1M3 7v9a1 1 0 001 1h12a1 1 0 001-1V8a1 1 0 00-1-1h-6l-2-2H4a1 1 0 00-1 1v1z"/></svg>Open</button>
+              <button class="tb-btn"><svg viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.6"><path d="M10 4v12M4 10h12"/></svg>New</button>
+            </div>
+            <div class="group">
+              <button class="tb-btn"><svg viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.6"><path d="M14.5 2.5a2.121 2.121 0 113 3L6 17H3v-3L14.5 2.5z"/></svg>Edit</button>
+              <button class="tb-btn"><svg viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.6"><path d="M10 3v9M6.5 8.5L10 12l3.5-3.5M4 15.5h12"/></svg>Export</button>
+            </div>
+            <div class="group">
+              <button class="tb-btn"><svg viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.6"><circle cx="8.5" cy="8.5" r="5.5"/><path d="M13 13l4 4"/></svg>Find</button>
+              <button class="tb-btn"><svg viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.6"><path d="M4 10a6 6 0 1011.18-3H12v3M16 10a6 6 0 10-11.18 3H8v-3"/></svg>Refresh</button>
+            </div>
+            <div class="spacer"></div>
+            <button class="tb-btn icon-only"><svg viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.6"><path d="M4 5h12M4 10h12M4 15h12"/></svg></button>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <div class="figure">
+      <div class="label-row"><span class="tag tag-neutral">Variant</span><span class="meta">Icon only (compact)</span></div>
+      <div class="stage stage-medium" style="height:90px;">
+        <div class="mac-window bp-light">
+          <div class="bp-toolbar">
+            <div class="group">
+              <button class="tb-btn primary icon-only" title="Open"><svg viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.6"><path d="M3 7V4a1 1 0 011-1h5l2 2h5a1 1 0 011 1v1M3 7v9a1 1 0 001 1h12a1 1 0 001-1V8a1 1 0 00-1-1h-6l-2-2H4a1 1 0 00-1 1v1z"/></svg></button>
+              <button class="tb-btn icon-only" title="New"><svg viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.6"><path d="M10 4v12M4 10h12"/></svg></button>
+            </div>
+            <div class="group">
+              <button class="tb-btn icon-only" title="Edit"><svg viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.6"><path d="M14.5 2.5a2.121 2.121 0 113 3L6 17H3v-3L14.5 2.5z"/></svg></button>
+              <button class="tb-btn icon-only" title="Export"><svg viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.6"><path d="M10 3v9M6.5 8.5L10 12l3.5-3.5M4 15.5h12"/></svg></button>
+            </div>
+            <div class="group">
+              <button class="tb-btn icon-only" title="Find"><svg viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.6"><circle cx="8.5" cy="8.5" r="5.5"/><path d="M13 13l4 4"/></svg></button>
+              <button class="tb-btn icon-only" title="Refresh"><svg viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.6"><path d="M4 10a6 6 0 1011.18-3H12v3M16 10a6 6 0 10-11.18 3H8v-3"/></svg></button>
+            </div>
+            <div class="spacer"></div>
+            <button class="tb-btn icon-only"><svg viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.6"><path d="M4 5h12M4 10h12M4 15h12"/></svg></button>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <div class="figure">
+      <div class="label-row"><span class="tag tag-neutral">Variant</span><span class="meta">Label only (text)</span></div>
+      <div class="stage stage-medium" style="height:90px;">
+        <div class="mac-window bp-light">
+          <div class="bp-toolbar">
+            <div class="group">
+              <button class="tb-btn primary">Open</button>
+              <button class="tb-btn">New</button>
+            </div>
+            <div class="group">
+              <button class="tb-btn">Edit</button>
+              <button class="tb-btn">Export</button>
+            </div>
+            <div class="group">
+              <button class="tb-btn">Find</button>
+              <button class="tb-btn">Refresh</button>
+            </div>
+            <div class="spacer"></div>
+            <button class="tb-btn">View</button>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <h3>7.2 View popover</h3>
+  <div class="grid-2">
+    <div>
+      <p>The current "View" dropdown mixes appearance, type size, and a wordy sidebar toggle. The proposed popover splits these into clear sections, uses a segmented control for the appearance trio (matches macOS Settings &gt; Appearance), a stepper for type size (mirrors System Settings &gt; Display &gt; Text Size), and a single switch for sidebar.</p>
+      <p>Captions are dropped — the labels are self-explanatory and the popover is invoked from a menu icon, not a button labeled "View".</p>
+    </div>
+    <div class="figure" style="background:#eaeaec;">
+      <div style="padding:30px;display:flex;justify-content:center;align-items:flex-start;">
+        <div class="popover bp-light">
+          <div class="pop-section">
+            <div class="pop-label">Appearance</div>
+            <div class="pop-row">
+              <span>Theme</span>
+              <span class="seg"><button>Light</button><button class="on">Auto</button><button>Dark</button></span>
+            </div>
+          </div>
+          <div class="pop-section">
+            <div class="pop-label">Document</div>
+            <div class="pop-row">
+              <span>Text size</span>
+              <span class="stepper"><button>−</button><span class="val">18 pt</span><button>+</button></span>
+            </div>
+            <div class="pop-row">
+              <span>Show sidebar</span>
+              <span class="switch on"></span>
+            </div>
+          </div>
+          <div class="pop-section">
+            <div class="pop-label">Window</div>
+            <div class="pop-row">
+              <span>Toolbar style</span>
+              <span class="seg" style="font-size:11px;"><button class="on">Icon &amp; label</button><button>Icon</button></span>
+            </div>
+          </div>
+        </div>
+      </div>
+      <div class="figure-caption">View popover · 248pt wide · matches macOS standard popover geometry.</div>
+    </div>
+  </div>
+
+  <h3>7.3 Find bar (docked)</h3>
+  <p>The current find overlay floats in the upper-right corner with a 16px-radius card and a 1300-z-index. It covers the document and detaches from the search context. The proposed find bar docks just below the toolbar — same place Safari, Pages, and TextEdit put it — and slides in/out with the document scroll-locked underneath.</p>
+
+  <div class="figure">
+    <div class="label-row"><span class="tag tag-after">Find &amp; replace</span><span class="meta">Docked under toolbar · light + dark</span></div>
+    <div class="stage stage-medium">
+      <div class="mac-window bp-light">
+        <div class="titlebar">
+          <div class="traffic"><span class="close"></span><span class="min"></span><span class="max"></span></div>
+          <div class="title">setup-guide.md</div>
+          <div style="width:54px;"></div>
+        </div>
+        <div class="bp-toolbar">
+          <div class="group"><button class="tb-btn primary">Open</button><button class="tb-btn">New</button></div>
+          <div class="group"><button class="tb-btn">Edit</button><button class="tb-btn">Export</button></div>
+          <div class="group"><button class="tb-btn is-active">Find</button><button class="tb-btn">Refresh</button></div>
+          <div class="spacer"></div>
+          <button class="tb-btn icon-only"><svg viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.6"><path d="M4 5h12M4 10h12M4 15h12"/></svg></button>
+        </div>
+        <div class="find-bar">
+          <input class="find-input" value="theme" />
+          <span class="count">2 of 7</span>
+          <button class="icon-btn" aria-label="Previous"><svg width="12" height="12" viewBox="0 0 12 12" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M9 4L6 7 3 4"/></svg></button>
+          <button class="icon-btn" aria-label="Next"><svg width="12" height="12" viewBox="0 0 12 12" fill="none" stroke="currentColor" stroke-width="1.8" style="transform:rotate(180deg)"><path d="M9 4L6 7 3 4"/></svg></button>
+          <button class="micro">Aa</button>
+          <button class="micro">.*</button>
+          <span class="grow"></span>
+          <button class="micro">Done</button>
+        </div>
+        <div class="bp-body">
+          <div class="bp-content">
+            <div class="bp-document" style="padding:20px 32px;">
+              <p>The proposal applies <mark style="background:rgba(255,204,0,0.5);">theme</mark> tokens to every surface. Each <mark style="background:rgba(255,204,0,0.5);">theme</mark> overrides the same custom-property names …</p>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+    <div class="figure-caption">Two text fields show together when invoked via <kbd>⌘⌥F</kbd> (replace). Buttons are micro (height 22pt) — the bar shouldn't feel like a second toolbar.</div>
+  </div>
+
+  <h3>7.4 Sidebar — three states</h3>
+  <div class="grid-3">
+    <div class="figure">
+      <div class="label-row"><span class="tag tag-neutral">State</span><span class="meta">With outline</span></div>
+      <div class="stage stage-medium" style="height:340px;">
+        <div class="mac-window bp-light" style="display:flex;flex-direction:row;">
+          <aside class="bp-sidebar" style="width:100%;">
+            <div class="sb-section">
+              <div class="sb-section-label">Contents</div>
+              <div class="sb-link">Introduction</div>
+              <div class="sb-link is-active">Theme tokens</div>
+              <div class="sb-link lvl-2">Surfaces</div>
+              <div class="sb-link lvl-2">Accent &amp; text</div>
+              <div class="sb-link lvl-2">Geometry</div>
+              <div class="sb-link">Typography</div>
+              <div class="sb-link">Components</div>
+            </div>
+            <div class="sb-meta">
+              <div class="filename">setup-guide.md</div>
+              <div>3.4 KB · 184 words<br>modified 2m ago</div>
+            </div>
+          </aside>
+        </div>
+      </div>
+    </div>
+    <div class="figure">
+      <div class="label-row"><span class="tag tag-neutral">State</span><span class="meta">No outline · file only</span></div>
+      <div class="stage stage-medium" style="height:340px;">
+        <div class="mac-window bp-light" style="display:flex;flex-direction:row;">
+          <aside class="bp-sidebar" style="width:100%;">
+            <div class="sb-section">
+              <div class="sb-section-label">Document</div>
+              <div style="padding:12px 8px;color:var(--text-muted);font-size:12px;line-height:1.5;">No headings detected.</div>
+            </div>
+            <div class="sb-meta">
+              <div class="filename">notes.txt</div>
+              <div>0.7 KB · plain text<br>modified just now</div>
+            </div>
+          </aside>
+        </div>
+      </div>
+    </div>
+    <div class="figure">
+      <div class="label-row"><span class="tag tag-neutral">State</span><span class="meta">Collapsed</span></div>
+      <div class="stage stage-medium" style="height:340px;display:flex;align-items:flex-start;justify-content:center;">
+        <div class="mac-window bp-light" style="display:flex;flex-direction:row;">
+          <aside class="bp-sidebar" style="width:42px;align-items:center;justify-content:flex-start;padding:8px 6px;">
+            <button class="tb-btn icon-only" style="margin:0 auto;" title="Show sidebar">
+              <svg viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.6"><rect x="3" y="4" width="14" height="12" rx="1.5"/><path d="M8 4v12"/></svg>
+            </button>
+          </aside>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- ============================================================ -->
+  <h2>8 · Recommendation summary</h2>
+  <ol>
+    <li><strong>Adopt Option B</strong> for the welcome state and the new toolbar geometry (26pt items, grouped, with separators) for both viewer and editor.</li>
+    <li><strong>Drop the brand icon</strong> from both toolbars. The window title carries identity; no need to repeat it.</li>
+    <li><strong>Replace floating panels</strong> with native materials: window background for content, sidebar material for the TOC, toolbar material under the title bar. No more 24/28px nested rounded cards.</li>
+    <li><strong>Move find</strong> from a floating overlay to a docked find bar under the toolbar; same in viewer and editor.</li>
+    <li><strong>Switch the type stack</strong> to <code>-apple-system</code> family for UI and <code>"New York", "Iowan Old Style", Georgia</code> for documents (current setup already uses Iowan as last fallback — promote it).</li>
+    <li><strong>Keep all three themes</strong>; retune their values to the proposed token palette so contrast and accent shift match macOS conventions.</li>
+    <li><strong>Add an editor inspector rail</strong> (word/char/cursor/encoding) — optional, off by default, exposes information that has no surface today.</li>
+  </ol>
+
+  <p class="lede" style="margin-top:24px;">
+    <strong>Acceptance test:</strong> when the redesigned viewer launches against a 60-line Markdown file, the screenshot should be visually indistinguishable from a "vanilla" macOS document app (TextEdit / Pages / Preview lineage) at thumbnail size — toolbar, sidebar, and title-bar geometry should read as native chrome rather than as decorated panels.
+  </p>
+
+  <h2>9 · Sources</h2>
+  <ul class="source-list">
+    <li><a href="https://developer.apple.com/design/human-interface-guidelines">Apple — Human Interface Guidelines (root)</a></li>
+    <li><a href="https://developer.apple.com/design/human-interface-guidelines/toolbars">HIG — Toolbars (clarity, prioritization, 2025 visual update on removing background colors)</a></li>
+    <li><a href="https://developer.apple.com/design/human-interface-guidelines/macos">HIG — Designing for macOS</a></li>
+    <li><a href="https://developer.apple.com/design/human-interface-guidelines/materials">HIG — Materials (semantic material selection: sidebar, hudWindow, windowBackground, etc.)</a></li>
+    <li><a href="https://developer.apple.com/design/human-interface-guidelines/layout">HIG — Layout (4pt grid, spacing rhythm)</a></li>
+    <li><a href="https://developer.apple.com/documentation/appkit/nsvisualeffectview">AppKit — NSVisualEffectView (materials reference)</a></li>
+    <li><a href="https://developer.apple.com/documentation/AppKit/NSVisualEffectView/Material-swift.enum/sidebar">AppKit — NSVisualEffectView.Material.sidebar</a></li>
+    <li><a href="https://developer.apple.com/fonts/">Apple — SF Pro / New York font families</a></li>
+    <li><a href="https://developer.apple.com/videos/play/wwdc2025/356/">WWDC25 session 356 — "Get to know the new design system"</a></li>
+    <li><a href="https://developer.apple.com/videos/play/wwdc2022/110381/">WWDC22 session 110381 — "Meet the expanded San Francisco font family"</a></li>
+  </ul>
+
+</div>
+</body>
+</html>
