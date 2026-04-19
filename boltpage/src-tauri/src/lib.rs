@@ -264,8 +264,10 @@ pub fn run() {
             prefs::get_preferences,
             prefs::save_preferences,
             prefs::mark_cli_setup_declined,
+            prefs::get_recent_files,
             menu::broadcast_scroll_sync,
             menu::broadcast_theme_change,
+            menu::broadcast_toolbar_density_change,
             menu::broadcast_font_size_change,
             menu::broadcast_editor_window_closed,
             menu::get_syntax_css,
@@ -393,6 +395,13 @@ pub fn run() {
 
             if let Some(ref p) = file_path {
                 io::allow_path(app.handle(), p);
+                let handle = app.handle().clone();
+                let path_str = p.clone();
+                tauri::async_runtime::spawn(async move {
+                    if let Err(e) = io::push_to_recents(&handle, &path_str).await {
+                        eprintln!("Failed to push recents (CLI arg): {e}");
+                    }
+                });
             }
 
             if let Some(resolved_path) = file_path.and_then(|p| io::resolve_file_path(&p)) {
@@ -503,6 +512,11 @@ pub fn run() {
                 tauri::async_runtime::spawn(async move {
                     for url in urls {
                         if let Some(path) = io::resolve_file_path(url.as_ref()) {
+                            if let Err(e) =
+                                io::push_to_recents(&app_clone, &path.to_string_lossy()).await
+                            {
+                                eprintln!("Failed to push recents (Launch Services): {e}");
+                            }
                             if let Err(e) =
                                 window::create_window_with_file(&app_clone, Some(path.clone()))
                                     .await

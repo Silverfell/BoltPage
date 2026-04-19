@@ -21,6 +21,7 @@ import {
 import {
     EVENT_THEME_CHANGED,
     EVENT_FONT_SIZE_CHANGED,
+    EVENT_TOOLBAR_DENSITY_CHANGED,
     EVENT_SCROLL_SYNC,
     EVENT_MENU_CLOSE,
     EVENT_MENU_FIND,
@@ -66,7 +67,10 @@ let mirrorDivs = [];
 let gutterDivs = [];
 let lineHeights = [];
 let currentFontSize = 18;
+let currentToolbarDensity = 'icon-label';
 let closeEventSent = false;
+let inspectorRafId = null;
+let inspectorEol = 'LF';
 
 // Track last synced position to filter micro-scrolls
 let lastSyncedLine = null;
@@ -87,10 +91,6 @@ function updateFontSizeControls() {
     if (indicator) indicator.textContent = `${currentFontSize}px`;
     if (decreaseBtn) decreaseBtn.disabled = currentFontSize <= MIN_FONT_SIZE;
     if (increaseBtn) increaseBtn.disabled = currentFontSize >= MAX_FONT_SIZE;
-}
-
-function renderEditorHeader() {
-    // Compact header: no document identity display
 }
 
 function editorFontSizePx(fontSize = currentFontSize) {
@@ -130,6 +130,84 @@ function applyFontSize(fontSize, options = {}) {
 
 function changeFontSize(delta) {
     applyFontSize(currentFontSize + delta, { save: true, broadcast: true });
+}
+
+function normalizeDensity(v) {
+    return v === 'icon' || v === 'label' ? v : 'icon-label';
+}
+
+function applyToolbarDensity(density) {
+    currentToolbarDensity = normalizeDensity(density);
+    document.documentElement.dataset.toolbarDensity = currentToolbarDensity;
+}
+
+function applyInspectorVisibility(visible) {
+    const inspectorEl = document.getElementById('editor-inspector');
+    const inspectorToggle = document.getElementById('editor-inspector-toggle');
+    if (!inspectorEl || !inspectorToggle) return;
+    if (visible) {
+        inspectorEl.removeAttribute('hidden');
+        inspectorToggle.classList.add('active');
+        inspectorToggle.setAttribute('aria-pressed', 'true');
+        scheduleInspectorUpdate();
+    } else {
+        inspectorEl.setAttribute('hidden', '');
+        inspectorToggle.classList.remove('active');
+        inspectorToggle.setAttribute('aria-pressed', 'false');
+    }
+}
+
+function toggleInspector() {
+    const inspectorEl = document.getElementById('editor-inspector');
+    if (!inspectorEl) return;
+    const next = inspectorEl.hasAttribute('hidden');
+    applyInspectorVisibility(next);
+    invoke('save_preference_key', { key: 'editor_inspector_visible', value: next })
+        .catch(err => console.error('Failed to save editor_inspector_visible preference:', err));
+}
+
+function scheduleInspectorUpdate() {
+    if (inspectorRafId) return;
+    inspectorRafId = requestAnimationFrame(() => {
+        inspectorRafId = null;
+        updateInspector();
+    });
+}
+
+function updateInspector() {
+    const inspectorEl = document.getElementById('editor-inspector');
+    if (!inspectorEl || inspectorEl.hasAttribute('hidden')) return;
+    const ta = document.getElementById('editor-textarea');
+    if (!ta) return;
+    const text = ta.value;
+    const words = (text.trim().match(/\S+/g) || []).length;
+    const chars = text.length;
+    const lines = text === '' ? 0 : ((text.match(/\n/g) || []).length + 1);
+
+    const selStart = ta.selectionStart ?? 0;
+    const selEnd = ta.selectionEnd ?? selStart;
+    const upToCursor = text.slice(0, selStart);
+    const newlineMatches = upToCursor.match(/\n/g);
+    const cursorLine = (newlineMatches ? newlineMatches.length : 0) + 1;
+    const lastNewline = upToCursor.lastIndexOf('\n');
+    const cursorCol = selStart - (lastNewline + 1) + 1;
+    const selLen = Math.max(0, selEnd - selStart);
+
+    const el = (id) => document.getElementById(id);
+    const elWords = el('inspector-words');
+    const elChars = el('inspector-chars');
+    const elLines = el('inspector-lines');
+    const elCursor = el('inspector-cursor');
+    const elSel = el('inspector-selection');
+    const elEncoding = el('inspector-encoding');
+    const elEol = el('inspector-eol');
+    if (elWords) elWords.textContent = String(words);
+    if (elChars) elChars.textContent = String(chars);
+    if (elLines) elLines.textContent = String(lines);
+    if (elCursor) elCursor.textContent = `${cursorLine}:${cursorCol}`;
+    if (elSel) elSel.textContent = String(selLen);
+    if (elEncoding) elEncoding.textContent = 'UTF-8';
+    if (elEol) elEol.textContent = inspectorEol;
 }
 
 async function notifyPreviewEditorClosed() {
@@ -177,8 +255,7 @@ async function initialize() {
     currentFilePath = window.__INITIAL_FILE_PATH__;
     previewWindow = window.__PREVIEW_WINDOW__;
     currentFileKind = detectFileKind(currentFilePath);
-    renderEditorHeader();
-    
+
     // Load file content
     if (currentFilePath) {
         try {
@@ -192,6 +269,7 @@ async function initialize() {
                     console.warn('JSON pretty formatting failed; showing raw:', e);
                 }
             }
+            inspectorEol = raw.includes('\r\n') ? 'CRLF' : 'LF';
             document.getElementById('editor-textarea').value = content;
             updateStatus('Loaded');
 
@@ -203,7 +281,7 @@ async function initialize() {
             updateStatus('Error loading file');
         }
     }
-    
+
     // Load theme preference
     try {
         const prefs = await invoke('get_preferences');
@@ -211,10 +289,13 @@ async function initialize() {
         applyFontSize(prefs.font_size);
         wordWrapEnabled = prefs.word_wrap === true;
         showLineNumbers = prefs.show_line_numbers !== false;
+        applyToolbarDensity(prefs.toolbar_density);
+        applyInspectorVisibility(prefs.editor_inspector_visible === true);
         applyWordWrap();
     } catch (err) {
         console.error('Failed to load preferences:', err);
         applyFontSize(DEFAULT_FONT_SIZE);
+        applyToolbarDensity('icon-label');
     }
 }
 
@@ -254,8 +335,9 @@ async function saveFile() {
     try {
         await invoke('write_file', { path: currentFilePath, content });
         isDirty = false;
+        inspectorEol = content.includes('\r\n') ? 'CRLF' : 'LF';
         updateStatus('Saved');
-        
+
         // Notify preview window to refresh (fire-and-forget; don't steal focus)
         if (previewWindow) {
             invoke('refresh_preview', { window: previewWindow }).catch(() => {});
@@ -440,8 +522,9 @@ function scheduleAutoSave() {
         }
     }).observe(textarea);
 
-    // Keyboard shortcuts (table-driven)
+    // Keyboard shortcuts (table-driven; shift variants listed before non-shift for same key)
     setupKeyboardShortcuts([
+        { key: 'i', ctrl: true, shift: true, action: () => toggleInspector() },
         { key: 'f', ctrl: true, action: () => openFindOverlay() },
         { key: 'h', ctrl: true, action: () => { openFindOverlay(); if (replaceInput) replaceInput.focus(); } },
         { key: 's', ctrl: true, action: () => saveFile() },
@@ -534,6 +617,11 @@ function scheduleAutoSave() {
         applyFontSize(event.payload);
     });
 
+    await listen(EVENT_TOOLBAR_DENSITY_CHANGED, (event) => {
+        if (event.payload === currentToolbarDensity) return;
+        applyToolbarDensity(event.payload);
+    });
+
     // Listen for close menu action -- onCloseRequested handles the save
     await listen(EVENT_MENU_CLOSE, async () => {
         if (!document.hasFocus()) return;
@@ -548,6 +636,18 @@ function scheduleAutoSave() {
 
     const findBtn = document.getElementById('find-btn');
     if (findBtn) findBtn.addEventListener('click', toggleFindOverlay);
+
+    const inspectorToggle = document.getElementById('editor-inspector-toggle');
+    if (inspectorToggle) {
+        inspectorToggle.addEventListener('click', toggleInspector);
+    }
+
+    textarea.addEventListener('input', scheduleInspectorUpdate);
+    textarea.addEventListener('keyup', scheduleInspectorUpdate);
+    textarea.addEventListener('mouseup', scheduleInspectorUpdate);
+    document.addEventListener('selectionchange', () => {
+        if (document.activeElement === textarea) scheduleInspectorUpdate();
+    });
 
     // Use Tauri's onCloseRequested so we can reliably await the async save
     // before allowing the window to close (beforeunload cannot await).
@@ -637,7 +737,8 @@ let lastSearchQuery = '';
 
 function ensureFindOverlay() {
     if (findOverlay) return;
-    const els = createFindOverlay();
+    const slot = document.getElementById('find-bar-slot');
+    const els = createFindOverlay(slot);
     findOverlay = els.overlay;
     findInput = els.input;
 

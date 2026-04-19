@@ -75,10 +75,10 @@ export function setBadgeState(element, text, tone = null, hidden = false) {
 }
 
 /**
- * Creates the find overlay DOM and appends it to document.body.
+ * Creates the find overlay DOM and appends it to the given parent (defaults to document.body).
  * Returns { overlay, input } for the caller to wire up event handlers.
  */
-export function createFindOverlay() {
+export function createFindOverlay(parent = document.body) {
     const overlay = document.createElement('div');
     overlay.className = 'find-overlay';
     overlay.innerHTML = `
@@ -88,7 +88,7 @@ export function createFindOverlay() {
         <button class="find-btn" id="find-next" title="Next" aria-label="Next match">&#8595;</button>
         <button class="find-btn" id="find-close" title="Close" aria-label="Close find">&#10005;</button>
     `;
-    document.body.appendChild(overlay);
+    (parent || document.body).appendChild(overlay);
     const input = overlay.querySelector('#find-input');
     return { overlay, input };
 }

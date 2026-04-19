@@ -2,6 +2,7 @@
 pub const EVENT_FILE_CHANGED: &str = "file-changed";
 pub const EVENT_THEME_CHANGED: &str = "theme-changed";
 pub const EVENT_FONT_SIZE_CHANGED: &str = "font-size-changed";
+pub const EVENT_TOOLBAR_DENSITY_CHANGED: &str = "toolbar-density-changed";
 pub const EVENT_EDITOR_WINDOW_CLOSED: &str = "editor-window-closed";
 pub const EVENT_SCROLL_SYNC: &str = "scroll-sync";
 pub const EVENT_MENU_OPEN: &str = "menu-open";
@@ -42,6 +43,9 @@ pub const KIND_JSON: &str = "json";
 pub const KIND_YAML: &str = "yaml";
 #[allow(dead_code)]
 pub const KIND_TXT: &str = "txt";
+
+// Recent files cap (most-recent first)
+pub const MAX_RECENT_FILES: usize = 10;
 
 // Window label prefixes
 pub const WINDOW_PREFIX_MARKDOWN: &str = "markdown-";

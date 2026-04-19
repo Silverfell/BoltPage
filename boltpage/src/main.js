@@ -17,11 +17,13 @@ import {
     nextFindIndex,
     applyThemeToDocument,
     setupKeyboardShortcuts,
+    setBadgeState,
 } from './shared.js';
 import {
     EVENT_FILE_CHANGED,
     EVENT_THEME_CHANGED,
     EVENT_FONT_SIZE_CHANGED,
+    EVENT_TOOLBAR_DENSITY_CHANGED,
     EVENT_SCROLL_SYNC,
     EVENT_MENU_OPEN,
     EVENT_MENU_CLOSE,
@@ -58,6 +60,8 @@ let findOverlay = null;
 let findInput = null;
 let findVisible = false;
 let currentFontSize = 18;
+let updateStatusTimeout = null;
+let currentToolbarDensity = 'icon-label';
 
 // Track last synced position to filter micro-scrolls
 let lastSyncedLine = null;
@@ -71,11 +75,30 @@ async function loadPreferences() {
         applyFontSize(prefs.font_size);
         applyTheme(prefs.theme);
         tocVisible = prefs.toc_visible !== false;
+        applyToolbarDensity(normalizeDensity(prefs.toolbar_density), { save: false, broadcast: false });
         updateViewMenuState();
     } catch (err) {
         console.error('Failed to load preferences:', err);
         applyFontSize(DEFAULT_FONT_SIZE);
         applyTheme('drac');
+        applyToolbarDensity('icon-label', { save: false, broadcast: false });
+    }
+}
+
+function normalizeDensity(v) {
+    return v === 'icon' || v === 'label' ? v : 'icon-label';
+}
+
+function applyToolbarDensity(density, options = {}) {
+    const { save = false, broadcast = false } = options;
+    const next = normalizeDensity(density);
+    currentToolbarDensity = next;
+    document.documentElement.dataset.toolbarDensity = next;
+    updateViewMenuState();
+    if (save) savePreference('toolbar_density', next);
+    if (broadcast) {
+        invoke('broadcast_toolbar_density_change', { density: next })
+            .catch(err => console.error('Failed to broadcast toolbar density change:', err));
     }
 }
 
@@ -175,22 +198,12 @@ function updateViewMenuState() {
     if (fontSizeIndicator) fontSizeIndicator.textContent = `${currentFontSize}px`;
     if (fontSizeDecreaseBtn) fontSizeDecreaseBtn.disabled = currentFontSize <= MIN_FONT_SIZE;
     if (fontSizeIncreaseBtn) fontSizeIncreaseBtn.disabled = currentFontSize >= MAX_FONT_SIZE;
+
+    document.querySelectorAll('.density-option').forEach(btn => {
+        btn.classList.toggle('active', btn.dataset.density === currentToolbarDensity);
+    });
 }
 
-
-function renderSidebarMeta(items) {
-    const metaEl = document.getElementById('sidebar-meta');
-    if (!metaEl) return;
-    metaEl.innerHTML = items
-        .filter(item => item && item.value)
-        .map(item => `
-            <div class="sidebar-meta-item">
-                <span class="sidebar-meta-label">${escapeHtml(item.label)}</span>
-                <span class="sidebar-meta-value">${escapeHtml(item.value)}</span>
-            </div>
-        `)
-        .join('');
-}
 
 function updateExportButtonState() {
     const exportBtn = document.getElementById('export-btn');
@@ -278,7 +291,6 @@ function buildTOC() {
     tocNav.innerHTML = '';
 
     if (!currentFilePath) {
-        renderSidebarMeta([]);
         if (tocSidebar) tocSidebar.classList.remove('show');
         if (tocOpenBtn) tocOpenBtn.hidden = true;
         updateViewMenuState();
@@ -287,32 +299,6 @@ function buildTOC() {
 
     const headings = document.querySelectorAll('#markdown-content h1, #markdown-content h2, #markdown-content h3, #markdown-content h4, #markdown-content h5, #markdown-content h6');
     const isMarkdownWithHeadings = currentKind === KIND_MARKDOWN && headings.length > 0;
-
-    renderSidebarMeta([
-        { label: 'File Type', value: kindLabel(currentKind) },
-        { label: 'Path', value: directoryFromPath(currentFilePath) || currentFilePath },
-        {
-            label: 'Access',
-            value: isCurrentFileViewOnly()
-                ? 'View Only'
-                : (currentWritable === true ? 'Writable' : (currentWritable === false ? 'Read Only' : 'Unknown'))
-        },
-        {
-            label: 'Workflow',
-            value: isCurrentFileViewOnly()
-                ? 'Preview-only workspace.'
-                : 'Edit in a linked window; autosave refreshes this preview.'
-        },
-        { label: 'Type Size', value: `${currentFontSize}px` },
-        {
-            label: 'Shortcuts',
-            value: isCurrentFileViewOnly()
-                ? 'Ctrl+F search'
-                : (currentKind === KIND_MARKDOWN
-                    ? 'Ctrl+F search, Ctrl+E edit, Ctrl+Shift+E export'
-                    : 'Ctrl+F search, Ctrl+E edit')
-        }
-    ]);
 
     if (sidebarLabel) sidebarLabel.textContent = isMarkdownWithHeadings ? 'Contents' : 'Document';
     if (sidebarCaption) sidebarCaption.textContent = isMarkdownWithHeadings ? 'Markdown outline' : 'Document details';
@@ -611,6 +597,54 @@ async function openEditor() {
     }
 }
 
+async function fetchRecents() {
+    const recentList = document.querySelector('.recent-list');
+    if (!recentList) return;
+    const welcome = document.querySelector('.welcome-message');
+    const welcomeVisible = !!welcome && welcome.isConnected && welcome.offsetParent !== null;
+    if (!welcomeVisible) {
+        recentList.setAttribute('hidden', '');
+        return;
+    }
+    let files = [];
+    try {
+        files = await invoke('get_recent_files');
+    } catch (err) {
+        console.error('Failed to load recent files:', err);
+        return;
+    }
+    if (!Array.isArray(files) || files.length === 0) {
+        recentList.setAttribute('hidden', '');
+        renderRecentItems(recentList, []);
+        return;
+    }
+    recentList.removeAttribute('hidden');
+    renderRecentItems(recentList, files);
+}
+
+function renderRecentItems(container, files) {
+    const existing = container.querySelectorAll('.recent-item');
+    existing.forEach(el => el.remove());
+    const frag = document.createDocumentFragment();
+    for (const f of files) {
+        const item = document.createElement('button');
+        item.type = 'button';
+        item.className = 'recent-item';
+        item.dataset.path = f.path;
+        const name = document.createElement('span');
+        name.className = 'ri-name';
+        name.textContent = f.display_name || f.path;
+        const dir = document.createElement('span');
+        dir.className = 'ri-path';
+        dir.textContent = f.directory || '';
+        item.appendChild(name);
+        item.appendChild(dir);
+        item.addEventListener('click', () => openFile(f.path));
+        frag.appendChild(item);
+    }
+    container.appendChild(frag);
+}
+
 async function createNewMarkdownFile() {
     try {
         const windowLabel = await invoke('create_new_markdown_file');
@@ -681,6 +715,10 @@ function setupEventListeners() {
     document.getElementById('export-btn').addEventListener('click', exportHtml);
     const findBtn = document.getElementById('find-btn');
     if (findBtn) findBtn.addEventListener('click', toggleFindOverlay);
+    const welcomeOpenBtn = document.getElementById('welcome-open-btn');
+    if (welcomeOpenBtn) welcomeOpenBtn.addEventListener('click', () => document.getElementById('open-btn').click());
+    const welcomeNewBtn = document.getElementById('welcome-new-btn');
+    if (welcomeNewBtn) welcomeNewBtn.addEventListener('click', () => document.getElementById('new-btn').click());
     const tocCloseBtn = document.getElementById('toc-close-btn');
     if (tocCloseBtn) tocCloseBtn.addEventListener('click', toggleTOC);
     const tocOpenBtn = document.getElementById('toc-open-btn');
@@ -690,6 +728,15 @@ function setupEventListeners() {
         btn.addEventListener('click', (e) => {
             applyTheme(e.target.dataset.theme);
             toggleThemeMenu();
+        });
+    });
+
+    // Toolbar density seg buttons
+    document.querySelectorAll('.density-option').forEach(btn => {
+        btn.addEventListener('click', (e) => {
+            const value = e.currentTarget.dataset.density;
+            if (!value || value === currentToolbarDensity) return;
+            applyToolbarDensity(value, { save: true, broadcast: true });
         });
     });
     
@@ -788,11 +835,29 @@ window.addEventListener('DOMContentLoaded', async () => {
         contentEl = document.querySelector('.content-wrapper');
         attachPreviewScrollSync();
 
+        // Render recent files in the welcome card
+        fetchRecents();
+        try {
+            await appWindow.onFocusChanged(({ payload: focused }) => {
+                if (focused) fetchRecents();
+            });
+        } catch (err) {
+            console.warn('Failed to bind focus-changed listener:', err);
+        }
+
         // Listen for file change events -- auto-refresh the preview
         await listen(EVENT_FILE_CHANGED, async () => {
             const indicator = document.getElementById('refresh-indicator');
             if (indicator) indicator.classList.add('show');
+            const pill = document.getElementById('update-status');
+            if (pill) setBadgeState(pill, 'Updated', 'accent', false);
             await refreshFile();
+            if (pill) {
+                clearTimeout(updateStatusTimeout);
+                updateStatusTimeout = setTimeout(() => {
+                    setBadgeState(pill, '', null, true);
+                }, 2500);
+            }
         });
 
         // Listen for theme change events from other windows
@@ -809,6 +874,11 @@ window.addEventListener('DOMContentLoaded', async () => {
         await listen(EVENT_FONT_SIZE_CHANGED, async (event) => {
             if (Number(event.payload) === currentFontSize) return;
             applyFontSize(event.payload);
+        });
+
+        await listen(EVENT_TOOLBAR_DENSITY_CHANGED, (event) => {
+            if (event.payload === currentToolbarDensity) return;
+            applyToolbarDensity(event.payload, { save: false, broadcast: false });
         });
 
 
@@ -1000,7 +1070,8 @@ let lastSearchQuery = '';
 
 function ensureFindOverlay() {
     if (findOverlay) return;
-    const els = createFindOverlay();
+    const slot = document.getElementById('find-bar-slot');
+    const els = createFindOverlay(slot);
     findOverlay = els.overlay;
     findInput = els.input;
 

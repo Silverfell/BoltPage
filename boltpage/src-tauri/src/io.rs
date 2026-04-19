@@ -4,8 +4,10 @@ use std::fs;
 use std::io::Write;
 use std::path::{Path, PathBuf};
 use tauri::{AppHandle, Manager};
+use tauri_plugin_store::StoreExt;
 use url::Url;
 
+use crate::constants::MAX_RECENT_FILES;
 use crate::AppState;
 
 // --- Path helpers ---
@@ -71,6 +73,50 @@ pub(crate) fn allow_path(app: &AppHandle, path: &str) {
         .write()
         .expect("allowed_paths lock poisoned")
         .insert(normalized);
+}
+
+/// Record `path` at the head of the recent-files list (most-recent first),
+/// deduplicated and capped at MAX_RECENT_FILES. Holds pref_lock for the full
+/// read-modify-write so concurrent file-open events cannot lose entries.
+pub(crate) async fn push_to_recents(app: &AppHandle, path: &str) -> Result<(), String> {
+    let canonical = fs::canonicalize(path)
+        .map(|p| p.to_string_lossy().to_string())
+        .unwrap_or_else(|_| path.to_string());
+
+    let state = app.state::<AppState>();
+    let _lock = state.pref_lock.lock().await;
+
+    let store = app
+        .store(".boltpage.dat")
+        .map_err(|e| format!("Failed to access store: {e}"))?;
+
+    let mut map = store
+        .get("preferences")
+        .and_then(|v| {
+            serde_json::from_value::<serde_json::Map<String, serde_json::Value>>(v.clone()).ok()
+        })
+        .unwrap_or_default();
+
+    let mut vec: Vec<String> = map
+        .get("recent_files")
+        .and_then(|v| serde_json::from_value(v.clone()).ok())
+        .unwrap_or_default();
+
+    vec.retain(|p| p != &canonical);
+    vec.insert(0, canonical);
+    vec.truncate(MAX_RECENT_FILES);
+
+    map.insert(
+        "recent_files".into(),
+        serde_json::to_value(vec).map_err(|e| format!("serialize recents: {e}"))?,
+    );
+
+    store.set("preferences", serde_json::Value::Object(map));
+    store
+        .save()
+        .map_err(|e| format!("Failed to save preferences: {e}"))?;
+
+    Ok(())
 }
 
 // --- File system utils ---
@@ -480,7 +526,11 @@ pub(crate) async fn open_file_dialog(app: AppHandle) -> Result<Option<String>, S
     .map_err(|e| format!("Join error: {e}"))?;
 
     if let Some(ref p) = file_path {
-        allow_path(&app, &p.to_string());
+        let path_str = p.to_string();
+        allow_path(&app, &path_str);
+        if let Err(e) = push_to_recents(&app, &path_str).await {
+            eprintln!("Failed to push recents (open_file_dialog): {e}");
+        }
     }
 
     Ok(file_path.map(|p| p.to_string()))
@@ -524,6 +574,10 @@ pub(crate) async fn create_new_markdown_file(app: AppHandle) -> Result<Option<St
         .truncate(true)
         .open(&path)
         .map_err(|e| format!("Failed to create file: {e}"))?;
+
+    if let Err(e) = push_to_recents(&app, &path.to_string_lossy()).await {
+        eprintln!("Failed to push recents (create_new_markdown_file): {e}");
+    }
 
     let window_label = crate::window::create_window_with_file(&app, Some(path))
         .await

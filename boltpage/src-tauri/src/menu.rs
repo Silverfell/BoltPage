@@ -150,6 +150,16 @@ pub(crate) fn broadcast_theme_change(app: AppHandle, theme: String) -> Result<()
 }
 
 #[tauri::command]
+pub(crate) fn broadcast_toolbar_density_change(
+    app: AppHandle,
+    density: String,
+) -> Result<(), String> {
+    app.emit(EVENT_TOOLBAR_DENSITY_CHANGED, &density)
+        .map_err(|e| format!("Failed to broadcast toolbar density change: {e}"))?;
+    Ok(())
+}
+
+#[tauri::command]
 pub(crate) fn broadcast_font_size_change(app: AppHandle, font_size: u16) -> Result<(), String> {
     app.emit(EVENT_FONT_SIZE_CHANGED, &font_size)
         .map_err(|e| format!("Failed to broadcast font size change: {e}"))?;
