@@ -7,6 +7,7 @@ import {
     DEFAULT_FONT_SIZE,
     MIN_FONT_SIZE,
     MAX_FONT_SIZE,
+    FIND_TYPE_DEBOUNCE_MS,
     parsePx,
     escapeHtml,
     directoryFromPath,
@@ -15,25 +16,26 @@ import {
     createFindOverlay,
     updateFindCount,
     nextFindIndex,
+    buildFindRegex,
+    collectFindMatches,
     applyThemeToDocument,
     setupKeyboardShortcuts,
+    setBadgeState,
 } from './shared.js';
 import {
     EVENT_FILE_CHANGED,
     EVENT_THEME_CHANGED,
     EVENT_FONT_SIZE_CHANGED,
+    EVENT_TOOLBAR_DENSITY_CHANGED,
     EVENT_SCROLL_SYNC,
     EVENT_MENU_OPEN,
     EVENT_MENU_CLOSE,
     EVENT_MENU_FIND,
-    EVENT_MENU_EDIT,
+    EVENT_MENU_FIND_NEXT,
+    EVENT_MENU_FIND_PREV,
+    EVENT_MENU_FIND_USE_SELECTION,
+    EVENT_MENU_FIND_REPLACE,
     EVENT_MENU_EXPORT_HTML,
-    ACTION_UNDO,
-    ACTION_REDO,
-    ACTION_CUT,
-    ACTION_COPY,
-    ACTION_PASTE,
-    ACTION_SELECT_ALL,
     KIND_MARKDOWN,
     KIND_JSON,
     KIND_YAML,
@@ -58,6 +60,8 @@ let findOverlay = null;
 let findInput = null;
 let findVisible = false;
 let currentFontSize = 18;
+let updateStatusTimeout = null;
+let currentToolbarDensity = 'icon-label';
 
 // Track last synced position to filter micro-scrolls
 let lastSyncedLine = null;
@@ -71,11 +75,30 @@ async function loadPreferences() {
         applyFontSize(prefs.font_size);
         applyTheme(prefs.theme);
         tocVisible = prefs.toc_visible !== false;
+        applyToolbarDensity(normalizeDensity(prefs.toolbar_density), { save: false, broadcast: false });
         updateViewMenuState();
     } catch (err) {
         console.error('Failed to load preferences:', err);
         applyFontSize(DEFAULT_FONT_SIZE);
         applyTheme('drac');
+        applyToolbarDensity('icon-label', { save: false, broadcast: false });
+    }
+}
+
+function normalizeDensity(v) {
+    return v === 'icon' || v === 'label' ? v : 'icon-label';
+}
+
+function applyToolbarDensity(density, options = {}) {
+    const { save = false, broadcast = false } = options;
+    const next = normalizeDensity(density);
+    currentToolbarDensity = next;
+    document.documentElement.dataset.toolbarDensity = next;
+    updateViewMenuState();
+    if (save) savePreference('toolbar_density', next);
+    if (broadcast) {
+        invoke('broadcast_toolbar_density_change', { density: next })
+            .catch(err => console.error('Failed to broadcast toolbar density change:', err));
     }
 }
 
@@ -175,22 +198,12 @@ function updateViewMenuState() {
     if (fontSizeIndicator) fontSizeIndicator.textContent = `${currentFontSize}px`;
     if (fontSizeDecreaseBtn) fontSizeDecreaseBtn.disabled = currentFontSize <= MIN_FONT_SIZE;
     if (fontSizeIncreaseBtn) fontSizeIncreaseBtn.disabled = currentFontSize >= MAX_FONT_SIZE;
+
+    document.querySelectorAll('.density-option').forEach(btn => {
+        btn.classList.toggle('active', btn.dataset.density === currentToolbarDensity);
+    });
 }
 
-
-function renderSidebarMeta(items) {
-    const metaEl = document.getElementById('sidebar-meta');
-    if (!metaEl) return;
-    metaEl.innerHTML = items
-        .filter(item => item && item.value)
-        .map(item => `
-            <div class="sidebar-meta-item">
-                <span class="sidebar-meta-label">${escapeHtml(item.label)}</span>
-                <span class="sidebar-meta-value">${escapeHtml(item.value)}</span>
-            </div>
-        `)
-        .join('');
-}
 
 function updateExportButtonState() {
     const exportBtn = document.getElementById('export-btn');
@@ -278,7 +291,6 @@ function buildTOC() {
     tocNav.innerHTML = '';
 
     if (!currentFilePath) {
-        renderSidebarMeta([]);
         if (tocSidebar) tocSidebar.classList.remove('show');
         if (tocOpenBtn) tocOpenBtn.hidden = true;
         updateViewMenuState();
@@ -287,32 +299,6 @@ function buildTOC() {
 
     const headings = document.querySelectorAll('#markdown-content h1, #markdown-content h2, #markdown-content h3, #markdown-content h4, #markdown-content h5, #markdown-content h6');
     const isMarkdownWithHeadings = currentKind === KIND_MARKDOWN && headings.length > 0;
-
-    renderSidebarMeta([
-        { label: 'File Type', value: kindLabel(currentKind) },
-        { label: 'Path', value: directoryFromPath(currentFilePath) || currentFilePath },
-        {
-            label: 'Access',
-            value: isCurrentFileViewOnly()
-                ? 'View Only'
-                : (currentWritable === true ? 'Writable' : (currentWritable === false ? 'Read Only' : 'Unknown'))
-        },
-        {
-            label: 'Workflow',
-            value: isCurrentFileViewOnly()
-                ? 'Preview-only workspace.'
-                : 'Edit in a linked window; autosave refreshes this preview.'
-        },
-        { label: 'Type Size', value: `${currentFontSize}px` },
-        {
-            label: 'Shortcuts',
-            value: isCurrentFileViewOnly()
-                ? 'Ctrl+F search'
-                : (currentKind === KIND_MARKDOWN
-                    ? 'Ctrl+F search, Ctrl+E edit, Ctrl+Shift+E export'
-                    : 'Ctrl+F search, Ctrl+E edit')
-        }
-    ]);
 
     if (sidebarLabel) sidebarLabel.textContent = isMarkdownWithHeadings ? 'Contents' : 'Document';
     if (sidebarCaption) sidebarCaption.textContent = isMarkdownWithHeadings ? 'Markdown outline' : 'Document details';
@@ -611,6 +597,54 @@ async function openEditor() {
     }
 }
 
+async function fetchRecents() {
+    const recentList = document.querySelector('.recent-list');
+    if (!recentList) return;
+    const welcome = document.querySelector('.welcome-message');
+    const welcomeVisible = !!welcome && welcome.isConnected && welcome.offsetParent !== null;
+    if (!welcomeVisible) {
+        recentList.setAttribute('hidden', '');
+        return;
+    }
+    let files = [];
+    try {
+        files = await invoke('get_recent_files');
+    } catch (err) {
+        console.error('Failed to load recent files:', err);
+        return;
+    }
+    if (!Array.isArray(files) || files.length === 0) {
+        recentList.setAttribute('hidden', '');
+        renderRecentItems(recentList, []);
+        return;
+    }
+    recentList.removeAttribute('hidden');
+    renderRecentItems(recentList, files);
+}
+
+function renderRecentItems(container, files) {
+    const existing = container.querySelectorAll('.recent-item');
+    existing.forEach(el => el.remove());
+    const frag = document.createDocumentFragment();
+    for (const f of files) {
+        const item = document.createElement('button');
+        item.type = 'button';
+        item.className = 'recent-item';
+        item.dataset.path = f.path;
+        const name = document.createElement('span');
+        name.className = 'ri-name';
+        name.textContent = f.display_name || f.path;
+        const dir = document.createElement('span');
+        dir.className = 'ri-path';
+        dir.textContent = f.directory || '';
+        item.appendChild(name);
+        item.appendChild(dir);
+        item.addEventListener('click', () => openFile(f.path));
+        frag.appendChild(item);
+    }
+    container.appendChild(frag);
+}
+
 async function createNewMarkdownFile() {
     try {
         const windowLabel = await invoke('create_new_markdown_file');
@@ -681,6 +715,10 @@ function setupEventListeners() {
     document.getElementById('export-btn').addEventListener('click', exportHtml);
     const findBtn = document.getElementById('find-btn');
     if (findBtn) findBtn.addEventListener('click', toggleFindOverlay);
+    const welcomeOpenBtn = document.getElementById('welcome-open-btn');
+    if (welcomeOpenBtn) welcomeOpenBtn.addEventListener('click', () => document.getElementById('open-btn').click());
+    const welcomeNewBtn = document.getElementById('welcome-new-btn');
+    if (welcomeNewBtn) welcomeNewBtn.addEventListener('click', () => document.getElementById('new-btn').click());
     const tocCloseBtn = document.getElementById('toc-close-btn');
     if (tocCloseBtn) tocCloseBtn.addEventListener('click', toggleTOC);
     const tocOpenBtn = document.getElementById('toc-open-btn');
@@ -690,6 +728,15 @@ function setupEventListeners() {
         btn.addEventListener('click', (e) => {
             applyTheme(e.target.dataset.theme);
             toggleThemeMenu();
+        });
+    });
+
+    // Toolbar density seg buttons
+    document.querySelectorAll('.density-option').forEach(btn => {
+        btn.addEventListener('click', (e) => {
+            const value = e.currentTarget.dataset.density;
+            if (!value || value === currentToolbarDensity) return;
+            applyToolbarDensity(value, { save: true, broadcast: true });
         });
     });
     
@@ -703,19 +750,47 @@ function setupEventListeners() {
     });
 
     
-    // Keyboard shortcuts (table-driven, shift variants before non-shift for same key)
+    // Keyboard shortcuts (table-driven; more-specific variants must precede less-specific)
     setupKeyboardShortcuts([
+        { key: 'f', ctrl: true, alt: true, action: () => { if (currentKind !== 'pdf') openFindAndReplace(); } },
         { key: 'f', ctrl: true, action: () => { if (currentKind !== 'pdf') openFindOverlay(); } },
+        { key: 'g', ctrl: true, shift: true, action: () => { if (currentKind !== 'pdf') findPrevious(); } },
+        { key: 'g', ctrl: true, action: () => { if (currentKind !== 'pdf') findNext(); } },
         { key: 'p', ctrl: true, action: () => { if (currentKind !== 'pdf') invoke('print_current_window').catch(err => console.error('Print failed:', err)); } },
         { key: 'o', ctrl: true, action: () => openFile() },
         { key: 'r', ctrl: true, action: () => refreshFile() },
         { key: 't', ctrl: true, action: () => toggleThemeMenu() },
         { key: 'e', ctrl: true, shift: true, action: () => exportHtml() },
-        { key: 'e', ctrl: true, action: () => openEditor() },
+        { key: 'e', ctrl: true, action: () => {
+            const sel = window.getSelection && window.getSelection().toString();
+            if (sel) { useSelectionForFind(sel); return; }
+            openEditor();
+        } },
         { key: 'n', ctrl: true, shift: true, action: () => invoke('create_new_window_command').catch(err => console.error('Failed to create new window:', err)) },
         { key: 'n', ctrl: true, action: () => createNewMarkdownFile() },
+        { key: 'a', ctrl: true, action: () => selectAllDocument() },
         { key: 'w', ctrl: true, action: () => appWindow.close() },
     ]);
+}
+
+function selectAllDocument() {
+    // Scope Select All to the rendered document; avoid dragging welcome buttons
+    // into the selection when no file is open.
+    const sel = window.getSelection();
+    if (!sel) return;
+    const activeEl = document.activeElement;
+    if (activeEl && (activeEl.tagName === 'TEXTAREA' || activeEl.tagName === 'INPUT')) {
+        activeEl.select();
+        return;
+    }
+    if (!currentFilePath) return;
+    const container = document.getElementById('markdown-content');
+    if (container) {
+        const range = document.createRange();
+        range.selectNodeContents(container);
+        sel.removeAllRanges();
+        sel.addRange(range);
+    }
 }
 
 function isAllowedExternalUrl(url) {
@@ -733,6 +808,10 @@ function attachLinkInterceptor() {
     container.addEventListener('click', async (e) => {
         const a = e.target && e.target.closest ? e.target.closest('a') : null;
         if (!a) return;
+        // Let multi-click and selection-drags fall through so users can select link text.
+        if (e.detail >= 2) return;
+        const sel = window.getSelection && window.getSelection().toString();
+        if (sel) return;
         const href = a.getAttribute('href') || '';
         e.preventDefault();
         if (isAllowedExternalUrl(href)) {
@@ -745,6 +824,41 @@ function attachLinkInterceptor() {
         // Block all other schemes
     });
     container.__linksBound = true;
+}
+
+// Preserve HTML formatting when the user copies from the rendered preview.
+// Without this, WebKit and WebView2 still copy plain text + HTML via the
+// native path, but native Cmd+C on some WebView2 surfaces degrades to text
+// only. Attaching a copy handler guarantees rich copy on both platforms.
+function attachRichCopyHandler() {
+    document.addEventListener('copy', (e) => {
+        const sel = window.getSelection();
+        if (!sel || sel.isCollapsed) return;
+        const activeEl = document.activeElement;
+        if (activeEl && (activeEl.tagName === 'TEXTAREA' || activeEl.tagName === 'INPUT')) return;
+        const container = document.getElementById('markdown-content');
+        if (!container) return;
+        let anyInside = false;
+        for (let i = 0; i < sel.rangeCount; i++) {
+            if (container.contains(sel.getRangeAt(i).commonAncestorContainer)) {
+                anyInside = true;
+                break;
+            }
+        }
+        if (!anyInside) return;
+        const wrapper = document.createElement('div');
+        for (let i = 0; i < sel.rangeCount; i++) {
+            wrapper.appendChild(sel.getRangeAt(i).cloneContents());
+        }
+        if (!wrapper.childNodes.length) return;
+        try {
+            e.clipboardData.setData('text/html', wrapper.innerHTML);
+            e.clipboardData.setData('text/plain', sel.toString());
+            e.preventDefault();
+        } catch (_) {
+            // Fall back to native behavior if clipboardData is locked down.
+        }
+    });
 }
 
 async function startFileWatcher() {
@@ -779,6 +893,7 @@ window.addEventListener('DOMContentLoaded', async () => {
 
         setupEventListeners();
         attachLinkInterceptor();
+        attachRichCopyHandler();
         await loadPreferences();
         // Initial button states
         currentWritable = await updateEditButtonState();
@@ -788,11 +903,29 @@ window.addEventListener('DOMContentLoaded', async () => {
         contentEl = document.querySelector('.content-wrapper');
         attachPreviewScrollSync();
 
+        // Render recent files in the welcome card
+        fetchRecents();
+        try {
+            await appWindow.onFocusChanged(({ payload: focused }) => {
+                if (focused) fetchRecents();
+            });
+        } catch (err) {
+            console.warn('Failed to bind focus-changed listener:', err);
+        }
+
         // Listen for file change events -- auto-refresh the preview
         await listen(EVENT_FILE_CHANGED, async () => {
             const indicator = document.getElementById('refresh-indicator');
             if (indicator) indicator.classList.add('show');
+            const pill = document.getElementById('update-status');
+            if (pill) setBadgeState(pill, 'Updated', 'accent', false);
             await refreshFile();
+            if (pill) {
+                clearTimeout(updateStatusTimeout);
+                updateStatusTimeout = setTimeout(() => {
+                    setBadgeState(pill, '', null, true);
+                }, 2500);
+            }
         });
 
         // Listen for theme change events from other windows
@@ -811,13 +944,11 @@ window.addEventListener('DOMContentLoaded', async () => {
             applyFontSize(event.payload);
         });
 
-
-        // Listen for edit menu actions (cut/copy/paste/select-all)
-        await listen(EVENT_MENU_EDIT, async (event) => {
-            if (!document.hasFocus()) return;
-            const action = String(event.payload || '');
-            performEditAction(action);
+        await listen(EVENT_TOOLBAR_DENSITY_CHANGED, (event) => {
+            if (event.payload === currentToolbarDensity) return;
+            applyToolbarDensity(event.payload, { save: false, broadcast: false });
         });
+
 
         // Listen for HTML export menu requests
         await listen(EVENT_MENU_EXPORT_HTML, () => {
@@ -831,6 +962,28 @@ window.addEventListener('DOMContentLoaded', async () => {
         await listen(EVENT_MENU_FIND, () => {
             if (!document.hasFocus()) return;
             if (currentKind !== 'pdf') openFindOverlay();
+        });
+
+        await listen(EVENT_MENU_FIND_NEXT, () => {
+            if (!document.hasFocus()) return;
+            if (currentKind !== 'pdf') findNext();
+        });
+
+        await listen(EVENT_MENU_FIND_PREV, () => {
+            if (!document.hasFocus()) return;
+            if (currentKind !== 'pdf') findPrevious();
+        });
+
+        await listen(EVENT_MENU_FIND_USE_SELECTION, () => {
+            if (!document.hasFocus()) return;
+            if (currentKind === 'pdf') return;
+            const sel = window.getSelection && window.getSelection().toString();
+            if (sel) useSelectionForFind(sel);
+        });
+
+        await listen(EVENT_MENU_FIND_REPLACE, () => {
+            if (!document.hasFocus()) return;
+            if (currentKind !== 'pdf') openFindAndReplace();
         });
 
         // Listen for File > Open menu action
@@ -938,73 +1091,29 @@ function attachPreviewScrollSync() {
     });
 }
 
-// Edit command helpers using modern Clipboard API
-async function performEditAction(action) {
-    try {
-        const selection = window.getSelection();
-        const activeEl = document.activeElement;
-
-        switch (action) {
-            case ACTION_UNDO:
-            case ACTION_REDO:
-                // Preview is read-only: undo/redo are not applicable
-                break;
-            case ACTION_COPY:
-                if (selection && selection.toString()) {
-                    await navigator.clipboard.writeText(selection.toString());
-                }
-                break;
-            case ACTION_CUT:
-                // Preview is read-only: copy selection to clipboard without modifying DOM
-                if (selection && selection.toString()) {
-                    await navigator.clipboard.writeText(selection.toString());
-                }
-                break;
-            case ACTION_PASTE:
-                try {
-                    const text = await navigator.clipboard.readText();
-                    if (activeEl && (activeEl.tagName === 'TEXTAREA' ||
-                        (activeEl.tagName === 'INPUT' && /^(text|search|url|tel|password|email)$/i.test(activeEl.type)))) {
-                        const start = activeEl.selectionStart ?? 0;
-                        const end = activeEl.selectionEnd ?? 0;
-                        const val = activeEl.value ?? '';
-                        activeEl.value = val.slice(0, start) + text + val.slice(end);
-                        const pos = start + text.length;
-                        activeEl.setSelectionRange(pos, pos);
-                        activeEl.dispatchEvent(new Event('input', { bubbles: true }));
-                    }
-                } catch (err) {
-                    console.error('Paste failed:', err);
-                }
-                break;
-            case ACTION_SELECT_ALL:
-                if (activeEl && (activeEl.tagName === 'TEXTAREA' || activeEl.tagName === 'INPUT')) {
-                    activeEl.select();
-                } else {
-                    const contentContainer = document.getElementById('markdown-content');
-                    if (contentContainer) {
-                        selection.selectAllChildren(contentContainer);
-                    }
-                }
-                break;
-        }
-    } catch (err) {
-        console.error('Edit action failed:', err);
-    }
-}
-
 // --- Find overlay (preview) ---
-let findResults = [];
+let findSpans = [];
 let currentFindIndex = -1;
-let lastSearchQuery = '';
+let findMatchCase = false;
+let findWholeWord = false;
+let findTypeTimer = null;
+let findReturnFocusEl = null;
+let findCaseBtn = null;
+let findWordBtn = null;
 
 function ensureFindOverlay() {
     if (findOverlay) return;
-    const els = createFindOverlay();
+    const slot = document.getElementById('find-bar-slot');
+    const els = createFindOverlay(slot);
     findOverlay = els.overlay;
     findInput = els.input;
+    findCaseBtn = els.caseBtn;
+    findWordBtn = els.wordBtn;
 
-    findInput.addEventListener('input', () => performFind(findInput.value));
+    findInput.addEventListener('input', () => {
+        if (findTypeTimer) clearTimeout(findTypeTimer);
+        findTypeTimer = setTimeout(() => runFindFromInput(), FIND_TYPE_DEBOUNCE_MS);
+    });
     findInput.addEventListener('keydown', (e) => {
         if (e.key === 'Enter') {
             e.preventDefault();
@@ -1015,132 +1124,167 @@ function ensureFindOverlay() {
         }
     });
 
+    const toggle = (btn, setter, refresh = true) => {
+        const next = btn.getAttribute('aria-pressed') !== 'true';
+        btn.setAttribute('aria-pressed', next ? 'true' : 'false');
+        btn.classList.toggle('active', next);
+        setter(next);
+        if (refresh) runFindFromInput();
+        findInput.focus();
+    };
+    findCaseBtn.addEventListener('click', () => toggle(findCaseBtn, v => { findMatchCase = v; }));
+    findWordBtn.addEventListener('click', () => toggle(findWordBtn, v => { findWholeWord = v; }));
+
     findOverlay.querySelector('#find-prev').addEventListener('click', findPrevious);
     findOverlay.querySelector('#find-next').addEventListener('click', findNext);
     findOverlay.querySelector('#find-close').addEventListener('click', closeFindOverlay);
 }
 
+function runFindFromInput() {
+    if (!findInput) return;
+    performFind(findInput.value);
+}
+
 function performFind(query) {
-    if (!query.trim()) {
-        clearFindResults();
+    clearFindHighlights();
+    findSpans = [];
+    currentFindIndex = -1;
+
+    const regex = buildFindRegex(query, { matchCase: findMatchCase, wholeWord: findWholeWord });
+    if (!regex) {
+        updateFindCountDisplay();
         return;
     }
-    
-    lastSearchQuery = query;
-    findResults = [];
-    currentFindIndex = -1;
-    
-    // Clear any existing highlights
-    clearFindHighlights();
-    
-    // Find all instances in the content
-    const content = document.getElementById('markdown-content');
-    if (!content) return;
-    
-    const walker = document.createTreeWalker(
-        content,
-        NodeFilter.SHOW_TEXT,
-        null,
-        false
-    );
-    
-    let node;
-    let offset = 0;
-    
-    while (node = walker.nextNode()) {
-        const text = node.textContent;
-        const lowerText = text.toLowerCase();
-        const lowerQuery = query.toLowerCase();
-        let index = 0;
-        
-        while ((index = lowerText.indexOf(lowerQuery, index)) !== -1) {
-            findResults.push({
-                node: node,
-                start: index,
-                end: index + query.length,
-                offset: offset + index
-            });
-            index += 1;
+
+    const container = document.getElementById('markdown-content');
+    if (!container) return;
+
+    // Collect text nodes first so we can mutate without confusing the walker.
+    const textNodes = [];
+    const walker = document.createTreeWalker(container, NodeFilter.SHOW_TEXT, {
+        acceptNode(node) {
+            if (!node.nodeValue) return NodeFilter.FILTER_REJECT;
+            const parent = node.parentNode;
+            if (!parent) return NodeFilter.FILTER_REJECT;
+            const tag = parent.nodeName;
+            if (tag === 'SCRIPT' || tag === 'STYLE') return NodeFilter.FILTER_REJECT;
+            if (parent.classList && parent.classList.contains('find-match')) return NodeFilter.FILTER_REJECT;
+            return NodeFilter.FILTER_ACCEPT;
+        },
+    });
+    let n;
+    while ((n = walker.nextNode())) textNodes.push(n);
+
+    for (const node of textNodes) {
+        const matches = collectFindMatches(node.nodeValue, regex);
+        if (!matches.length) continue;
+        const parent = node.parentNode;
+        if (!parent) continue;
+        const text = node.nodeValue;
+        const frag = document.createDocumentFragment();
+        let cursor = 0;
+        for (const m of matches) {
+            if (m.start > cursor) frag.appendChild(document.createTextNode(text.slice(cursor, m.start)));
+            const span = document.createElement('span');
+            span.className = 'find-match';
+            span.textContent = text.slice(m.start, m.end);
+            frag.appendChild(span);
+            findSpans.push(span);
+            cursor = m.end;
         }
-        
-        offset += text.length;
+        if (cursor < text.length) frag.appendChild(document.createTextNode(text.slice(cursor)));
+        parent.replaceChild(frag, node);
     }
-    
-    updateFindCountDisplay();
-    
-    if (findResults.length > 0) {
+
+    if (findSpans.length > 0) {
         currentFindIndex = 0;
-        highlightCurrentFind();
+        setActiveFindSpan();
     }
+    updateFindCountDisplay();
+}
+
+function setActiveFindSpan() {
+    findSpans.forEach((s, i) => s.classList.toggle('active', i === currentFindIndex));
+    const span = findSpans[currentFindIndex];
+    if (!span) return;
+    span.scrollIntoView({ behavior: 'smooth', block: 'center' });
 }
 
 function findNext() {
-    const currentQuery = findInput.value;
-    if (currentQuery !== lastSearchQuery || findResults.length === 0) {
-        performFind(currentQuery);
+    if (findSpans.length === 0) {
+        runFindFromInput();
         return;
     }
-    currentFindIndex = nextFindIndex(currentFindIndex, findResults.length, 1);
-    highlightCurrentFind();
+    currentFindIndex = nextFindIndex(currentFindIndex, findSpans.length, 1);
+    setActiveFindSpan();
     updateFindCountDisplay();
 }
 
 function findPrevious() {
-    const currentQuery = findInput.value;
-    if (currentQuery !== lastSearchQuery || findResults.length === 0) {
-        performFind(currentQuery);
+    if (findSpans.length === 0) {
+        runFindFromInput();
         return;
     }
-    currentFindIndex = nextFindIndex(currentFindIndex, findResults.length, -1);
-    highlightCurrentFind();
+    currentFindIndex = nextFindIndex(currentFindIndex, findSpans.length, -1);
+    setActiveFindSpan();
     updateFindCountDisplay();
 }
 
-function highlightCurrentFind() {
-    if (currentFindIndex < 0 || currentFindIndex >= findResults.length) return;
-    
-    const result = findResults[currentFindIndex];
-    const range = document.createRange();
-    range.setStart(result.node, result.start);
-    range.setEnd(result.node, result.end);
-    
-    // Clear previous selection
-    const selection = window.getSelection();
-    selection.removeAllRanges();
-    selection.addRange(range);
-    
-    // Scroll into view
-    result.node.parentElement?.scrollIntoView({
-        behavior: 'smooth',
-        block: 'center'
-    });
-}
-
 function clearFindHighlights() {
-    const selection = window.getSelection();
-    selection.removeAllRanges();
+    if (findSpans.length === 0) return;
+    const parents = new Set();
+    for (const span of findSpans) {
+        const parent = span.parentNode;
+        if (!parent) continue;
+        parent.replaceChild(document.createTextNode(span.textContent), span);
+        parents.add(parent);
+    }
+    for (const p of parents) p.normalize();
+    findSpans = [];
 }
 
 function clearFindResults() {
-    findResults = [];
-    currentFindIndex = -1;
     clearFindHighlights();
+    currentFindIndex = -1;
     updateFindCountDisplay();
 }
 
 function updateFindCountDisplay() {
-    updateFindCount(findOverlay, findResults, currentFindIndex);
+    updateFindCount(findOverlay, findSpans, currentFindIndex);
 }
 
 function openFindOverlay() {
     ensureFindOverlay();
+    if (!findVisible) {
+        findReturnFocusEl = (document.activeElement && document.activeElement !== document.body)
+            ? document.activeElement
+            : null;
+    }
     findOverlay.classList.add('show');
     findVisible = true;
-    // prefill from selection if any
     const sel = window.getSelection && window.getSelection().toString();
-    if (sel) findInput.value = sel;
+    if (sel) {
+        findInput.value = sel;
+        runFindFromInput();
+    }
     findInput.focus();
     findInput.select();
+}
+
+function openFindAndReplace() {
+    // Preview is read-only, so Find-and-Replace collapses to plain Find here.
+    openFindOverlay();
+}
+
+function useSelectionForFind(selectionText) {
+    ensureFindOverlay();
+    findInput.value = selectionText;
+    runFindFromInput();
+    // Do not steal focus: if bar is hidden, keep it hidden so user can keep reading.
+    if (findVisible) {
+        findInput.focus();
+        findInput.select();
+    }
 }
 
 function toggleFindOverlay() {
@@ -1151,5 +1295,13 @@ function closeFindOverlay() {
     if (!findOverlay) return;
     findOverlay.classList.remove('show');
     findVisible = false;
+    if (findTypeTimer) { clearTimeout(findTypeTimer); findTypeTimer = null; }
     clearFindResults();
+    const returnTo = findReturnFocusEl;
+    findReturnFocusEl = null;
+    if (returnTo && document.contains(returnTo) && typeof returnTo.focus === 'function') {
+        returnTo.focus();
+    } else if (document.activeElement === findInput) {
+        findInput.blur();
+    }
 }

@@ -8,6 +8,7 @@ import {
     MIN_FONT_SIZE,
     MAX_FONT_SIZE,
     EDITOR_FONT_SIZE_OFFSET,
+    FIND_TYPE_DEBOUNCE_MS,
     parsePx,
     escapeHtml,
     clampFontSize,
@@ -15,23 +16,23 @@ import {
     createFindOverlay,
     updateFindCount,
     nextFindIndex,
+    buildFindRegex,
+    collectFindMatches,
     applyThemeToDocument,
     setupKeyboardShortcuts,
 } from './shared.js';
 import {
     EVENT_THEME_CHANGED,
     EVENT_FONT_SIZE_CHANGED,
+    EVENT_TOOLBAR_DENSITY_CHANGED,
     EVENT_SCROLL_SYNC,
     EVENT_MENU_CLOSE,
     EVENT_MENU_FIND,
-    EVENT_MENU_EDIT,
+    EVENT_MENU_FIND_NEXT,
+    EVENT_MENU_FIND_PREV,
+    EVENT_MENU_FIND_USE_SELECTION,
+    EVENT_MENU_FIND_REPLACE,
     EVENT_MENU_PRINT,
-    ACTION_UNDO,
-    ACTION_REDO,
-    ACTION_CUT,
-    ACTION_COPY,
-    ACTION_PASTE,
-    ACTION_SELECT_ALL,
     KIND_MARKDOWN,
     KIND_JSON,
     KIND_YAML,
@@ -66,7 +67,10 @@ let mirrorDivs = [];
 let gutterDivs = [];
 let lineHeights = [];
 let currentFontSize = 18;
+let currentToolbarDensity = 'icon-label';
 let closeEventSent = false;
+let inspectorRafId = null;
+let inspectorEol = 'LF';
 
 // Track last synced position to filter micro-scrolls
 let lastSyncedLine = null;
@@ -87,10 +91,6 @@ function updateFontSizeControls() {
     if (indicator) indicator.textContent = `${currentFontSize}px`;
     if (decreaseBtn) decreaseBtn.disabled = currentFontSize <= MIN_FONT_SIZE;
     if (increaseBtn) increaseBtn.disabled = currentFontSize >= MAX_FONT_SIZE;
-}
-
-function renderEditorHeader() {
-    // Compact header: no document identity display
 }
 
 function editorFontSizePx(fontSize = currentFontSize) {
@@ -130,6 +130,84 @@ function applyFontSize(fontSize, options = {}) {
 
 function changeFontSize(delta) {
     applyFontSize(currentFontSize + delta, { save: true, broadcast: true });
+}
+
+function normalizeDensity(v) {
+    return v === 'icon' || v === 'label' ? v : 'icon-label';
+}
+
+function applyToolbarDensity(density) {
+    currentToolbarDensity = normalizeDensity(density);
+    document.documentElement.dataset.toolbarDensity = currentToolbarDensity;
+}
+
+function applyInspectorVisibility(visible) {
+    const inspectorEl = document.getElementById('editor-inspector');
+    const inspectorToggle = document.getElementById('editor-inspector-toggle');
+    if (!inspectorEl || !inspectorToggle) return;
+    if (visible) {
+        inspectorEl.removeAttribute('hidden');
+        inspectorToggle.classList.add('active');
+        inspectorToggle.setAttribute('aria-pressed', 'true');
+        scheduleInspectorUpdate();
+    } else {
+        inspectorEl.setAttribute('hidden', '');
+        inspectorToggle.classList.remove('active');
+        inspectorToggle.setAttribute('aria-pressed', 'false');
+    }
+}
+
+function toggleInspector() {
+    const inspectorEl = document.getElementById('editor-inspector');
+    if (!inspectorEl) return;
+    const next = inspectorEl.hasAttribute('hidden');
+    applyInspectorVisibility(next);
+    invoke('save_preference_key', { key: 'editor_inspector_visible', value: next })
+        .catch(err => console.error('Failed to save editor_inspector_visible preference:', err));
+}
+
+function scheduleInspectorUpdate() {
+    if (inspectorRafId) return;
+    inspectorRafId = requestAnimationFrame(() => {
+        inspectorRafId = null;
+        updateInspector();
+    });
+}
+
+function updateInspector() {
+    const inspectorEl = document.getElementById('editor-inspector');
+    if (!inspectorEl || inspectorEl.hasAttribute('hidden')) return;
+    const ta = document.getElementById('editor-textarea');
+    if (!ta) return;
+    const text = ta.value;
+    const words = (text.trim().match(/\S+/g) || []).length;
+    const chars = text.length;
+    const lines = text === '' ? 0 : ((text.match(/\n/g) || []).length + 1);
+
+    const selStart = ta.selectionStart ?? 0;
+    const selEnd = ta.selectionEnd ?? selStart;
+    const upToCursor = text.slice(0, selStart);
+    const newlineMatches = upToCursor.match(/\n/g);
+    const cursorLine = (newlineMatches ? newlineMatches.length : 0) + 1;
+    const lastNewline = upToCursor.lastIndexOf('\n');
+    const cursorCol = selStart - (lastNewline + 1) + 1;
+    const selLen = Math.max(0, selEnd - selStart);
+
+    const el = (id) => document.getElementById(id);
+    const elWords = el('inspector-words');
+    const elChars = el('inspector-chars');
+    const elLines = el('inspector-lines');
+    const elCursor = el('inspector-cursor');
+    const elSel = el('inspector-selection');
+    const elEncoding = el('inspector-encoding');
+    const elEol = el('inspector-eol');
+    if (elWords) elWords.textContent = String(words);
+    if (elChars) elChars.textContent = String(chars);
+    if (elLines) elLines.textContent = String(lines);
+    if (elCursor) elCursor.textContent = `${cursorLine}:${cursorCol}`;
+    if (elSel) elSel.textContent = String(selLen);
+    if (elEncoding) elEncoding.textContent = 'UTF-8';
+    if (elEol) elEol.textContent = inspectorEol;
 }
 
 async function notifyPreviewEditorClosed() {
@@ -177,8 +255,7 @@ async function initialize() {
     currentFilePath = window.__INITIAL_FILE_PATH__;
     previewWindow = window.__PREVIEW_WINDOW__;
     currentFileKind = detectFileKind(currentFilePath);
-    renderEditorHeader();
-    
+
     // Load file content
     if (currentFilePath) {
         try {
@@ -192,6 +269,7 @@ async function initialize() {
                     console.warn('JSON pretty formatting failed; showing raw:', e);
                 }
             }
+            inspectorEol = raw.includes('\r\n') ? 'CRLF' : 'LF';
             document.getElementById('editor-textarea').value = content;
             updateStatus('Loaded');
 
@@ -203,7 +281,7 @@ async function initialize() {
             updateStatus('Error loading file');
         }
     }
-    
+
     // Load theme preference
     try {
         const prefs = await invoke('get_preferences');
@@ -211,10 +289,13 @@ async function initialize() {
         applyFontSize(prefs.font_size);
         wordWrapEnabled = prefs.word_wrap === true;
         showLineNumbers = prefs.show_line_numbers !== false;
+        applyToolbarDensity(prefs.toolbar_density);
+        applyInspectorVisibility(prefs.editor_inspector_visible === true);
         applyWordWrap();
     } catch (err) {
         console.error('Failed to load preferences:', err);
         applyFontSize(DEFAULT_FONT_SIZE);
+        applyToolbarDensity('icon-label');
     }
 }
 
@@ -254,8 +335,9 @@ async function saveFile() {
     try {
         await invoke('write_file', { path: currentFilePath, content });
         isDirty = false;
+        inspectorEol = content.includes('\r\n') ? 'CRLF' : 'LF';
         updateStatus('Saved');
-        
+
         // Notify preview window to refresh (fire-and-forget; don't steal focus)
         if (previewWindow) {
             invoke('refresh_preview', { window: previewWindow }).catch(() => {});
@@ -440,10 +522,14 @@ function scheduleAutoSave() {
         }
     }).observe(textarea);
 
-    // Keyboard shortcuts (table-driven)
+    // Keyboard shortcuts (table-driven; more-specific variants must precede less-specific)
     setupKeyboardShortcuts([
+        { key: 'i', ctrl: true, shift: true, action: () => toggleInspector() },
+        { key: 'f', ctrl: true, alt: true, action: () => openFindAndReplace() },
         { key: 'f', ctrl: true, action: () => openFindOverlay() },
-        { key: 'h', ctrl: true, action: () => { openFindOverlay(); if (replaceInput) replaceInput.focus(); } },
+        { key: 'g', ctrl: true, shift: true, action: () => findPrevious() },
+        { key: 'g', ctrl: true, action: () => findNext() },
+        { key: 'e', ctrl: true, action: () => useSelectionForFindFromEditor() },
         { key: 's', ctrl: true, action: () => saveFile() },
         { key: 'w', ctrl: true, action: () => appWindow.close() },
     ]);
@@ -514,14 +600,28 @@ function scheduleAutoSave() {
 
     // Listen for menu find requests
     await listen(EVENT_MENU_FIND, () => {
+        if (!document.hasFocus()) return;
         openFindOverlay();
     });
 
-    // Listen for edit menu actions
-    await listen(EVENT_MENU_EDIT, async (event) => {
+    await listen(EVENT_MENU_FIND_NEXT, () => {
         if (!document.hasFocus()) return;
-        const action = String(event.payload || '');
-        performEditAction(action);
+        findNext();
+    });
+
+    await listen(EVENT_MENU_FIND_PREV, () => {
+        if (!document.hasFocus()) return;
+        findPrevious();
+    });
+
+    await listen(EVENT_MENU_FIND_USE_SELECTION, () => {
+        if (!document.hasFocus()) return;
+        useSelectionForFindFromEditor();
+    });
+
+    await listen(EVENT_MENU_FIND_REPLACE, () => {
+        if (!document.hasFocus()) return;
+        openFindAndReplace();
     });
 
     // Listen for theme changes
@@ -532,6 +632,11 @@ function scheduleAutoSave() {
     await listen(EVENT_FONT_SIZE_CHANGED, (event) => {
         if (Number(event.payload) === currentFontSize) return;
         applyFontSize(event.payload);
+    });
+
+    await listen(EVENT_TOOLBAR_DENSITY_CHANGED, (event) => {
+        if (event.payload === currentToolbarDensity) return;
+        applyToolbarDensity(event.payload);
     });
 
     // Listen for close menu action -- onCloseRequested handles the save
@@ -548,6 +653,18 @@ function scheduleAutoSave() {
 
     const findBtn = document.getElementById('find-btn');
     if (findBtn) findBtn.addEventListener('click', toggleFindOverlay);
+
+    const inspectorToggle = document.getElementById('editor-inspector-toggle');
+    if (inspectorToggle) {
+        inspectorToggle.addEventListener('click', toggleInspector);
+    }
+
+    textarea.addEventListener('input', scheduleInspectorUpdate);
+    textarea.addEventListener('keyup', scheduleInspectorUpdate);
+    textarea.addEventListener('mouseup', scheduleInspectorUpdate);
+    document.addEventListener('selectionchange', () => {
+        if (document.activeElement === textarea) scheduleInspectorUpdate();
+    });
 
     // Use Tauri's onCloseRequested so we can reliably await the async save
     // before allowing the window to close (beforeunload cannot await).
@@ -569,90 +686,42 @@ function scheduleAutoSave() {
   }
 });
 
-// Edit command helpers using modern Clipboard API
-async function performEditAction(action) {
-    try {
-        const textarea = document.getElementById('editor-textarea');
-        if (!textarea) return;
-
-        switch (action) {
-            case ACTION_UNDO:
-                textarea.focus();
-                document.execCommand('undo');
-                break;
-            case ACTION_REDO:
-                textarea.focus();
-                document.execCommand('redo');
-                break;
-            case ACTION_COPY:
-                if (textarea.selectionStart !== textarea.selectionEnd) {
-                    const text = textarea.value.substring(textarea.selectionStart, textarea.selectionEnd);
-                    await navigator.clipboard.writeText(text);
-                }
-                break;
-            case ACTION_CUT:
-                if (textarea.selectionStart !== textarea.selectionEnd) {
-                    const cutText = textarea.value.substring(textarea.selectionStart, textarea.selectionEnd);
-                    await navigator.clipboard.writeText(cutText);
-                    const cutStart = textarea.selectionStart;
-                    textarea.value = textarea.value.slice(0, cutStart) + textarea.value.slice(textarea.selectionEnd);
-                    textarea.setSelectionRange(cutStart, cutStart);
-                    textarea.dispatchEvent(new Event('input', { bubbles: true }));
-                }
-                break;
-            case ACTION_PASTE:
-                try {
-                    const clipText = await navigator.clipboard.readText();
-                    if (clipText) {
-                        textarea.focus();
-                        const start = textarea.selectionStart;
-                        const end = textarea.selectionEnd;
-                        const val = textarea.value;
-                        textarea.value = val.slice(0, start) + clipText + val.slice(end);
-                        const pos = start + clipText.length;
-                        textarea.setSelectionRange(pos, pos);
-                        textarea.dispatchEvent(new Event('input', { bubbles: true }));
-                    }
-                } catch (pasteErr) {
-                    console.error('Paste failed:', pasteErr);
-                }
-                break;
-            case ACTION_SELECT_ALL:
-                textarea.select();
-                break;
-        }
-    } catch (err) {
-        console.error('Edit action failed:', err);
-    }
-}
-
-function escapeRegex(str) {
-    return str.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-}
-
 // --- Find overlay (editor) ---
 let findResults = [];
 let currentFindIndex = -1;
-let lastSearchQuery = '';
+let findMatchCase = false;
+let findWholeWord = false;
+let findReplaceVisible = false;
+let findTypeTimer = null;
+let findReturnFocusEl = null;
+let findCaseBtn = null;
+let findWordBtn = null;
 
 function ensureFindOverlay() {
     if (findOverlay) return;
-    const els = createFindOverlay();
+    const slot = document.getElementById('find-bar-slot');
+    const els = createFindOverlay(slot);
     findOverlay = els.overlay;
     findInput = els.input;
+    findCaseBtn = els.caseBtn;
+    findWordBtn = els.wordBtn;
 
-    // Add replace row
+    // Add replace row (hidden until the user requests Find-and-Replace)
     const replaceRow = document.createElement('div');
     replaceRow.className = 'replace-row';
+    replaceRow.hidden = true;
     replaceRow.innerHTML = `
-        <input id="replace-input" class="find-input replace-input" type="text" placeholder="Replace..." />
-        <button class="find-btn replace-btn-text" id="replace-one" title="Replace current match">Replace</button>
-        <button class="find-btn replace-btn-text" id="replace-all" title="Replace all matches">All</button>
+        <input id="replace-input" class="find-input replace-input" type="text" placeholder="Replace..." aria-label="Replace with" />
+        <button class="find-btn replace-btn-text" id="replace-one" type="button" title="Replace current match">Replace</button>
+        <button class="find-btn replace-btn-text" id="replace-all" type="button" title="Replace all matches">All</button>
     `;
     findOverlay.appendChild(replaceRow);
     replaceInput = replaceRow.querySelector('#replace-input');
 
-    findInput.addEventListener('input', () => performFind(findInput.value));
+    findInput.addEventListener('input', () => {
+        if (findTypeTimer) clearTimeout(findTypeTimer);
+        findTypeTimer = setTimeout(() => runFindFromInput(), FIND_TYPE_DEBOUNCE_MS);
+    });
     findInput.addEventListener('keydown', (e) => {
         if (e.key === 'Enter') {
             e.preventDefault();
@@ -660,7 +729,7 @@ function ensureFindOverlay() {
         } else if (e.key === 'Escape') {
             e.preventDefault();
             closeFindOverlay();
-        } else if (e.key === 'Tab' && !e.shiftKey) {
+        } else if (e.key === 'Tab' && !e.shiftKey && findReplaceVisible) {
             e.preventDefault();
             replaceInput.focus();
         }
@@ -679,13 +748,24 @@ function ensureFindOverlay() {
         }
     });
 
+    const toggle = (btn, setter) => {
+        const next = btn.getAttribute('aria-pressed') !== 'true';
+        btn.setAttribute('aria-pressed', next ? 'true' : 'false');
+        btn.classList.toggle('active', next);
+        setter(next);
+        runFindFromInput();
+        findInput.focus();
+    };
+    findCaseBtn.addEventListener('click', () => toggle(findCaseBtn, v => { findMatchCase = v; }));
+    findWordBtn.addEventListener('click', () => toggle(findWordBtn, v => { findWholeWord = v; }));
+
     findOverlay.querySelector('#find-prev').addEventListener('click', findPrevious);
     findOverlay.querySelector('#find-next').addEventListener('click', findNext);
     findOverlay.querySelector('#find-close').addEventListener('click', closeFindOverlay);
     findOverlay.querySelector('#replace-one').addEventListener('click', replaceCurrent);
     findOverlay.querySelector('#replace-all').addEventListener('click', replaceAll);
 
-    // Create highlight overlay that sits on top of the textarea (wrapper already exists)
+    // Create highlight overlay that sits on top of the textarea
     if (!findHighlightOverlay) {
         const ta = document.getElementById('editor-textarea');
         const wrapper = ta.closest('.editor-textarea-wrapper');
@@ -694,98 +774,109 @@ function ensureFindOverlay() {
         findHighlightOverlay.className = 'find-highlight-overlay';
         wrapper.appendChild(findHighlightOverlay);
 
-        // Sync textarea scroll to overlay
         ta.addEventListener('scroll', () => {
-            if (findHighlightOverlay) findHighlightOverlay.scrollTop = ta.scrollTop;
+            if (findHighlightOverlay) {
+                findHighlightOverlay.scrollTop = ta.scrollTop;
+                findHighlightOverlay.scrollLeft = ta.scrollLeft;
+            }
         });
     }
+}
+
+function setReplaceRowVisible(visible) {
+    findReplaceVisible = visible;
+    const row = findOverlay && findOverlay.querySelector('.replace-row');
+    if (row) row.hidden = !visible;
+}
+
+function runFindFromInput() {
+    if (!findInput) return;
+    performFind(findInput.value);
 }
 
 function performFind(query) {
-    if (!query.trim()) {
-        clearFindResults();
-        return;
-    }
-    
-    lastSearchQuery = query;
     findResults = [];
     currentFindIndex = -1;
-    
+
+    const regex = buildFindRegex(query, { matchCase: findMatchCase, wholeWord: findWholeWord });
+    if (!regex) {
+        renderFindOverlay();
+        updateFindCountDisplay();
+        return;
+    }
+
     const ta = document.getElementById('editor-textarea');
-    const value = ta.value;
-    const lowerValue = value.toLowerCase();
-    const lowerQuery = query.toLowerCase();
-    let index = 0;
-    
-    // Find all instances
-    while ((index = lowerValue.indexOf(lowerQuery, index)) !== -1) {
-        findResults.push({
-            start: index,
-            end: index + query.length
-        });
-        index += 1;
-    }
-    
+    findResults = collectFindMatches(ta.value, regex);
+
+    if (findResults.length > 0) currentFindIndex = 0;
+    renderFindOverlay();
+    scrollCurrentIntoView();
     updateFindCountDisplay();
-    
-    if (findResults.length > 0) {
-        currentFindIndex = 0;
-        highlightCurrentFind();
+}
+
+function renderFindOverlay() {
+    if (!findHighlightOverlay) return;
+    const ta = document.getElementById('editor-textarea');
+    const text = ta.value;
+    if (findResults.length === 0) {
+        findHighlightOverlay.textContent = '';
+        findHighlightOverlay.scrollTop = ta.scrollTop;
+        findHighlightOverlay.scrollLeft = ta.scrollLeft;
+        return;
     }
+    let html = '';
+    let cursor = 0;
+    for (let i = 0; i < findResults.length; i++) {
+        const m = findResults[i];
+        if (m.start > cursor) html += escapeHtml(text.slice(cursor, m.start));
+        const cls = i === currentFindIndex ? ' class="active"' : '';
+        html += `<mark${cls}>${escapeHtml(text.slice(m.start, m.end))}</mark>`;
+        cursor = m.end;
+    }
+    if (cursor < text.length) html += escapeHtml(text.slice(cursor));
+    findHighlightOverlay.innerHTML = html;
+    findHighlightOverlay.scrollTop = ta.scrollTop;
+    findHighlightOverlay.scrollLeft = ta.scrollLeft;
+}
+
+function scrollCurrentIntoView() {
+    if (currentFindIndex < 0 || !findHighlightOverlay) return;
+    const ta = document.getElementById('editor-textarea');
+    const marks = findHighlightOverlay.querySelectorAll('mark');
+    const mark = marks[currentFindIndex];
+    if (!mark) return;
+    const overlayTop = findHighlightOverlay.getBoundingClientRect().top;
+    const markTop = mark.getBoundingClientRect().top;
+    const offset = markTop - overlayTop + findHighlightOverlay.scrollTop;
+    isProgrammaticScroll = true;
+    ta.scrollTop = Math.max(0, offset - ta.clientHeight / 2);
+    findHighlightOverlay.scrollTop = ta.scrollTop;
+    setTimeout(() => { isProgrammaticScroll = false; }, PROGRAMMATIC_SCROLL_TIMEOUT_MS);
+
+    // Also place the selection on the active match so the caret moves there on Esc.
+    ta.setSelectionRange(findResults[currentFindIndex].start, findResults[currentFindIndex].end);
 }
 
 function findNext() {
-    const currentQuery = findInput.value;
-    if (currentQuery !== lastSearchQuery || findResults.length === 0) {
-        performFind(currentQuery);
+    if (findResults.length === 0) {
+        runFindFromInput();
         return;
     }
     currentFindIndex = nextFindIndex(currentFindIndex, findResults.length, 1);
-    highlightCurrentFind();
+    renderFindOverlay();
+    scrollCurrentIntoView();
     updateFindCountDisplay();
 }
 
 function findPrevious() {
-    const currentQuery = findInput.value;
-    if (currentQuery !== lastSearchQuery || findResults.length === 0) {
-        performFind(currentQuery);
+    if (findResults.length === 0) {
+        runFindFromInput();
         return;
     }
     currentFindIndex = nextFindIndex(currentFindIndex, findResults.length, -1);
-    highlightCurrentFind();
+    renderFindOverlay();
+    scrollCurrentIntoView();
     updateFindCountDisplay();
-}
-
-function highlightCurrentFind() {
-    if (currentFindIndex < 0 || currentFindIndex >= findResults.length) {
-        if (findHighlightOverlay) findHighlightOverlay.innerHTML = '';
-        return;
-    }
-
-    const result = findResults[currentFindIndex];
-    const ta = document.getElementById('editor-textarea');
-    const text = ta.value;
-
-    // Update highlight overlay with current match marked
-    if (findHighlightOverlay) {
-        const before = escapeHtml(text.slice(0, result.start));
-        const match = escapeHtml(text.slice(result.start, result.end));
-        const after = escapeHtml(text.slice(result.end));
-        findHighlightOverlay.innerHTML = before + '<mark>' + match + '</mark>' + after;
-        findHighlightOverlay.scrollTop = ta.scrollTop;
-
-        // Use the mark element's rendered position for accurate scrolling
-        const mark = findHighlightOverlay.querySelector('mark');
-        if (mark) {
-            const overlayTop = findHighlightOverlay.getBoundingClientRect().top;
-            const markTop = mark.getBoundingClientRect().top;
-            const offset = markTop - overlayTop + findHighlightOverlay.scrollTop;
-            isProgrammaticScroll = true;
-            ta.scrollTop = Math.max(0, offset - ta.clientHeight / 2);
-            findHighlightOverlay.scrollTop = ta.scrollTop;
-            setTimeout(() => { isProgrammaticScroll = false; }, PROGRAMMATIC_SCROLL_TIMEOUT_MS);
-        }
-    }
 }
 
 function replaceCurrent() {
@@ -794,24 +885,15 @@ function replaceCurrent() {
 
     const ta = document.getElementById('editor-textarea');
     const result = findResults[currentFindIndex];
-    const oldStart = result.start;
     const replacement = replaceInput.value;
 
-    ta.value = ta.value.slice(0, result.start) + replacement + ta.value.slice(result.end);
+    // Use setRangeText to preserve the native undo stack.
+    ta.focus();
+    ta.setSelectionRange(result.start, result.end);
+    ta.setRangeText(replacement, result.start, result.end, 'end');
     ta.dispatchEvent(new Event('input', { bubbles: true }));
 
-    const savedIndex = currentFindIndex;
-    performFind(findInput.value);
-
-    if (findResults.length > 0) {
-        currentFindIndex = Math.min(savedIndex, findResults.length - 1);
-        // If the replacement itself matches, skip past it to the next match
-        if (findResults[currentFindIndex] && findResults[currentFindIndex].start === oldStart) {
-            currentFindIndex = (currentFindIndex + 1) % findResults.length;
-        }
-        highlightCurrentFind();
-        updateFindCountDisplay();
-    }
+    runFindFromInput();
 }
 
 function replaceAll() {
@@ -820,19 +902,21 @@ function replaceAll() {
 
     const ta = document.getElementById('editor-textarea');
     const replacement = replaceInput.value;
-    const query = findInput.value;
-    const regex = new RegExp(escapeRegex(query), 'gi');
-
-    ta.value = ta.value.replace(regex, replacement);
+    // Splice from the tail so earlier indices remain valid.
+    ta.focus();
+    for (let i = findResults.length - 1; i >= 0; i--) {
+        const m = findResults[i];
+        ta.setSelectionRange(m.start, m.end);
+        ta.setRangeText(replacement, m.start, m.end, 'end');
+    }
     ta.dispatchEvent(new Event('input', { bubbles: true }));
-
-    performFind(query);
+    runFindFromInput();
 }
 
 function clearFindResults() {
     findResults = [];
     currentFindIndex = -1;
-    if (findHighlightOverlay) findHighlightOverlay.innerHTML = '';
+    if (findHighlightOverlay) findHighlightOverlay.textContent = '';
     updateFindCountDisplay();
 }
 
@@ -840,15 +924,57 @@ function updateFindCountDisplay() {
     updateFindCount(findOverlay, findResults, currentFindIndex);
 }
 
+function captureReturnFocus() {
+    findReturnFocusEl = (document.activeElement && document.activeElement !== document.body)
+        ? document.activeElement
+        : document.getElementById('editor-textarea');
+}
+
 function openFindOverlay() {
     ensureFindOverlay();
+    if (!findVisible) captureReturnFocus();
+    setReplaceRowVisible(false);
     findOverlay.classList.add('show');
     findVisible = true;
     const ta = document.getElementById('editor-textarea');
     const sel = ta && ta.value ? ta.value.substring(ta.selectionStart || 0, ta.selectionEnd || 0) : '';
-    if (sel) findInput.value = sel;
+    if (sel) {
+        findInput.value = sel;
+        runFindFromInput();
+    }
     findInput.focus();
     findInput.select();
+}
+
+function openFindAndReplace() {
+    ensureFindOverlay();
+    if (!findVisible) captureReturnFocus();
+    setReplaceRowVisible(true);
+    findOverlay.classList.add('show');
+    findVisible = true;
+    const ta = document.getElementById('editor-textarea');
+    const sel = ta && ta.value ? ta.value.substring(ta.selectionStart || 0, ta.selectionEnd || 0) : '';
+    if (sel && !findInput.value) {
+        findInput.value = sel;
+        runFindFromInput();
+    }
+    findInput.focus();
+    findInput.select();
+}
+
+function useSelectionForFindFromEditor() {
+    const ta = document.getElementById('editor-textarea');
+    if (!ta) return;
+    const sel = ta.value.substring(ta.selectionStart || 0, ta.selectionEnd || 0);
+    if (!sel) return;
+    ensureFindOverlay();
+    findInput.value = sel;
+    runFindFromInput();
+    // Stay in the document unless the bar is already visible.
+    if (findVisible) {
+        findInput.focus();
+        findInput.select();
+    }
 }
 
 function toggleFindOverlay() {
@@ -859,6 +985,13 @@ function closeFindOverlay() {
     if (!findOverlay) return;
     findOverlay.classList.remove('show');
     findVisible = false;
+    if (findTypeTimer) { clearTimeout(findTypeTimer); findTypeTimer = null; }
     clearFindResults();
+    setReplaceRowVisible(false);
     if (replaceInput) replaceInput.value = '';
+    const returnTo = findReturnFocusEl;
+    findReturnFocusEl = null;
+    const ta = document.getElementById('editor-textarea');
+    const target = (returnTo && document.contains(returnTo)) ? returnTo : ta;
+    if (target && typeof target.focus === 'function') target.focus();
 }

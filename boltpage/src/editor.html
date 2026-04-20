@@ -12,42 +12,79 @@
         <header class="editor-header">
             <div class="editor-header-main">
                 <div class="header-lead">
-                    <div class="brand-block">
-                        <img src="/assets/boltpage_icon.png" alt="BoltPage" class="brand-icon">
+                    <div class="toolbar-group">
+                        <div class="seg" role="group" aria-label="Editor text size">
+                            <button id="editor-font-size-decrease-btn" type="button" title="Decrease text size">A&minus;</button>
+                            <span id="editor-font-size-indicator">18px</span>
+                            <button id="editor-font-size-increase-btn" type="button" title="Increase text size">A+</button>
+                        </div>
                     </div>
-                    <div class="font-size-controls" role="group" aria-label="Editor text size">
-                        <button id="editor-font-size-decrease-btn" class="font-size-button" type="button" title="Decrease text size">A-</button>
-                        <span id="editor-font-size-indicator" class="font-size-indicator">18px</span>
-                        <button id="editor-font-size-increase-btn" class="font-size-button" type="button" title="Increase text size">A+</button>
+                    <div class="toolbar-group">
+                        <button id="line-numbers-btn" class="toolbar-btn" title="Toggle line numbers" aria-label="Toggle line numbers">
+                            <svg width="16" height="16" viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.5">
+                                <path d="M3 5h2M3 10h2M3 15h2"/>
+                                <path d="M8 5h9M8 10h9M8 15h9"/>
+                            </svg>
+                            <span class="label">Lines</span>
+                        </button>
+                        <button id="wrap-btn" class="toolbar-btn" title="Toggle word wrap" aria-label="Toggle word wrap">
+                            <svg width="16" height="16" viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.5">
+                                <path d="M3 5h14M3 10h10a3 3 0 010 6h-2m0 0l2-2m-2 2l2 2M3 15h5"/>
+                            </svg>
+                            <span class="label">Wrap</span>
+                        </button>
                     </div>
-                    <button id="line-numbers-btn" class="toolbar-btn" title="Toggle line numbers">Lines</button>
-                    <button id="wrap-btn" class="toolbar-btn" title="Toggle word wrap">Wrap</button>
-                    <button id="find-btn" class="toolbar-btn" title="Find (Ctrl+F)">
-                        <svg width="16" height="16" viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="2">
-                            <circle cx="8.5" cy="8.5" r="5.5"/>
-                            <path d="M13 13l4 4"/>
-                        </svg>
-                        Find
-                    </button>
+                    <div class="toolbar-group">
+                        <button id="find-btn" class="toolbar-btn" title="Find (Ctrl+F)" aria-label="Find">
+                            <svg width="16" height="16" viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="2">
+                                <circle cx="8.5" cy="8.5" r="5.5"/>
+                                <path d="M13 13l4 4"/>
+                            </svg>
+                            <span class="label">Find</span>
+                        </button>
+                        <button id="editor-inspector-toggle" class="toolbar-btn icon-only" title="Show inspector (Ctrl+Shift+I)" aria-label="Show inspector">
+                            <svg width="16" height="16" viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.5">
+                                <rect x="3" y="4" width="14" height="12" rx="1.5"/>
+                                <path d="M12 4v12"/>
+                            </svg>
+                        </button>
+                    </div>
                 </div>
                 <div class="header-utility-actions">
-                    <span id="editor-status-badge" class="meta-badge">Ready</span>
-                    <button id="close-btn" class="toolbar-btn" title="Close editor">
+                    <span id="editor-status-badge" class="tb-status">Ready</span>
+                    <button id="close-btn" class="toolbar-btn icon-only" title="Close editor" aria-label="Close editor">
                         <svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="2">
                             <path d="M12 4L4 12M4 4l8 8"/>
                         </svg>
-                        Close
                     </button>
                 </div>
             </div>
         </header>
 
+        <div id="find-bar-slot" class="find-bar-slot"></div>
+
         <div class="editor-container">
             <div class="editor-textarea-wrapper">
                 <div class="line-number-gutter"></div>
-                <textarea id="editor-textarea" class="editor-textarea" placeholder="Start typing..." spellcheck="false"></textarea>
+                <textarea id="editor-textarea" class="editor-textarea" placeholder="Start typing..." spellcheck="true" autocapitalize="sentences"></textarea>
                 <div class="line-mirror"></div>
             </div>
+            <aside id="editor-inspector" class="editor-inspector" hidden aria-label="Document inspector">
+                <div class="inspector-label">Words</div>
+                <div class="inspector-value" id="inspector-words">0</div>
+                <div class="inspector-label">Characters</div>
+                <div class="inspector-value" id="inspector-chars">0</div>
+                <div class="inspector-label">Lines</div>
+                <div class="inspector-value" id="inspector-lines">0</div>
+                <div class="inspector-label">Cursor</div>
+                <div class="inspector-value" id="inspector-cursor">1:1</div>
+                <div class="inspector-label">Selection</div>
+                <div class="inspector-value" id="inspector-selection">0</div>
+                <div class="inspector-label">Encoding</div>
+                <div class="inspector-value" id="inspector-encoding">UTF-8</div>
+                <div class="inspector-label">EOL</div>
+                <div class="inspector-value" id="inspector-eol">LF</div>
+            </aside>
         </div>
     </div>
 </body>

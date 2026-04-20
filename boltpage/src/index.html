@@ -12,91 +12,107 @@
         <header class="app-header">
             <div class="header-main">
                 <div class="header-lead">
-                    <div class="brand-block">
-                        <img src="/assets/boltpage_icon.png" alt="BoltPage" class="brand-icon">
+                    <div class="toolbar-group">
+                        <button id="open-btn" class="toolbar-btn button-prominent" title="Open file (Ctrl+O)">
+                            <svg width="20" height="20" viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="2">
+                                <path d="M3 7V4a1 1 0 011-1h5l2 2h5a1 1 0 011 1v1M3 7v9a1 1 0 001 1h12a1 1 0 001-1V8a1 1 0 00-1-1h-6l-2-2H4a1 1 0 00-1 1v1z"/>
+                            </svg>
+                            <span class="label">Open</span>
+                        </button>
+                        <button id="new-btn" class="toolbar-btn" title="New file (Ctrl+N)">
+                            <svg width="20" height="20" viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="2">
+                                <path d="M10 4v12M4 10h12"/>
+                            </svg>
+                            <span class="label">New</span>
+                        </button>
                     </div>
-                    <button id="open-btn" class="toolbar-btn button-prominent" title="Open file (Ctrl+O)">
-                        <svg width="20" height="20" viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="2">
-                            <path d="M3 7V4a1 1 0 011-1h5l2 2h5a1 1 0 011 1v1M3 7v9a1 1 0 001 1h12a1 1 0 001-1V8a1 1 0 00-1-1h-6l-2-2H4a1 1 0 00-1 1v1z"/>
-                        </svg>
-                        Open
-                    </button>
-                    <button id="new-btn" class="toolbar-btn" title="New file (Ctrl+N)">
-                        <svg width="20" height="20" viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="2">
-                            <path d="M10 4v12M4 10h12"/>
-                        </svg>
-                        New
-                    </button>
-                    <button id="edit-btn" class="toolbar-btn" title="Edit (Ctrl+E)">
-                        <svg width="20" height="20" viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="2">
-                            <path d="M14.5 2.5a2.121 2.121 0 113 3L6 17H3v-3L14.5 2.5z"/>
-                        </svg>
-                        Edit
-                    </button>
-                    <button id="export-btn" class="toolbar-btn" title="Export HTML (Ctrl+Shift+E)">
-                        <svg width="20" height="20" viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="2">
-                            <path d="M10 3v9"/>
-                            <path d="M6.5 8.5L10 12l3.5-3.5"/>
-                            <path d="M4 15.5h12"/>
-                        </svg>
-                        Export
-                    </button>
-                    <button id="find-btn" class="toolbar-btn" title="Find (Ctrl+F)">
-                        <svg width="20" height="20" viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="2">
-                            <circle cx="8.5" cy="8.5" r="5.5"/>
-                            <path d="M13 13l4 4"/>
-                        </svg>
-                        Find
-                    </button>
-                    <button id="refresh-btn" class="toolbar-btn" title="Refresh">
-                        <svg width="20" height="20" viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="2">
-                            <path d="M4 10a6 6 0 1011.18-3H12v3M16 10a6 6 0 10-11.18 3H8v-3"/>
-                        </svg>
-                        Refresh
-                        <span class="refresh-indicator" id="refresh-indicator">!</span>
-                    </button>
+                    <div class="toolbar-group">
+                        <button id="edit-btn" class="toolbar-btn" title="Edit (Ctrl+E)">
+                            <svg width="20" height="20" viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="2">
+                                <path d="M14.5 2.5a2.121 2.121 0 113 3L6 17H3v-3L14.5 2.5z"/>
+                            </svg>
+                            <span class="label">Edit</span>
+                        </button>
+                        <button id="export-btn" class="toolbar-btn" title="Export HTML (Ctrl+Shift+E)">
+                            <svg width="20" height="20" viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="2">
+                                <path d="M10 3v9"/>
+                                <path d="M6.5 8.5L10 12l3.5-3.5"/>
+                                <path d="M4 15.5h12"/>
+                            </svg>
+                            <span class="label">Export</span>
+                        </button>
+                    </div>
+                    <div class="toolbar-group">
+                        <button id="find-btn" class="toolbar-btn" title="Find (Ctrl+F)">
+                            <svg width="20" height="20" viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="2">
+                                <circle cx="8.5" cy="8.5" r="5.5"/>
+                                <path d="M13 13l4 4"/>
+                            </svg>
+                            <span class="label">Find</span>
+                        </button>
+                        <button id="refresh-btn" class="toolbar-btn" title="Refresh">
+                            <svg width="20" height="20" viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="2">
+                                <path d="M4 10a6 6 0 1011.18-3H12v3M16 10a6 6 0 10-11.18 3H8v-3"/>
+                            </svg>
+                            <span class="label">Refresh</span>
+                            <span class="refresh-indicator" id="refresh-indicator">!</span>
+                        </button>
+                    </div>
                 </div>
                 <div class="header-utility-actions">
+                    <span id="update-status" class="tb-status" hidden></span>
                     <div class="theme-btn-wrapper">
-                        <button id="theme-btn" class="toolbar-btn" title="View options (Ctrl+T)">
+                        <button id="theme-btn" class="toolbar-btn icon-only" title="View options (Ctrl+T)" aria-label="View options">
                             <svg width="20" height="20" viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="2">
                                 <path d="M4 5h12M4 10h12M4 15h12"/>
                             </svg>
-                            View
                         </button>
                         <div id="theme-menu" class="theme-menu">
                             <div class="menu-section">
                                 <span class="menu-section-label">Appearance</span>
-                                <div class="menu-button-group">
+                                <div class="seg" role="group" aria-label="Theme">
                                     <button class="theme-option" data-theme="light">Light</button>
                                     <button class="theme-option" data-theme="dark">Dark</button>
                                     <button class="theme-option" data-theme="drac">Drac</button>
                                 </div>
-                                <div class="menu-setting-row">
-                                    <span class="menu-setting-label">Type Size</span>
+                            </div>
+                            <div class="menu-divider"></div>
+                            <div class="menu-section">
+                                <span class="menu-section-label">Document</span>
+                                <div class="setting-row">
+                                    <span class="setting-label">Text Size</span>
                                     <div class="font-size-controls" role="group" aria-label="Preview and editor text size">
                                         <button id="font-size-decrease-btn" class="font-size-button" type="button" title="Decrease text size">A-</button>
                                         <span id="font-size-indicator" class="font-size-indicator">18px</span>
                                         <button id="font-size-increase-btn" class="font-size-button" type="button" title="Increase text size">A+</button>
                                     </div>
                                 </div>
+                                <div class="setting-row">
+                                    <span class="setting-label">
+                                        <span id="rail-toggle-title">Context Rail</span>
+                                        <span id="rail-toggle-caption" class="sr-hidden"></span>
+                                    </span>
+                                    <button id="rail-toggle-option" class="switch" type="button" role="switch" aria-pressed="false" aria-label="Toggle context rail">
+                                        <span id="rail-toggle-state" class="sr-hidden">Off</span>
+                                    </button>
+                                </div>
                             </div>
                             <div class="menu-divider"></div>
                             <div class="menu-section">
-                                <span class="menu-section-label">Workspace</span>
-                                <button id="rail-toggle-option" class="menu-toggle-button" type="button">
-                                    <span class="menu-toggle-copy">
-                                        <span id="rail-toggle-title" class="menu-toggle-title">Context Rail</span>
-                                        <span id="rail-toggle-caption" class="menu-toggle-caption">Keep document context visible beside the preview.</span>
-                                    </span>
-                                    <span id="rail-toggle-state" class="menu-toggle-state">On</span>
-                                </button>
+                                <span class="menu-section-label">Window &middot; Toolbar Style</span>
+                                <div class="seg" role="group" aria-label="Toolbar style">
+                                    <button type="button" class="density-option" data-density="icon-label">Icon and Text</button>
+                                    <button type="button" class="density-option" data-density="icon">Icon Only</button>
+                                    <button type="button" class="density-option" data-density="label">Text Only</button>
+                                </div>
                             </div>
                         </div>
                     </div>
                 </div>
             </div>
         </header>
+
+        <div id="find-bar-slot" class="find-bar-slot"></div>
 
         <div class="main-area">
             <aside id="toc-sidebar" class="toc-sidebar">
@@ -111,7 +127,6 @@
                         </svg>
                     </button>
                 </div>
-                <div id="sidebar-meta" class="sidebar-meta"></div>
                 <nav id="toc-nav"></nav>
             </aside>
             <button id="toc-open-btn" class="toc-open-btn" hidden title="Open sidebar" aria-label="Open sidebar">
@@ -123,10 +138,19 @@
                 <div class="content-wrapper">
                     <div id="markdown-content" class="markdown-body">
                         <div class="welcome-message">
-                            <span class="welcome-eyebrow">BoltPage</span>
-                            <h2>Open a document and keep the interface out of the way.</h2>
-                            <p>Preview Markdown, structured text, and PDFs in a focused desktop workspace.</p>
-                            <p>Use <kbd>Ctrl+O</kbd> to open a file or <kbd>Ctrl+N</kbd> to create one.</p>
+                            <img src="/assets/boltpage_icon.png" alt="BoltPage" class="welcome-icon">
+                            <h1 class="welcome-title">BoltPage</h1>
+                            <p class="welcome-tagline">A fast, focused Markdown reader.</p>
+                            <div class="welcome-actions">
+                                <button id="welcome-open-btn" class="wel-btn primary" type="button">Open file…</button>
+                                <button id="welcome-new-btn" class="wel-btn secondary" type="button">New document</button>
+                            </div>
+                            <div class="recent-list" hidden>
+                                <div class="lbl">Recent</div>
+                            </div>
+                            <div class="kbd-hint">
+                                Or use <kbd>Ctrl+O</kbd> to open · <kbd>Ctrl+N</kbd> to create
+                            </div>
                         </div>
                     </div>
                 </div>

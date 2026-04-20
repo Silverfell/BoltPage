@@ -2,12 +2,16 @@
 pub const EVENT_FILE_CHANGED: &str = "file-changed";
 pub const EVENT_THEME_CHANGED: &str = "theme-changed";
 pub const EVENT_FONT_SIZE_CHANGED: &str = "font-size-changed";
+pub const EVENT_TOOLBAR_DENSITY_CHANGED: &str = "toolbar-density-changed";
 pub const EVENT_EDITOR_WINDOW_CLOSED: &str = "editor-window-closed";
 pub const EVENT_SCROLL_SYNC: &str = "scroll-sync";
 pub const EVENT_MENU_OPEN: &str = "menu-open";
 pub const EVENT_MENU_CLOSE: &str = "menu-close";
 pub const EVENT_MENU_FIND: &str = "menu-find";
-pub const EVENT_MENU_EDIT: &str = "menu-edit";
+pub const EVENT_MENU_FIND_NEXT: &str = "menu-find-next";
+pub const EVENT_MENU_FIND_PREV: &str = "menu-find-prev";
+pub const EVENT_MENU_FIND_USE_SELECTION: &str = "menu-find-use-selection";
+pub const EVENT_MENU_FIND_REPLACE: &str = "menu-find-replace";
 pub const EVENT_MENU_EXPORT_HTML: &str = "menu-export-html";
 #[allow(dead_code)]
 pub const EVENT_MENU_PRINT: &str = "menu-print";
@@ -22,16 +26,12 @@ pub const MENU_EXPORT_HTML: &str = "export-html";
 pub const MENU_CLOSE: &str = "close";
 pub const MENU_QUIT: &str = "quit";
 pub const MENU_FIND: &str = "find";
+pub const MENU_FIND_NEXT: &str = "find-next";
+pub const MENU_FIND_PREV: &str = "find-prev";
+pub const MENU_FIND_USE_SELECTION: &str = "find-use-selection";
+pub const MENU_FIND_REPLACE: &str = "find-replace";
 pub const MENU_SETUP_CLI: &str = "setup-cli";
 pub const MENU_ABOUT: &str = "about";
-
-// Edit action IDs (menu IDs and event payloads)
-pub const ACTION_UNDO: &str = "undo";
-pub const ACTION_REDO: &str = "redo";
-pub const ACTION_CUT: &str = "cut";
-pub const ACTION_COPY: &str = "copy";
-pub const ACTION_PASTE: &str = "paste";
-pub const ACTION_SELECT_ALL: &str = "select-all";
 
 // Scroll sync kinds (ScrollSyncPayload.kind) — used by JS only
 #[allow(dead_code)]
@@ -42,6 +42,9 @@ pub const KIND_JSON: &str = "json";
 pub const KIND_YAML: &str = "yaml";
 #[allow(dead_code)]
 pub const KIND_TXT: &str = "txt";
+
+// Recent files cap (most-recent first)
+pub const MAX_RECENT_FILES: usize = 10;
 
 // Window label prefixes
 pub const WINDOW_PREFIX_MARKDOWN: &str = "markdown-";
