@@ -14,9 +14,9 @@ BoldPage works, very well, for my use case. It's fast, lightweight, and does eve
 
 ## AI Coding Agent notes
 
-The project contains ai_truthfulness.md and ai_software.md. These are the actual prompts I feed to the coding agents. You will notice they are not your typical corporate speak prompts you see floating around the internet. That's because they were not written to impress you with how good I am at AI.
+This project is managed with [klaude](https://github.com/Silverfell/klaude), a Claude Code management system I rewrote for this purpose. It supplies the actual prompts I feed to the coding agents (truthfulness and software rules), plus the session protocol and project journal setup (BRIEFING.md, CHANGES.md, and slash commands like `/init` and `/close`).
 
-They were written to work, and they are battle-tested across several projects. BoltPage is simply the one I chose to share with you. Feel free to adjust and reuse, these are the real point of this distribution.
+You will notice the prompts are not your typical corporate speak you see floating around the internet. That's because they were not written to impress you with how good I am at AI. They were written to work, and they are battle-tested across several projects. Feel free to adjust and reuse, the klaude repo is the real point of this distribution.
 
 ## Features
 

@@ -1,4 +1,7 @@
 use serde::{Deserialize, Serialize};
+use std::fs;
+use std::path::Path;
+use std::time::UNIX_EPOCH;
 use tauri::{AppHandle, Manager};
 use tauri_plugin_store::StoreExt;
 
@@ -16,6 +19,9 @@ pub(crate) struct AppPreferences {
     pub show_line_numbers: Option<bool>,
     pub toc_visible: Option<bool>,
     pub cli_setup_prompted: Option<bool>,
+    pub toolbar_density: Option<String>,
+    pub editor_inspector_visible: Option<bool>,
+    pub recent_files: Option<Vec<String>>,
 }
 
 impl Default for AppPreferences {
@@ -31,6 +37,9 @@ impl Default for AppPreferences {
             show_line_numbers: None,
             toc_visible: None,
             cli_setup_prompted: None,
+            toolbar_density: None,
+            editor_inspector_visible: None,
+            recent_files: None,
         }
     }
 }
@@ -109,4 +118,61 @@ pub(crate) async fn save_preference_key(
 #[tauri::command]
 pub(crate) async fn mark_cli_setup_declined(app: AppHandle) -> Result<(), String> {
     save_preference_key_inner(&app, "cli_setup_prompted", serde_json::Value::Bool(true)).await
+}
+
+#[derive(Debug, Serialize)]
+pub(crate) struct RecentFile {
+    pub path: String,
+    pub display_name: String,
+    pub directory: String,
+    pub modified_ts: Option<u64>,
+}
+
+#[tauri::command]
+pub(crate) async fn get_recent_files(app: AppHandle) -> Result<Vec<RecentFile>, String> {
+    let store = app
+        .store(".boltpage.dat")
+        .map_err(|e| format!("Failed to access store: {e}"))?;
+
+    let map = store
+        .get("preferences")
+        .and_then(|v| {
+            serde_json::from_value::<serde_json::Map<String, serde_json::Value>>(v.clone()).ok()
+        })
+        .unwrap_or_default();
+
+    let paths: Vec<String> = map
+        .get("recent_files")
+        .and_then(|v| serde_json::from_value::<Vec<String>>(v.clone()).ok())
+        .unwrap_or_default();
+
+    let mut out: Vec<RecentFile> = Vec::with_capacity(paths.len());
+    for raw in paths {
+        let p = Path::new(&raw);
+        if !p.exists() {
+            continue;
+        }
+        let display_name = p
+            .file_name()
+            .and_then(|n| n.to_str())
+            .map(|s| s.to_string())
+            .unwrap_or_else(|| raw.clone());
+        let directory = p
+            .parent()
+            .map(|d| d.to_string_lossy().to_string())
+            .unwrap_or_default();
+        let modified_ts = fs::metadata(p)
+            .ok()
+            .and_then(|m| m.modified().ok())
+            .and_then(|t| t.duration_since(UNIX_EPOCH).ok())
+            .map(|d| d.as_secs());
+        out.push(RecentFile {
+            path: raw,
+            display_name,
+            directory,
+            modified_ts,
+        });
+    }
+
+    Ok(out)
 }

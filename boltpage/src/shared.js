@@ -21,6 +21,9 @@ export const MAX_FONT_SIZE = 24;
 // Editor textarea font is this many px smaller than the synced preview font size
 export const EDITOR_FONT_SIZE_OFFSET = 4;
 
+// Debounce window for find-as-you-type
+export const FIND_TYPE_DEBOUNCE_MS = 80;
+
 export function parsePx(v) {
     const n = parseFloat(v);
     return Number.isFinite(n) ? n : 0;
@@ -74,30 +77,89 @@ export function setBadgeState(element, text, tone = null, hidden = false) {
     }
 }
 
+export function escapeRegex(str) {
+    return str.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+}
+
 /**
- * Creates the find overlay DOM and appends it to document.body.
- * Returns { overlay, input } for the caller to wire up event handlers.
+ * Build a RegExp for find queries honoring the match-case and whole-word toggles.
+ * Returns null for an empty/whitespace-only query.
  */
-export function createFindOverlay() {
+export function buildFindRegex(query, { matchCase = false, wholeWord = false } = {}) {
+    if (!query || !query.trim()) return null;
+    let pattern = escapeRegex(query);
+    if (wholeWord) {
+        pattern = `(?:^|\\W)(${pattern})(?=$|\\W)`;
+    }
+    const flags = matchCase ? 'gd' : 'gid';
+    try {
+        return new RegExp(pattern, flags);
+    } catch (_) {
+        return null;
+    }
+}
+
+/**
+ * Run a regex produced by buildFindRegex across a string and return
+ * [{start, end}, ...]. Correctly locates the captured word even when
+ * whole-word mode adds a non-word-character lookbehind surrogate.
+ */
+export function collectFindMatches(text, regex) {
+    if (!text || !regex) return [];
+    const results = [];
+    let m;
+    regex.lastIndex = 0;
+    while ((m = regex.exec(text)) !== null) {
+        let start;
+        let end;
+        if (m.length > 1 && m.indices && m.indices[1]) {
+            start = m.indices[1][0];
+            end = m.indices[1][1];
+        } else if (m.indices && m.indices[0]) {
+            start = m.indices[0][0];
+            end = m.indices[0][1];
+        } else {
+            start = m.index;
+            end = m.index + m[0].length;
+        }
+        results.push({ start, end });
+        if (regex.lastIndex <= start) regex.lastIndex = start + 1;
+        if (end === start) regex.lastIndex = start + 1;
+    }
+    return results;
+}
+
+/**
+ * Creates the find overlay DOM and appends it to the given parent.
+ * Includes match-case and whole-word toggles.
+ * Returns { overlay, input, caseBtn, wordBtn } so the caller can wire events.
+ */
+export function createFindOverlay(parent = document.body) {
     const overlay = document.createElement('div');
     overlay.className = 'find-overlay';
     overlay.innerHTML = `
-        <input id="find-input" class="find-input" type="text" placeholder="Find..." />
+        <input id="find-input" class="find-input" type="text" placeholder="Find..." aria-label="Find" />
         <span class="find-count" id="find-count"></span>
-        <button class="find-btn" id="find-prev" title="Previous" aria-label="Previous match">&#8593;</button>
-        <button class="find-btn" id="find-next" title="Next" aria-label="Next match">&#8595;</button>
-        <button class="find-btn" id="find-close" title="Close" aria-label="Close find">&#10005;</button>
+        <button class="find-btn find-toggle" id="find-case" type="button" title="Match case" aria-label="Match case" aria-pressed="false">Aa</button>
+        <button class="find-btn find-toggle" id="find-word" type="button" title="Whole word" aria-label="Whole word" aria-pressed="false">\u201C\u201D</button>
+        <button class="find-btn" id="find-prev" type="button" title="Previous match (Shift+Enter)" aria-label="Previous match">&#8593;</button>
+        <button class="find-btn" id="find-next" type="button" title="Next match (Enter)" aria-label="Next match">&#8595;</button>
+        <button class="find-btn" id="find-close" type="button" title="Close (Esc)" aria-label="Close find">&#10005;</button>
     `;
-    document.body.appendChild(overlay);
-    const input = overlay.querySelector('#find-input');
-    return { overlay, input };
+    (parent || document.body).appendChild(overlay);
+    return {
+        overlay,
+        input: overlay.querySelector('#find-input'),
+        caseBtn: overlay.querySelector('#find-case'),
+        wordBtn: overlay.querySelector('#find-word'),
+    };
 }
 
 export function updateFindCount(overlay, results, currentIndex) {
     const countEl = overlay?.querySelector('#find-count');
     if (!countEl) return;
     if (results.length === 0) {
-        countEl.textContent = '';
+        countEl.textContent = overlay?.querySelector('#find-input')?.value ? '0/0' : '';
     } else {
         countEl.textContent = `${currentIndex + 1}/${results.length}`;
     }
@@ -105,10 +167,7 @@ export function updateFindCount(overlay, results, currentIndex) {
 
 /**
  * Calculate the next find result index.
- * @param {number} currentIndex - current find result index
- * @param {number} totalResults - total number of find results
- * @param {number} direction - 1 for next, -1 for previous
- * @returns {number} new index
+ * direction: 1 for next, -1 for previous
  */
 export function nextFindIndex(currentIndex, totalResults, direction) {
     if (totalResults === 0) return -1;
@@ -124,12 +183,14 @@ export function applyThemeToDocument(theme) {
 
 /**
  * Set up table-driven keyboard shortcuts.
- * Each entry: { key, ctrl, shift, action }
+ * Each entry: { key, ctrl, shift, alt, action }
  * - key: lowercase key name
  * - ctrl: true if Ctrl/Cmd required (default false)
  * - shift: true if Shift required (default false)
+ * - alt: true if Alt/Option required (default false)
  * - action: function to call (may be async)
- * Entries are matched in order; shift variants must precede non-shift for the same key.
+ * Entries are matched in order; more-specific (shift/alt) variants must
+ * precede less-specific variants for the same key.
  */
 export function setupKeyboardShortcuts(shortcuts) {
     document.addEventListener('keydown', async (e) => {
@@ -137,6 +198,7 @@ export function setupKeyboardShortcuts(shortcuts) {
         for (const s of shortcuts) {
             if ((s.ctrl || false) === ctrl
                 && (s.shift || false) === e.shiftKey
+                && (s.alt || false) === e.altKey
                 && e.key.toLowerCase() === s.key) {
                 e.preventDefault();
                 await s.action(e);

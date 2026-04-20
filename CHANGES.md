@@ -29,3 +29,20 @@ Format: `YYYY-MM-DD [type] description` (max 200 chars). Types: decision, plan, 
 2026-04-19 [note] Populated BRIEFING.md and CHANGES.md from project.db memory/changes tables.
 2026-04-19 [decision] Consolidated CI: merged pr-checks.yml into ci.yml (pull_request + workflow_dispatch only), dropped Linux matrix (non-shipped), dropped redundant cargo check job, fixed branch list (main, dev).
 2026-04-19 [decision] Ruleset "publicprotected" on ~DEFAULT_BRANCH now requires status check "CI Success" (from ci.yml aggregator job); keeps deletion and non-fast-forward rules.
+2026-04-19 [doc] Added redesign.html: self-contained UI redesign proposal per Apple HIG (quieter chrome, semantic materials, native typography, grouped 26pt toolbar, docked find, welcome variants, editor inspector).
+2026-04-19 [doc] README: AI Coding Agent notes now points to Silverfell/klaude (Claude management system) instead of describing local ai_truthfulness.md / ai_software.md.
+2026-04-19 [code] Viewer chrome rewritten to native-macOS token system (material surfaces, 26pt grouped toolbar, flat document); welcome replaced with Option-B card (recents hidden, Phase 3).
+2026-04-19 [code] Editor chrome rewritten; find overlay docked into #find-bar-slot (viewer+editor); View popover rebuilt (seg/stepper/switch); #update-status pill wired to EVENT_FILE_CHANGED; removed no-op renderEditorHeader.
+2026-04-19 [scope] Removed #sidebar-meta panel (File Type/Path/Access/Workflow/Type Size/Shortcuts rows), renderSidebarMeta() + CSS. Sidebar now shows TOC only. Per user decision, not in redesign plan.
+2026-04-19 [code] Welcome-screen icon: replaced gradient tile + inline lightning-bolt SVG with the app icon (assets/boltpage_icon.png, 96px). Per user, overrides redesign.html Option-B card spec.
+2026-04-19 [code] Phase 3: prefs toolbar_density/editor_inspector_visible/recent_files; cmds get_recent_files+broadcast_toolbar_density_change; density live-sync; inspector rail live (Ctrl+Shift+I).
+2026-04-19 [code] Phase 1 audit fix: dropped backdrop-filter on .toc-sidebar per plan (flush sidebar, only .app-header retains titlebar material).
+2026-04-19 [note] Version bump 1.9.1 to 2.0.0 across package.json, tauri.conf.json, Cargo.toml, Cargo.lock, Homebrew cask.
+2026-04-19 [decision] Text-editing overhaul cross-platform: Edit menu rebuilt on PredefinedMenuItem (Undo/Redo/Cut/Copy/Paste/Select All) so cmds route through OS responders/messages; custom performEditAction paths removed.
+2026-04-19 [decision] macOS-only AppKit affordances gated behind cfg: app menu with About/Services/Hide/HideOthers/ShowAll/Quit; Quit moved from File to app menu on macOS (stays in File on Windows); Window menu gains PredefinedMenuItem::minimize cross-platform.
+2026-04-19 [code] Find bar rewritten: match-case + whole-word toggles, all-matches highlight (DOM-wrap spans in preview, multi-mark overlay in editor), 80 ms debounce, focus restore on Esc, prefill from selection; editor find-overlay now syncs scrollLeft.
+2026-04-19 [code] New find menu items + shortcuts: Find Next (Cmd/Ctrl+G), Find Previous (Shift+Cmd/Ctrl+G), Use Selection for Find (Cmd/Ctrl+E), Find and Replace (Cmd/Ctrl+Alt+F, replacing Ctrl+H which collided with macOS Hide).
+2026-04-19 [code] Preview rich-copy handler writes text/html + text/plain on copy events so pasting into Pages/Word/Mail keeps formatting.
+2026-04-19 [code] Editor replace uses setRangeText to preserve native undo; paste/cut stop mutating .value directly now that PredefinedMenuItem handles them.
+2026-04-19 [code] Editor textarea spellcheck enabled; ::selection and caret-color tokens added per theme (light/dark/drac) for preview, editor, and find inputs.
+2026-04-19 [code] Preview link interceptor bails on multi-click and active selection so double-click word-select works on linked headings; Cmd/Ctrl+A scoped to #markdown-content only when a file is open.

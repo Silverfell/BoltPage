@@ -264,8 +264,10 @@ pub fn run() {
             prefs::get_preferences,
             prefs::save_preferences,
             prefs::mark_cli_setup_declined,
+            prefs::get_recent_files,
             menu::broadcast_scroll_sync,
             menu::broadcast_theme_change,
+            menu::broadcast_toolbar_density_change,
             menu::broadcast_font_size_change,
             menu::broadcast_editor_window_closed,
             menu::get_syntax_css,
@@ -291,22 +293,18 @@ pub fn run() {
             app.on_menu_event(|app, event| {
                 use crate::constants::*;
 
-                // Table: menu IDs that simply emit an event to the focused window
+                // Table: menu IDs that simply emit an event to the focused window.
+                // Cut/Copy/Paste/Undo/Redo/Select All are PredefinedMenuItem and
+                // never reach this callback; the OS routes them to the responder.
                 const EMIT_ACTIONS: &[(&str, &str)] = &[
                     (MENU_OPEN, EVENT_MENU_OPEN),
                     (MENU_CLOSE, EVENT_MENU_CLOSE),
                     (MENU_FIND, EVENT_MENU_FIND),
+                    (MENU_FIND_NEXT, EVENT_MENU_FIND_NEXT),
+                    (MENU_FIND_PREV, EVENT_MENU_FIND_PREV),
+                    (MENU_FIND_USE_SELECTION, EVENT_MENU_FIND_USE_SELECTION),
+                    (MENU_FIND_REPLACE, EVENT_MENU_FIND_REPLACE),
                     (MENU_EXPORT_HTML, EVENT_MENU_EXPORT_HTML),
-                ];
-
-                // Table: edit actions forwarded as EVENT_MENU_EDIT payload
-                const EDIT_ACTIONS: &[&str] = &[
-                    ACTION_UNDO,
-                    ACTION_REDO,
-                    ACTION_CUT,
-                    ACTION_COPY,
-                    ACTION_PASTE,
-                    ACTION_SELECT_ALL,
                 ];
 
                 let id = event.id().as_ref();
@@ -315,8 +313,6 @@ pub fn run() {
                     EMIT_ACTIONS.iter().find(|(menu_id, _)| *menu_id == id)
                 {
                     let _ = app.emit(event_name, &());
-                } else if EDIT_ACTIONS.contains(&id) {
-                    let _ = app.emit(EVENT_MENU_EDIT, &id);
                 } else if let Some(label) = id.strip_prefix(MENU_WINDOW_PREFIX) {
                     if let Some(w) = app.get_webview_window(label) {
                         let _ = w.set_focus();
@@ -393,6 +389,13 @@ pub fn run() {
 
             if let Some(ref p) = file_path {
                 io::allow_path(app.handle(), p);
+                let handle = app.handle().clone();
+                let path_str = p.clone();
+                tauri::async_runtime::spawn(async move {
+                    if let Err(e) = io::push_to_recents(&handle, &path_str).await {
+                        eprintln!("Failed to push recents (CLI arg): {e}");
+                    }
+                });
             }
 
             if let Some(resolved_path) = file_path.and_then(|p| io::resolve_file_path(&p)) {
@@ -503,6 +506,11 @@ pub fn run() {
                 tauri::async_runtime::spawn(async move {
                     for url in urls {
                         if let Some(path) = io::resolve_file_path(url.as_ref()) {
+                            if let Err(e) =
+                                io::push_to_recents(&app_clone, &path.to_string_lossy()).await
+                            {
+                                eprintln!("Failed to push recents (Launch Services): {e}");
+                            }
                             if let Err(e) =
                                 window::create_window_with_file(&app_clone, Some(path.clone()))
                                     .await
