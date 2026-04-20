@@ -1,12 +1,27 @@
 use crate::constants::*;
 use serde::{Deserialize, Serialize};
-use tauri::menu::{MenuBuilder, MenuItemBuilder, SubmenuBuilder};
+use tauri::menu::{MenuBuilder, MenuItemBuilder, PredefinedMenuItem, SubmenuBuilder};
 use tauri::{AppHandle, Emitter, Manager};
 
 // Rebuild the native application menu, including a dynamic Window submenu
 pub(crate) fn rebuild_app_menu(app: &AppHandle) -> tauri::Result<()> {
-    // File menu
-    let file_menu = SubmenuBuilder::new(app, "File")
+    // macOS application menu (mirrors HIG: About, Services, Hide, Quit)
+    #[cfg(target_os = "macos")]
+    let app_menu = SubmenuBuilder::new(app, "BoltPage")
+        .item(&MenuItemBuilder::with_id(MENU_ABOUT, "About BoltPage").build(app)?)
+        .separator()
+        .item(&PredefinedMenuItem::services(app, None)?)
+        .separator()
+        .item(&PredefinedMenuItem::hide(app, None)?)
+        .item(&PredefinedMenuItem::hide_others(app, None)?)
+        .item(&PredefinedMenuItem::show_all(app, None)?)
+        .separator()
+        .item(&PredefinedMenuItem::quit(app, None)?)
+        .build()?;
+
+    // File menu (Quit lives in the app menu on macOS)
+    #[allow(unused_mut)]
+    let mut file_menu_builder = SubmenuBuilder::new(app, "File")
         .item(
             &MenuItemBuilder::with_id(MENU_NEW_FILE, "New File")
                 .accelerator("CmdOrCtrl+N")
@@ -42,57 +57,61 @@ pub(crate) fn rebuild_app_menu(app: &AppHandle) -> tauri::Result<()> {
             &MenuItemBuilder::with_id(MENU_CLOSE, "Close Window")
                 .accelerator("CmdOrCtrl+W")
                 .build(app)?,
-        )
-        .item(
+        );
+
+    #[cfg(not(target_os = "macos"))]
+    {
+        file_menu_builder = file_menu_builder.item(
             &MenuItemBuilder::with_id(MENU_QUIT, "Quit")
                 .accelerator("CmdOrCtrl+Q")
                 .build(app)?,
-        )
-        .build()?;
+        );
+    }
 
-    // Edit menu (native accelerators for copy/paste/etc.)
+    let file_menu = file_menu_builder.build()?;
+
+    // Edit menu: predefined items route through the OS responder chain,
+    // giving native Undo/Cut/Copy/Paste/Select All with automatic enable/disable.
     let edit_menu = SubmenuBuilder::new(app, "Edit")
-        .item(
-            &MenuItemBuilder::with_id(ACTION_UNDO, "Undo")
-                .accelerator("CmdOrCtrl+Z")
-                .build(app)?,
-        )
-        .item(
-            &MenuItemBuilder::with_id(ACTION_REDO, "Redo")
-                .accelerator("Shift+CmdOrCtrl+Z")
-                .build(app)?,
-        )
+        .item(&PredefinedMenuItem::undo(app, None)?)
+        .item(&PredefinedMenuItem::redo(app, None)?)
         .separator()
-        .item(
-            &MenuItemBuilder::with_id(ACTION_CUT, "Cut")
-                .accelerator("CmdOrCtrl+X")
-                .build(app)?,
-        )
-        .item(
-            &MenuItemBuilder::with_id(ACTION_COPY, "Copy")
-                .accelerator("CmdOrCtrl+C")
-                .build(app)?,
-        )
-        .item(
-            &MenuItemBuilder::with_id(ACTION_PASTE, "Paste")
-                .accelerator("CmdOrCtrl+V")
-                .build(app)?,
-        )
-        .item(
-            &MenuItemBuilder::with_id(ACTION_SELECT_ALL, "Select All")
-                .accelerator("CmdOrCtrl+A")
-                .build(app)?,
-        )
+        .item(&PredefinedMenuItem::cut(app, None)?)
+        .item(&PredefinedMenuItem::copy(app, None)?)
+        .item(&PredefinedMenuItem::paste(app, None)?)
+        .item(&PredefinedMenuItem::select_all(app, None)?)
         .separator()
         .item(
             &MenuItemBuilder::with_id(MENU_FIND, "Find...")
                 .accelerator("CmdOrCtrl+F")
                 .build(app)?,
         )
+        .item(
+            &MenuItemBuilder::with_id(MENU_FIND_NEXT, "Find Next")
+                .accelerator("CmdOrCtrl+G")
+                .build(app)?,
+        )
+        .item(
+            &MenuItemBuilder::with_id(MENU_FIND_PREV, "Find Previous")
+                .accelerator("Shift+CmdOrCtrl+G")
+                .build(app)?,
+        )
+        .item(
+            &MenuItemBuilder::with_id(MENU_FIND_USE_SELECTION, "Use Selection for Find")
+                .accelerator("CmdOrCtrl+E")
+                .build(app)?,
+        )
+        .item(
+            &MenuItemBuilder::with_id(MENU_FIND_REPLACE, "Find and Replace...")
+                .accelerator("CmdOrCtrl+Alt+F")
+                .build(app)?,
+        )
         .build()?;
 
-    // Window menu (dynamic list of open windows)
-    let mut window_menu_builder = SubmenuBuilder::new(app, "Window").separator();
+    // Window menu: Minimize (cross-platform) + dynamic list of open windows
+    let mut window_menu_builder = SubmenuBuilder::new(app, "Window")
+        .item(&PredefinedMenuItem::minimize(app, None)?)
+        .separator();
 
     for (label, window) in app.webview_windows() {
         let title = window.title().unwrap_or_else(|_| "Untitled".to_string());
@@ -102,7 +121,7 @@ pub(crate) fn rebuild_app_menu(app: &AppHandle) -> tauri::Result<()> {
     }
     let window_menu = window_menu_builder.build()?;
 
-    // Help menu
+    // Help menu (About duplicated into app menu on macOS; Windows keeps it here)
     #[allow(unused_mut)]
     let mut help_menu_builder = SubmenuBuilder::new(app, "Help");
 
@@ -112,12 +131,23 @@ pub(crate) fn rebuild_app_menu(app: &AppHandle) -> tauri::Result<()> {
             .item(&MenuItemBuilder::with_id(MENU_SETUP_CLI, "Setup CLI Access...").build(app)?);
     }
 
-    let help_menu = help_menu_builder
-        .item(&MenuItemBuilder::with_id(MENU_ABOUT, "About BoltPage").build(app)?)
-        .build()?;
+    #[cfg(not(target_os = "macos"))]
+    {
+        help_menu_builder = help_menu_builder
+            .item(&MenuItemBuilder::with_id(MENU_ABOUT, "About BoltPage").build(app)?);
+    }
+
+    let help_menu = help_menu_builder.build()?;
 
     // Build and set the menu
-    let menu = MenuBuilder::new(app)
+    let mut menu_builder = MenuBuilder::new(app);
+
+    #[cfg(target_os = "macos")]
+    {
+        menu_builder = menu_builder.item(&app_menu);
+    }
+
+    let menu = menu_builder
         .item(&file_menu)
         .item(&edit_menu)
         .item(&window_menu)

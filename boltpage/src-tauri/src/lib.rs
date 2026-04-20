@@ -293,22 +293,18 @@ pub fn run() {
             app.on_menu_event(|app, event| {
                 use crate::constants::*;
 
-                // Table: menu IDs that simply emit an event to the focused window
+                // Table: menu IDs that simply emit an event to the focused window.
+                // Cut/Copy/Paste/Undo/Redo/Select All are PredefinedMenuItem and
+                // never reach this callback; the OS routes them to the responder.
                 const EMIT_ACTIONS: &[(&str, &str)] = &[
                     (MENU_OPEN, EVENT_MENU_OPEN),
                     (MENU_CLOSE, EVENT_MENU_CLOSE),
                     (MENU_FIND, EVENT_MENU_FIND),
+                    (MENU_FIND_NEXT, EVENT_MENU_FIND_NEXT),
+                    (MENU_FIND_PREV, EVENT_MENU_FIND_PREV),
+                    (MENU_FIND_USE_SELECTION, EVENT_MENU_FIND_USE_SELECTION),
+                    (MENU_FIND_REPLACE, EVENT_MENU_FIND_REPLACE),
                     (MENU_EXPORT_HTML, EVENT_MENU_EXPORT_HTML),
-                ];
-
-                // Table: edit actions forwarded as EVENT_MENU_EDIT payload
-                const EDIT_ACTIONS: &[&str] = &[
-                    ACTION_UNDO,
-                    ACTION_REDO,
-                    ACTION_CUT,
-                    ACTION_COPY,
-                    ACTION_PASTE,
-                    ACTION_SELECT_ALL,
                 ];
 
                 let id = event.id().as_ref();
@@ -317,8 +313,6 @@ pub fn run() {
                     EMIT_ACTIONS.iter().find(|(menu_id, _)| *menu_id == id)
                 {
                     let _ = app.emit(event_name, &());
-                } else if EDIT_ACTIONS.contains(&id) {
-                    let _ = app.emit(EVENT_MENU_EDIT, &id);
                 } else if let Some(label) = id.strip_prefix(MENU_WINDOW_PREFIX) {
                     if let Some(w) = app.get_webview_window(label) {
                         let _ = w.set_focus();

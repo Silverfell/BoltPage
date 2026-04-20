@@ -14,6 +14,8 @@
   --accent-tint: rgba(0, 102, 204, 0.10);
   --hover: rgba(0, 0, 0, 0.05);
   --selected: rgba(0, 102, 204, 0.12);
+  --selection-bg: rgba(0, 102, 204, 0.28);
+  --caret: #0066cc;
   --kbd-bg: #f2f2f4;
   --kbd-border: rgba(0, 0, 0, 0.12);
 
@@ -64,6 +66,8 @@
   --accent-tint: rgba(10, 132, 255, 0.18);
   --hover: rgba(255, 255, 255, 0.06);
   --selected: rgba(10, 132, 255, 0.20);
+  --selection-bg: rgba(10, 132, 255, 0.40);
+  --caret: #0a84ff;
   --kbd-bg: #2c2c2e;
   --kbd-border: rgba(255, 255, 255, 0.14);
 
@@ -91,6 +95,8 @@
   --accent-tint: rgba(189, 147, 249, 0.16);
   --hover: rgba(189, 147, 249, 0.10);
   --selected: rgba(189, 147, 249, 0.22);
+  --selection-bg: rgba(189, 147, 249, 0.42);
+  --caret: #bd93f9;
   --kbd-bg: #28344a;
   --kbd-border: rgba(189, 147, 249, 0.20);
 
@@ -391,11 +397,12 @@ html[data-toolbar-density="label"] .toolbar-btn:not(.icon-only) > svg { display:
 }
 
 .find-count {
-  min-width: 40px;
+  min-width: 60px;
   color: var(--text-muted);
   font-size: 11px;
   text-align: center;
   font-family: "IBM Plex Mono", "SFMono-Regular", Consolas, monospace;
+  font-variant-numeric: tabular-nums;
 }
 
 .find-btn {
@@ -409,10 +416,25 @@ html[data-toolbar-density="label"] .toolbar-btn:not(.icon-only) > svg { display:
   background: transparent;
   color: var(--text-primary);
   cursor: pointer;
+  font-size: 12px;
+  line-height: 1;
 }
 
 .find-btn:hover {
   background: var(--hover);
+}
+
+.find-toggle {
+  font-family: "IBM Plex Mono", "SFMono-Regular", Consolas, monospace;
+  padding: 0 6px;
+  min-width: 26px;
+}
+
+.find-toggle[aria-pressed="true"],
+.find-toggle.active {
+  background: var(--accent-tint);
+  border-color: var(--accent);
+  color: var(--accent);
 }
 
 .replace-row {
@@ -505,12 +527,18 @@ html[data-toolbar-density="label"] .toolbar-btn:not(.icon-only) > svg { display:
   resize: none;
   background-color: transparent;
   color: var(--text-color);
+  caret-color: var(--caret, var(--accent));
   font-family: "IBM Plex Mono", "SFMono-Regular", Consolas, monospace;
   font-size: var(--editor-font-size);
   line-height: 1.6;
   overflow-y: auto;
   overflow-x: auto;
   white-space: pre;
+}
+
+.editor-textarea::selection {
+  background: var(--selection-bg);
+  color: var(--text-primary);
 }
 
 .editor-textarea::placeholder {
@@ -585,9 +613,13 @@ html[data-toolbar-density="label"] .toolbar-btn:not(.icon-only) > svg { display:
 
 .find-highlight-overlay mark {
   background-color: var(--accent-warning-soft);
-  box-shadow: 0 0 0 1px var(--accent-warning);
   color: transparent;
-  border-radius: 4px;
+  border-radius: 3px;
+}
+
+.find-highlight-overlay mark.active {
+  background-color: var(--accent-warning);
+  color: transparent;
 }
 
 @media (max-width: 900px) {
