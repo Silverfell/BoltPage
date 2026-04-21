@@ -163,6 +163,8 @@ body {
 }
 
 .app-header {
+  position: relative;
+  z-index: 10;
   display: flex;
   align-items: center;
   height: 38px;

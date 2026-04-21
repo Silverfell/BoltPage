@@ -46,3 +46,4 @@ Format: `YYYY-MM-DD [type] description` (max 200 chars). Types: decision, plan, 
 2026-04-19 [code] Editor replace uses setRangeText to preserve native undo; paste/cut stop mutating .value directly now that PredefinedMenuItem handles them.
 2026-04-19 [code] Editor textarea spellcheck enabled; ::selection and caret-color tokens added per theme (light/dark/drac) for preview, editor, and find inputs.
 2026-04-19 [code] Preview link interceptor bails on multi-click and active selection so double-click word-select works on linked headings; Cmd/Ctrl+A scoped to #markdown-content only when a file is open.
+2026-04-21 [code] Fix View/theme menu invisible: .app-header backdrop-filter created a stacking context trapping the dropdown's z-index inside it; lifted .app-header to position:relative; z-index:10 so its stacking context sits above .main-area.
