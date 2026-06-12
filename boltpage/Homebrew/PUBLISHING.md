@@ -19,8 +19,10 @@ Steps to Publish
 
 3) Update the cask
    - Edit `Homebrew/Casks/boltpage.rb`:
-     - Replace example URLs with your hosted URLs (per-arch blocks).
-     - Uncomment and set the `sha256` lines for each arch.
+     - Verify the per-arch URLs match the released asset names
+       (`BoltPage-<version>-arm64.dmg` / `BoltPage-<version>-x64.dmg`,
+       produced by the release workflow's rename step).
+     - Replace the per-arch `sha256` placeholder strings with the real checksums.
      - Optionally enable `livecheck` if you host on GitHub Releases.
 
 4) Test locally
@@ -42,6 +44,6 @@ Steps to Publish
 
 Notes
 - `auto_updates false` is correct (no in-app updater).
-- Minimum macOS is set to Catalina (10.15). Adjust if you support older.
+- Minimum macOS is High Sierra (10.13), matching bundle.macOS.minimumSystemVersion in tauri.conf.json.
 - The `zap` stanza removes app data and preferences; verify paths after first install/run.
 

@@ -19,16 +19,26 @@ import {
     buildFindRegex,
     collectFindMatches,
     applyThemeToDocument,
+    applyFontFamily,
+    resolveFontStack,
+    DEFAULT_DOCUMENT_FONT_ID,
+    DEFAULT_EDITOR_FONT_ID,
     setupKeyboardShortcuts,
+    setupChordShortcuts,
+    createCommandPalette,
     setBadgeState,
 } from './shared.js';
 import {
     EVENT_FILE_CHANGED,
     EVENT_THEME_CHANGED,
     EVENT_FONT_SIZE_CHANGED,
+    EVENT_FONT_FAMILY_CHANGED,
     EVENT_TOOLBAR_DENSITY_CHANGED,
+    EVENT_EDITOR_WINDOW_CLOSED,
+    EVENT_EDITOR_BUFFER_CHANGED,
     EVENT_SCROLL_SYNC,
     EVENT_MENU_OPEN,
+    EVENT_MENU_OPEN_FOLDER,
     EVENT_MENU_CLOSE,
     EVENT_MENU_FIND,
     EVENT_MENU_FIND_NEXT,
@@ -36,6 +46,7 @@ import {
     EVENT_MENU_FIND_USE_SELECTION,
     EVENT_MENU_FIND_REPLACE,
     EVENT_MENU_EXPORT_HTML,
+    EVENT_MENU_COMMAND_PALETTE,
     KIND_MARKDOWN,
     KIND_JSON,
     KIND_YAML,
@@ -49,6 +60,9 @@ const { listen } = window.__TAURI__.event;
 const appWindow = getCurrentWindow();
 
 let currentFilePath = null;
+// Last path registered with open_tracked_file. Window-created opens are
+// registered by Rust, so this is seeded with the label-derived path at boot.
+let lastTrackedPath = null;
 let currentTheme = 'drac';
 let currentKind = KIND_MARKDOWN; // KIND_JSON | KIND_MARKDOWN | KIND_TXT | 'pdf'
 let currentPdfUrl = null;
@@ -62,6 +76,11 @@ let findVisible = false;
 let currentFontSize = 18;
 let updateStatusTimeout = null;
 let currentToolbarDensity = 'icon-label';
+let currentDocFontId = null;
+let currentEdFontId = null;
+let commandPalette = null;
+let katexReady = null;
+let mermaidReady = null;
 
 // Track last synced position to filter micro-scrolls
 let lastSyncedLine = null;
@@ -76,13 +95,39 @@ async function loadPreferences() {
         applyTheme(prefs.theme);
         tocVisible = prefs.toc_visible !== false;
         applyToolbarDensity(normalizeDensity(prefs.toolbar_density), { save: false, broadcast: false });
+        currentDocFontId = prefs.document_font_family || DEFAULT_DOCUMENT_FONT_ID;
+        currentEdFontId = prefs.editor_font_family || DEFAULT_EDITOR_FONT_ID;
+        applyFontFamily({ documentId: currentDocFontId, editorId: currentEdFontId });
         updateViewMenuState();
     } catch (err) {
         console.error('Failed to load preferences:', err);
         applyFontSize(DEFAULT_FONT_SIZE);
         applyTheme('drac');
         applyToolbarDensity('icon-label', { save: false, broadcast: false });
+        currentDocFontId = DEFAULT_DOCUMENT_FONT_ID;
+        currentEdFontId = DEFAULT_EDITOR_FONT_ID;
+        applyFontFamily({ documentId: currentDocFontId, editorId: currentEdFontId });
     }
+}
+
+function changeDocumentFont(id) {
+    if (!id || id === currentDocFontId) return;
+    currentDocFontId = id;
+    applyFontFamily({ documentId: id });
+    savePreference('document_font_family', id);
+    invoke('broadcast_font_family_change', { payload: { document: id, editor: null } })
+        .catch(err => console.error('Failed to broadcast document font change:', err));
+    updateViewMenuState();
+}
+
+function changeEditorFont(id) {
+    if (!id || id === currentEdFontId) return;
+    currentEdFontId = id;
+    applyFontFamily({ editorId: id });
+    savePreference('editor_font_family', id);
+    invoke('broadcast_font_family_change', { payload: { document: null, editor: id } })
+        .catch(err => console.error('Failed to broadcast editor font change:', err));
+    updateViewMenuState();
 }
 
 function normalizeDensity(v) {
@@ -202,6 +247,13 @@ function updateViewMenuState() {
     document.querySelectorAll('.density-option').forEach(btn => {
         btn.classList.toggle('active', btn.dataset.density === currentToolbarDensity);
     });
+
+    document.querySelectorAll('.doc-font-option').forEach(btn => {
+        btn.classList.toggle('active', btn.dataset.font === currentDocFontId);
+    });
+    document.querySelectorAll('.ed-font-option').forEach(btn => {
+        btn.classList.toggle('active', btn.dataset.font === currentEdFontId);
+    });
 }
 
 
@@ -263,13 +315,223 @@ async function ensureSyntaxCss(theme) {
     }
 }
 
+function ensureKatex() {
+    if (!katexReady) {
+        katexReady = new Promise((resolve, reject) => {
+            if (window.katex) return resolve(window.katex);
+            const s = document.createElement('script');
+            s.src = '/assets/vendor/katex/katex.min.js';
+            s.onload = () => resolve(window.katex);
+            s.onerror = reject;
+            document.head.appendChild(s);
+        });
+    }
+    return katexReady;
+}
+
+async function renderMath(scope) {
+    const nodes = collectRenderTargets(scope, '.math');
+    if (!nodes.length) return;
+    let katex;
+    try { katex = await ensureKatex(); }
+    catch (e) { console.error('Failed to load KaTeX:', e); return; }
+    for (const el of nodes) {
+        const display = el.classList.contains('math-display');
+        const src = el.textContent || '';
+        try {
+            katex.render(src, el, { displayMode: display, throwOnError: false });
+        } catch (err) {
+            // Leave the original text on failure.
+            console.warn('KaTeX render failed for:', src, err);
+        }
+    }
+}
+
+// --- Incremental preview patching ---
+// Each top-level preview node is keyed (WeakMap) by a hash of its
+// pre-enhancement serialization: KaTeX and Mermaid mutate rendered nodes in
+// place, so the live DOM never equals freshly parsed HTML and a direct
+// isEqualNode diff would re-render every diagram on every patch.
+const previewNodeKeys = new WeakMap();
+let lastTocSignature = null;
+
+function hashString(s) {
+    let h = 5381;
+    for (let i = 0; i < s.length; i++) h = ((h << 5) + h + s.charCodeAt(i)) | 0;
+    return String(h);
+}
+
+function previewNodeKey(node) {
+    return hashString(node.nodeType === Node.ELEMENT_NODE ? node.outerHTML : (node.textContent || ''));
+}
+
+function tocSignatureOf(container) {
+    return Array.from(container.querySelectorAll('h1, h2, h3, h4, h5, h6'))
+        .map(h => `${h.tagName}\x1f${h.textContent}`)
+        .join('\x1e');
+}
+
+/**
+ * Patch #markdown-content to show `html`, replacing only the changed run of
+ * top-level nodes (common prefix/suffix matched by pre-enhancement key; a
+ * typing edit yields one contiguous run). Math/Mermaid re-render only inside
+ * inserted nodes; scroll is untouched. Returns { full, tocChanged }.
+ */
+function applyPreviewHtml(html) {
+    const container = document.getElementById('markdown-content');
+    if (!container) return { full: true, tocChanged: false };
+    // Find-highlight spans would distort the keys of old nodes.
+    clearFindResults();
+
+    const range = document.createRange();
+    range.selectNodeContents(container);
+    const fragment = range.createContextualFragment(html);
+    const newNodes = Array.from(fragment.childNodes);
+    const newKeys = newNodes.map(previewNodeKey);
+    const oldNodes = Array.from(container.childNodes);
+    const oldKeys = oldNodes.map(n => previewNodeKeys.get(n) ?? null);
+
+    let prefix = 0;
+    const maxCommon = Math.min(oldNodes.length, newNodes.length);
+    while (prefix < maxCommon && oldKeys[prefix] !== null && oldKeys[prefix] === newKeys[prefix]) {
+        prefix++;
+    }
+    let suffix = 0;
+    const maxSuffix = maxCommon - prefix;
+    while (
+        suffix < maxSuffix
+        && oldKeys[oldNodes.length - 1 - suffix] !== null
+        && oldKeys[oldNodes.length - 1 - suffix] === newKeys[newNodes.length - 1 - suffix]
+    ) {
+        suffix++;
+    }
+
+    const full = prefix === 0 && suffix === 0;
+
+    for (let i = oldNodes.length - 1 - suffix; i >= prefix; i--) {
+        container.removeChild(oldNodes[i]);
+    }
+    const anchorNode = suffix > 0 ? oldNodes[oldNodes.length - suffix] : null;
+    const inserted = [];
+    for (let i = prefix; i < newNodes.length - suffix; i++) {
+        const n = newNodes[i];
+        previewNodeKeys.set(n, newKeys[i]);
+        container.insertBefore(n, anchorNode);
+        inserted.push(n);
+    }
+
+    cachedPreMetrics = null;
+
+    const insertedEls = inserted.filter(n => n.nodeType === Node.ELEMENT_NODE);
+    if (insertedEls.length) {
+        // fire-and-forget, scoped to what actually changed
+        renderMath(insertedEls).catch(() => {});
+        renderMermaid(insertedEls).catch(() => {});
+    }
+
+    const tocSig = tocSignatureOf(container);
+    const tocChanged = tocSig !== lastTocSignature;
+    lastTocSignature = tocSig;
+
+    return { full, tocChanged };
+}
+
+/** Resolve `scope` (container element or array of inserted elements) to all
+ *  descendants-or-self matching `selector`. */
+function collectRenderTargets(scope, selector) {
+    const roots = Array.isArray(scope) ? scope : [scope];
+    const out = [];
+    for (const root of roots) {
+        if (root.matches && root.matches(selector)) out.push(root);
+        if (root.querySelectorAll) out.push(...root.querySelectorAll(selector));
+    }
+    return out;
+}
+
+function mermaidThemeForCurrent() {
+    return currentTheme === 'light' ? 'default' : 'dark';
+}
+
+function ensureMermaid() {
+    if (!mermaidReady) {
+        mermaidReady = new Promise((resolve, reject) => {
+            if (window.mermaid) return resolve(window.mermaid);
+            const s = document.createElement('script');
+            s.src = '/assets/vendor/mermaid/mermaid.min.js';
+            s.onload = () => {
+                try {
+                    window.mermaid.initialize({
+                        startOnLoad: false,
+                        theme: mermaidThemeForCurrent(),
+                        securityLevel: 'strict',
+                    });
+                } catch (err) {
+                    return reject(err);
+                }
+                resolve(window.mermaid);
+            };
+            s.onerror = reject;
+            document.head.appendChild(s);
+        });
+    }
+    return mermaidReady;
+}
+
+async function renderMermaid(scope) {
+    const nodes = collectRenderTargets(scope, 'pre.mermaid');
+    if (!nodes.length) return;
+    let mermaid;
+    try { mermaid = await ensureMermaid(); }
+    catch (e) { console.error('Failed to load Mermaid:', e); return; }
+    // Stash the diagram source before mermaid replaces it with SVG, so theme
+    // changes can restore it and re-render (mermaid.run skips nodes that
+    // already carry data-processed).
+    for (const node of nodes) {
+        if (node.dataset.bpSrc === undefined) node.dataset.bpSrc = node.textContent;
+    }
+    try {
+        await mermaid.run({ nodes });
+    } catch (err) {
+        console.warn('Mermaid run failed:', err);
+    }
+}
+
+async function reRenderMermaidForTheme() {
+    if (!mermaidReady) return;
+    try {
+        const mermaid = await mermaidReady;
+        mermaid.initialize({
+            startOnLoad: false,
+            theme: mermaidThemeForCurrent(),
+            securityLevel: 'strict',
+        });
+    } catch (err) {
+        console.warn('Mermaid re-initialize failed:', err);
+    }
+    const container = document.getElementById('markdown-content');
+    if (!container) return;
+    // Restore each diagram's source and clear the processed marker, otherwise
+    // mermaid.run skips them and the old theme's SVG stays.
+    for (const node of container.querySelectorAll('pre.mermaid')) {
+        if (node.dataset.bpSrc !== undefined) {
+            node.removeAttribute('data-processed');
+            node.textContent = node.dataset.bpSrc;
+        }
+    }
+    await renderMermaid(container);
+}
+
 async function exportHtml() {
     if (!currentFilePath) return;
     if (currentKind === 'pdf') return;
     try {
+        const documentFontStack = currentDocFontId
+            ? resolveFontStack('document', currentDocFontId)
+            : null;
         const result = await invoke('save_html_export', {
             path: currentFilePath,
             theme: currentTheme,
+            documentFontStack,
         });
         void result;
     } catch (err) {
@@ -279,6 +541,202 @@ async function exportHtml() {
 
 let tocScrollDebounce = null;
 let tocVisible = true;
+
+// --- Workspace folder (file tree + quick switcher) ---
+let workspaceFolder = null;
+let workspaceTabActive = 'outline'; // 'files' | 'outline'
+const expandedDirs = new Set();
+let workspaceFileIndex = [];
+let quickSwitcherPalette = null;
+
+async function initWorkspace() {
+    try {
+        workspaceFolder = await invoke('get_workspace_folder');
+    } catch (err) {
+        console.error('Failed to load workspace folder:', err);
+        workspaceFolder = null;
+    }
+    if (workspaceFolder && !currentFilePath) workspaceTabActive = 'files';
+    updateSidebarTabs();
+    if (workspaceFolder) {
+        // buildTOC owns sidebar visibility; with a workspace it shows the
+        // sidebar even before any file is open (Files tab).
+        buildTOC();
+        await refreshFileTree();
+    }
+}
+
+function updateSidebarTabs() {
+    const tabsRow = document.getElementById('sidebar-tabs');
+    const filesTab = document.getElementById('sidebar-tab-files');
+    const outlineTab = document.getElementById('sidebar-tab-outline');
+    const fileTree = document.getElementById('file-tree');
+    const tocNav = document.getElementById('toc-nav');
+    if (!tabsRow || !fileTree || !tocNav) return;
+
+    const hasWorkspace = !!workspaceFolder;
+    tabsRow.hidden = !hasWorkspace;
+    const showFiles = hasWorkspace && workspaceTabActive === 'files';
+    fileTree.hidden = !showFiles;
+    tocNav.hidden = showFiles;
+    if (filesTab) {
+        filesTab.classList.toggle('active', showFiles);
+        filesTab.setAttribute('aria-selected', showFiles ? 'true' : 'false');
+    }
+    if (outlineTab) {
+        outlineTab.classList.toggle('active', !showFiles);
+        outlineTab.setAttribute('aria-selected', showFiles ? 'false' : 'true');
+    }
+    if (showFiles) {
+        const sidebarLabel = document.querySelector('.sidebar-label');
+        const sidebarCaption = document.querySelector('.sidebar-caption');
+        if (sidebarLabel) sidebarLabel.textContent = 'Files';
+        if (sidebarCaption) {
+            sidebarCaption.textContent = String(workspaceFolder).split(/[/\\]/).pop() || workspaceFolder;
+        }
+    }
+}
+
+function setSidebarTab(tab) {
+    workspaceTabActive = tab;
+    updateSidebarTabs();
+    // Re-assert the outline labels buildTOC owns when switching back.
+    if (tab === 'outline') buildTOC();
+}
+
+async function refreshFileTree() {
+    const tree = document.getElementById('file-tree');
+    if (!tree || !workspaceFolder) return;
+    tree.innerHTML = '';
+    await renderDirInto(tree, workspaceFolder, 0);
+    updateTreeActiveFile();
+}
+
+async function renderDirInto(container, dirPath, depth) {
+    let entries;
+    try {
+        entries = await invoke('list_dir', { path: dirPath });
+    } catch (err) {
+        console.error('Failed to list folder:', err);
+        return;
+    }
+    for (const entry of entries) {
+        const row = document.createElement('button');
+        row.type = 'button';
+        row.className = 'tree-item ' + (entry.is_dir ? 'tree-dir' : 'tree-file');
+        row.style.paddingLeft = `${8 + depth * 14}px`;
+        row.textContent = entry.name;
+        row.title = entry.name;
+        row.dataset.path = entry.path;
+        container.appendChild(row);
+        if (entry.is_dir) {
+            const childrenBox = document.createElement('div');
+            childrenBox.className = 'tree-children';
+            container.appendChild(childrenBox);
+            row.addEventListener('click', async () => {
+                if (expandedDirs.has(entry.path)) {
+                    expandedDirs.delete(entry.path);
+                    row.classList.remove('expanded');
+                    childrenBox.innerHTML = '';
+                } else {
+                    expandedDirs.add(entry.path);
+                    row.classList.add('expanded');
+                    childrenBox.innerHTML = '';
+                    await renderDirInto(childrenBox, entry.path, depth + 1);
+                    updateTreeActiveFile();
+                }
+            });
+            if (expandedDirs.has(entry.path)) {
+                row.classList.add('expanded');
+                // Awaiting in the loop keeps fetches bounded to expanded dirs
+                // and renders the tree top-down; child boxes are pre-appended
+                // so sibling order is stable either way.
+                await renderDirInto(childrenBox, entry.path, depth + 1);
+            }
+        } else {
+            row.addEventListener('click', () => openFile(entry.path));
+        }
+    }
+}
+
+function updateTreeActiveFile() {
+    document.querySelectorAll('#file-tree .tree-file').forEach(el => {
+        el.classList.toggle('active', el.dataset.path === currentFilePath);
+    });
+}
+
+async function openFolder() {
+    try {
+        const folder = await invoke('open_folder_dialog');
+        if (!folder) return;
+        workspaceFolder = folder;
+        expandedDirs.clear();
+        workspaceTabActive = 'files';
+        if (!tocVisible) toggleTOC();
+        buildTOC();
+        updateSidebarTabs();
+        await refreshFileTree();
+    } catch (err) {
+        console.error('Failed to open folder:', err);
+    }
+}
+
+async function closeFolder() {
+    try {
+        await invoke('clear_workspace_folder');
+    } catch (err) {
+        console.error('Failed to clear workspace folder:', err);
+        return;
+    }
+    workspaceFolder = null;
+    expandedDirs.clear();
+    workspaceFileIndex = [];
+    workspaceTabActive = 'outline';
+    const tree = document.getElementById('file-tree');
+    if (tree) tree.innerHTML = '';
+    updateSidebarTabs();
+    buildTOC();
+}
+
+// --- Quick switcher (Cmd+O with a workspace folder) ---
+async function refreshWorkspaceIndex() {
+    try {
+        const res = await invoke('list_workspace_files');
+        workspaceFileIndex = res.files || [];
+        if (res.truncated) {
+            console.info(`Workspace index truncated at ${workspaceFileIndex.length} files.`);
+        }
+    } catch (err) {
+        console.error('Failed to index workspace:', err);
+        workspaceFileIndex = [];
+    }
+}
+
+function buildQuickSwitcherActions() {
+    const actions = [
+        { id: 'browse', label: 'Browse Files…', hint: 'dialog', run: () => openFile() },
+    ];
+    for (const f of workspaceFileIndex) {
+        actions.push({ id: f.path, label: f.name, run: () => openFile(f.path) });
+    }
+    return actions;
+}
+
+function ensureQuickSwitcher() {
+    if (quickSwitcherPalette) return quickSwitcherPalette;
+    quickSwitcherPalette = createCommandPalette(document.body, buildQuickSwitcherActions);
+    return quickSwitcherPalette;
+}
+
+/** Cmd+O / File > Open: fuzzy switcher when a workspace is set, dialog otherwise. */
+async function openFileSmart() {
+    if (!workspaceFolder) {
+        openFile();
+        return;
+    }
+    await refreshWorkspaceIndex();
+    ensureQuickSwitcher().open();
+}
 
 function buildTOC() {
     const tocNav = document.getElementById('toc-nav');
@@ -291,6 +749,20 @@ function buildTOC() {
     tocNav.innerHTML = '';
 
     if (!currentFilePath) {
+        // With a workspace folder the sidebar stays useful (Files tab) even
+        // before any file is open.
+        if (workspaceFolder) {
+            if (tocVisible) {
+                if (tocSidebar) tocSidebar.classList.add('show');
+                if (tocOpenBtn) tocOpenBtn.hidden = true;
+            } else {
+                if (tocSidebar) tocSidebar.classList.remove('show');
+                if (tocOpenBtn) tocOpenBtn.hidden = false;
+            }
+            updateViewMenuState();
+            updateSidebarTabs();
+            return;
+        }
         if (tocSidebar) tocSidebar.classList.remove('show');
         if (tocOpenBtn) tocOpenBtn.hidden = true;
         updateViewMenuState();
@@ -311,6 +783,8 @@ function buildTOC() {
         if (tocOpenBtn) tocOpenBtn.hidden = false;
     }
     updateViewMenuState();
+    // When the Files tab is active its labels override the outline's.
+    updateSidebarTabs();
 
     if (!isMarkdownWithHeadings) {
         return;
@@ -325,10 +799,28 @@ function buildTOC() {
         link.dataset.index = i;
         link.addEventListener('click', (e) => {
             e.preventDefault();
-            heading.scrollIntoView({ behavior: 'smooth', block: 'start' });
+            scrollContentToHeading(heading);
         });
         tocNav.appendChild(link);
     });
+}
+
+/**
+ * Scroll .content-wrapper so the heading sits near the top, but never past
+ * scrollHeight - clientHeight. `scrollIntoView({block:'start'})` was
+ * over-scrolling in Wry/WebKit for short trailing sections, leaving a large
+ * empty region below the last visible content.
+ */
+function scrollContentToHeading(heading) {
+    if (!contentEl || !heading) return;
+    const wrapRect = contentEl.getBoundingClientRect();
+    const headRect = heading.getBoundingClientRect();
+    const desired = headRect.top - wrapRect.top + contentEl.scrollTop - 8;
+    const maxScroll = Math.max(0, contentEl.scrollHeight - contentEl.clientHeight);
+    const target = Math.min(Math.max(0, desired), maxScroll);
+    isProgrammaticScroll = true;
+    contentEl.scrollTo({ top: target, behavior: 'smooth' });
+    setTimeout(() => { isProgrammaticScroll = false; }, PROGRAMMATIC_SCROLL_TIMEOUT_MS);
 }
 
 function updateActiveTOCLink() {
@@ -391,6 +883,18 @@ async function openFile(filePath) {
     }
     
     try {
+        // Register in-window opens (welcome recents, dialog, workspace tree)
+        // before rendering: open_tracked_file grants recents access and keeps
+        // open_windows / session / recents tracking correct for this window.
+        if (filePath !== lastTrackedPath) {
+            try {
+                await invoke('open_tracked_file', { path: filePath });
+            } catch (e) {
+                console.error('Failed to register file open:', e);
+            }
+            lastTrackedPath = filePath;
+        }
+
         const lowerPath = String(filePath).toLowerCase();
         if (lowerPath.endsWith('.pdf')) currentKind = 'pdf';
         else if (lowerPath.endsWith('.json')) currentKind = KIND_JSON;
@@ -434,15 +938,21 @@ async function openFile(filePath) {
         }
 
         currentFilePath = filePath;
-        // Clear any in-flight find results that reference old DOM nodes
-        clearFindResults();
-        const container = document.getElementById('markdown-content');
-        const range = document.createRange();
-        range.selectNodeContents(container);
-        const fragment = range.createContextualFragment(html);
-        container.replaceChildren(fragment);
-        // Invalidate cached metrics after DOM change
-        cachedPreMetrics = null;
+        let patchResult = { full: true, tocChanged: true };
+        if (usedPdf) {
+            // PDFs keep the simple full swap; nothing in them is patchable.
+            clearFindResults();
+            const container = document.getElementById('markdown-content');
+            const range = document.createRange();
+            range.selectNodeContents(container);
+            container.replaceChildren(range.createContextualFragment(html));
+            cachedPreMetrics = null;
+            lastTocSignature = null;
+        } else {
+            // Patch only the changed top-level blocks; math/mermaid re-render
+            // inside the patch, scoped to inserted nodes.
+            patchResult = applyPreviewHtml(html);
+        }
         // Toggle PDF layout mode
         if (usedPdf) {
             document.body.classList.add('pdf-mode');
@@ -455,10 +965,15 @@ async function openFile(filePath) {
         currentWritable = await updateEditButtonState();
         updateFindButtonState();
         updateExportButtonState();
-        // Build table of contents from headings
-        buildTOC();
-        // Restore scroll position if applicable
-        if (anchor) {
+        // Rebuild table of contents on full swaps (file/kind switches drive
+        // sidebar visibility and labels) or when the heading outline changed.
+        if (usedPdf || patchResult.full || patchResult.tocChanged) {
+            buildTOC();
+        }
+        updateTreeActiveFile();
+        // Restore scroll position only after a full swap; patches leave the
+        // scroll untouched and the percent-based anchor would jolt it.
+        if (anchor && patchResult.full) {
             if ((anchor.kind === KIND_JSON || anchor.kind === KIND_YAML || anchor.kind === KIND_TXT) && typeof anchor.line === 'number') {
                 scrollPreviewToLine(anchor.line);
             } else if (typeof anchor.percent === 'number') {
@@ -569,6 +1084,47 @@ async function refreshFile() {
 
 // Make refreshFile available globally for editor to call
 window.refreshFile = refreshFile;
+
+// --- On-type preview from editor buffers ---
+let bufferRenderBusy = false;
+let bufferRenderPending = null;
+
+async function renderBufferToPreview(kind, content) {
+    // Single-flight with latest-pending: renders can't interleave, and only
+    // the newest buffered keystroke matters.
+    if (bufferRenderBusy) {
+        bufferRenderPending = { kind, content };
+        return;
+    }
+    bufferRenderBusy = true;
+    try {
+        let html;
+        if (kind === KIND_JSON) {
+            // Mid-typing JSON/YAML is usually invalid; keep the last good render.
+            try { html = await invoke('parse_json_with_theme', { content, theme: currentTheme }); }
+            catch (_) { return; }
+        } else if (kind === KIND_YAML) {
+            try { html = await invoke('parse_yaml_with_theme', { content, theme: currentTheme }); }
+            catch (_) { return; }
+        } else if (kind === KIND_TXT) {
+            // Same shape render_file_to_html emits for txt.
+            html = `<div class="markdown-body"><pre class="plain-text">${escapeHtml(content)}</pre></div>`;
+        } else {
+            html = await invoke('parse_markdown_with_theme', { content, theme: currentTheme });
+        }
+        const result = applyPreviewHtml(html);
+        if (result.tocChanged) buildTOC();
+    } catch (err) {
+        console.warn('On-type preview render failed:', err);
+    } finally {
+        bufferRenderBusy = false;
+        if (bufferRenderPending) {
+            const next = bufferRenderPending;
+            bufferRenderPending = null;
+            renderBufferToPreview(next.kind, next.content);
+        }
+    }
+}
 
 function toggleThemeMenu() {
     const menu = document.getElementById('theme-menu');
@@ -717,8 +1273,14 @@ function setupEventListeners() {
     if (findBtn) findBtn.addEventListener('click', toggleFindOverlay);
     const welcomeOpenBtn = document.getElementById('welcome-open-btn');
     if (welcomeOpenBtn) welcomeOpenBtn.addEventListener('click', () => document.getElementById('open-btn').click());
+    const welcomeFolderBtn = document.getElementById('welcome-folder-btn');
+    if (welcomeFolderBtn) welcomeFolderBtn.addEventListener('click', openFolder);
     const welcomeNewBtn = document.getElementById('welcome-new-btn');
     if (welcomeNewBtn) welcomeNewBtn.addEventListener('click', () => document.getElementById('new-btn').click());
+    const filesTabBtn = document.getElementById('sidebar-tab-files');
+    if (filesTabBtn) filesTabBtn.addEventListener('click', () => setSidebarTab('files'));
+    const outlineTabBtn = document.getElementById('sidebar-tab-outline');
+    if (outlineTabBtn) outlineTabBtn.addEventListener('click', () => setSidebarTab('outline'));
     const tocCloseBtn = document.getElementById('toc-close-btn');
     if (tocCloseBtn) tocCloseBtn.addEventListener('click', toggleTOC);
     const tocOpenBtn = document.getElementById('toc-open-btn');
@@ -739,6 +1301,14 @@ function setupEventListeners() {
             applyToolbarDensity(value, { save: true, broadcast: true });
         });
     });
+
+    // Typography font-family seg buttons
+    document.querySelectorAll('.doc-font-option').forEach(btn => {
+        btn.addEventListener('click', (e) => changeDocumentFont(e.currentTarget.dataset.font));
+    });
+    document.querySelectorAll('.ed-font-option').forEach(btn => {
+        btn.addEventListener('click', (e) => changeEditorFont(e.currentTarget.dataset.font));
+    });
     
     // Click outside theme menu to close
     document.addEventListener('click', (e) => {
@@ -757,7 +1327,8 @@ function setupEventListeners() {
         { key: 'g', ctrl: true, shift: true, action: () => { if (currentKind !== 'pdf') findPrevious(); } },
         { key: 'g', ctrl: true, action: () => { if (currentKind !== 'pdf') findNext(); } },
         { key: 'p', ctrl: true, action: () => { if (currentKind !== 'pdf') invoke('print_current_window').catch(err => console.error('Print failed:', err)); } },
-        { key: 'o', ctrl: true, action: () => openFile() },
+        { key: 'o', ctrl: true, shift: true, action: () => openFolder() },
+        { key: 'o', ctrl: true, action: () => openFileSmart() },
         { key: 'r', ctrl: true, action: () => refreshFile() },
         { key: 't', ctrl: true, action: () => toggleThemeMenu() },
         { key: 'e', ctrl: true, shift: true, action: () => exportHtml() },
@@ -771,6 +1342,58 @@ function setupEventListeners() {
         { key: 'a', ctrl: true, action: () => selectAllDocument() },
         { key: 'w', ctrl: true, action: () => appWindow.close() },
     ]);
+
+    // Command palette via Cmd+K Cmd+P chord
+    setupChordShortcuts([{
+        key1: 'k', ctrl1: true,
+        secondKeys: [
+            { key2: 'p', ctrl2: true, action: () => openPalette() },
+        ],
+    }]);
+}
+
+function buildPaletteActions() {
+    const hasFile = !!currentFilePath;
+    const isPdf = currentKind === 'pdf';
+    const actions = [
+        { id: 'open',        label: 'Open File…',            hint: '⌘O',     run: () => openFileSmart() },
+        { id: 'open-dialog', label: 'Open File (Dialog)…',                   run: () => openFile() },
+        { id: 'open-folder', label: 'Open Folder…',          hint: '⌘⇧O',    run: () => openFolder() },
+        { id: 'new',         label: 'New File…',             hint: '⌘N',     run: () => createNewMarkdownFile() },
+        { id: 'new-window',  label: 'New Window',            hint: '⌘⇧N',    run: () => invoke('create_new_window_command') },
+    ];
+    if (workspaceFolder) {
+        actions.push({ id: 'close-folder', label: 'Close Folder', run: () => closeFolder() });
+    }
+    if (hasFile) {
+        actions.push({ id: 'refresh', label: 'Refresh',       hint: '⌘R',    run: () => refreshFile() });
+    }
+    actions.push({ id: 'toggle-sidebar', label: 'Toggle Sidebar',   run: () => toggleTOC() });
+    if (hasFile && !isPdf) {
+        actions.push({ id: 'find',         label: 'Find…',            hint: '⌘F',   run: () => openFindOverlay() });
+        actions.push({ id: 'find-next',    label: 'Find Next',        hint: '⌘G',   run: () => findNext() });
+        actions.push({ id: 'find-prev',    label: 'Find Previous',    hint: '⇧⌘G',  run: () => findPrevious() });
+        actions.push({ id: 'export-html',  label: 'Export as HTML…',  hint: '⌘⇧E',  run: () => exportHtml() });
+        actions.push({ id: 'edit',         label: 'Edit…',                           run: () => openEditor() });
+    }
+    actions.push({ id: 'print',         label: 'Print…',             hint: '⌘P',  run: () => invoke('print_current_window').catch(console.error) });
+    actions.push({ id: 'theme-light',   label: 'Theme: Light',                     run: () => applyTheme('light') });
+    actions.push({ id: 'theme-dark',    label: 'Theme: Dark',                      run: () => applyTheme('dark') });
+    actions.push({ id: 'theme-drac',    label: 'Theme: Drac',                      run: () => applyTheme('drac') });
+    actions.push({ id: 'font-size-inc', label: 'Text Size: Increase',              run: () => changeFontSize(1) });
+    actions.push({ id: 'font-size-dec', label: 'Text Size: Decrease',              run: () => changeFontSize(-1) });
+    actions.push({ id: 'close',         label: 'Close Window',       hint: '⌘W',   run: () => appWindow.close() });
+    return actions;
+}
+
+function ensureCommandPalette() {
+    if (commandPalette) return commandPalette;
+    commandPalette = createCommandPalette(document.body, buildPaletteActions);
+    return commandPalette;
+}
+
+function openPalette() {
+    ensureCommandPalette().open();
 }
 
 function selectAllDocument() {
@@ -816,7 +1439,7 @@ function attachLinkInterceptor() {
         e.preventDefault();
         if (isAllowedExternalUrl(href)) {
             try {
-                await invoke('plugin:opener|open', { target: href });
+                await invoke('plugin:opener|open_url', { url: href });
             } catch (err) {
                 console.error('Failed to open external link:', err);
             }
@@ -895,6 +1518,7 @@ window.addEventListener('DOMContentLoaded', async () => {
         attachLinkInterceptor();
         attachRichCopyHandler();
         await loadPreferences();
+        await initWorkspace();
         // Initial button states
         currentWritable = await updateEditButtonState();
         updateFindButtonState();
@@ -907,7 +1531,14 @@ window.addEventListener('DOMContentLoaded', async () => {
         fetchRecents();
         try {
             await appWindow.onFocusChanged(({ payload: focused }) => {
-                if (focused) fetchRecents();
+                if (focused) {
+                    fetchRecents();
+                    // Pick up externally created/removed files (no recursive
+                    // watcher in v1; focus refresh matches the recents pattern).
+                    if (workspaceFolder && workspaceTabActive === 'files') {
+                        refreshFileTree();
+                    }
+                }
             });
         } catch (err) {
             console.warn('Failed to bind focus-changed listener:', err);
@@ -928,6 +1559,29 @@ window.addEventListener('DOMContentLoaded', async () => {
             }
         });
 
+        // Render unsaved editor buffers on type (ahead of autosave + watcher).
+        await listen(EVENT_EDITOR_BUFFER_CHANGED, (event) => {
+            const p = event.payload || {};
+            if (!currentFilePath || p.source === appWindow.label) return;
+            if (p.file_path !== currentFilePath) return;
+            if (currentKind === 'pdf') return;
+            renderBufferToPreview(p.kind, p.content);
+        });
+
+        // Refresh once when this file's editor window closes, so the preview
+        // shows the final saved state and the Edit button re-checks writability.
+        // Both the editor's JS (onCloseRequested) and Rust (CloseRequested
+        // handler) broadcast for the same close; collapse the pair.
+        let lastEditorClosedAt = 0;
+        await listen(EVENT_EDITOR_WINDOW_CLOSED, async (event) => {
+            const p = event.payload || {};
+            if (!currentFilePath || p.file_path !== currentFilePath) return;
+            const now = Date.now();
+            if (now - lastEditorClosedAt < 500) return;
+            lastEditorClosedAt = now;
+            await refreshFile();
+        });
+
         // Listen for theme change events from other windows
         await listen(EVENT_THEME_CHANGED, async (event) => {
             // Skip if this window already applied this theme (avoids redundant
@@ -937,6 +1591,7 @@ window.addEventListener('DOMContentLoaded', async () => {
             applyThemeToDocument(currentTheme);
             await ensureSyntaxCss(currentTheme);
             updateViewMenuState();
+            reRenderMermaidForTheme().catch(() => {});
         });
 
         await listen(EVENT_FONT_SIZE_CHANGED, async (event) => {
@@ -947,6 +1602,29 @@ window.addEventListener('DOMContentLoaded', async () => {
         await listen(EVENT_TOOLBAR_DENSITY_CHANGED, (event) => {
             if (event.payload === currentToolbarDensity) return;
             applyToolbarDensity(event.payload, { save: false, broadcast: false });
+        });
+
+        await listen(EVENT_FONT_FAMILY_CHANGED, (event) => {
+            const p = event.payload || {};
+            let changed = false;
+            if (p.document && p.document !== currentDocFontId) {
+                currentDocFontId = p.document;
+                applyFontFamily({ documentId: currentDocFontId });
+                changed = true;
+            }
+            if (p.editor && p.editor !== currentEdFontId) {
+                currentEdFontId = p.editor;
+                // The viewer doesn't render an editor; still track id so the
+                // next broadcast echo is suppressed and the View popover stays
+                // in sync with the authoritative pref.
+                changed = true;
+            }
+            if (changed) updateViewMenuState();
+        });
+
+        await listen(EVENT_MENU_COMMAND_PALETTE, () => {
+            if (!document.hasFocus()) return;
+            openPalette();
         });
 
 
@@ -986,10 +1664,15 @@ window.addEventListener('DOMContentLoaded', async () => {
             if (currentKind !== 'pdf') openFindAndReplace();
         });
 
-        // Listen for File > Open menu action
+        // Listen for File > Open menu action (fuzzy switcher with a workspace)
         await listen(EVENT_MENU_OPEN, () => {
             if (!document.hasFocus()) return;
-            openFile();
+            openFileSmart();
+        });
+
+        await listen(EVENT_MENU_OPEN_FOLDER, () => {
+            if (!document.hasFocus()) return;
+            openFolder();
         });
 
         // Listen for File > Close Window menu action
@@ -1028,6 +1711,8 @@ window.addEventListener('DOMContentLoaded', async () => {
         }
 
         if (filePath) {
+            // Rust registered this window-creation open; don't double-track.
+            lastTrackedPath = filePath;
             try {
                 await openFile(filePath);
             } catch (error) {

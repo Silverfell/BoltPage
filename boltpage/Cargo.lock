@@ -387,7 +387,7 @@ dependencies = [
 
 [[package]]
 name = "boltpage"
-version = "2.0.1"
+version = "2.2.0"
 dependencies = [
  "base64 0.22.1",
  "lru",
@@ -2206,6 +2206,7 @@ version = "0.1.0"
 dependencies = [
  "ammonia",
  "pulldown-cmark",
+ "regex",
  "serde_json",
  "serde_yaml",
  "syntect",

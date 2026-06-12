@@ -506,120 +506,214 @@ html[data-toolbar-density="label"] .toolbar-btn:not(.icon-only) > svg { display:
   font-family: "IBM Plex Mono", "SFMono-Regular", Consolas, monospace;
 }
 
-.line-numbers-hidden .line-number-gutter {
-  display: none;
-}
-
-.line-numbers-hidden .editor-textarea,
-.line-numbers-hidden .find-highlight-overlay {
-  padding-left: 24px;
-}
-
-.editor-textarea {
+/* === CodeMirror 6 host (replaces the textarea/gutter/mirror stack) === */
+.editor-cm-host {
   position: absolute;
   inset: 0;
-  width: 100%;
+}
+
+.cm-editor {
   height: 100%;
-  padding: 24px;
-  padding-left: 72px;
-  border: none;
+  background: transparent;
+}
+
+.cm-editor.cm-focused {
   outline: none;
-  resize: none;
-  background-color: transparent;
-  color: var(--text-color);
-  caret-color: var(--caret, var(--accent));
-  font-family: "IBM Plex Mono", "SFMono-Regular", Consolas, monospace;
+}
+
+.cm-editor .cm-scroller {
+  font-family: var(--editor-font-family, "IBM Plex Mono", "SFMono-Regular", Consolas, monospace);
   font-size: var(--editor-font-size);
   line-height: 1.6;
-  overflow-y: auto;
-  overflow-x: auto;
-  white-space: pre;
 }
 
-.editor-textarea::selection {
+.cm-editor .cm-content {
+  padding: 24px 24px 24px 16px;
+  caret-color: var(--caret, var(--accent));
+}
+
+.cm-editor .cm-cursor,
+.cm-editor .cm-dropCursor {
+  border-left-color: var(--caret, var(--accent));
+}
+
+.cm-editor .cm-selectionBackground,
+.cm-editor.cm-focused > .cm-scroller > .cm-selectionLayer .cm-selectionBackground {
   background: var(--selection-bg);
-  color: var(--text-primary);
 }
 
-.editor-textarea::placeholder {
+.cm-editor .cm-placeholder {
   color: var(--text-secondary);
   opacity: 0.75;
 }
 
-.line-number-gutter {
-  position: absolute;
-  top: 0;
-  left: 0;
-  bottom: 0;
-  width: 56px;
-  padding-top: 24px;
-  padding-right: 10px;
-  text-align: right;
-  color: var(--text-secondary);
-  opacity: 0.65;
+.cm-editor .cm-gutters {
   background: rgba(0, 0, 0, 0.02);
   border-right: 1px solid var(--separator);
-  overflow: hidden;
-  pointer-events: none;
-  user-select: none;
-  z-index: 2;
-  font-family: "IBM Plex Mono", "SFMono-Regular", Consolas, monospace;
+  color: var(--text-secondary);
   font-size: var(--editor-gutter-font-size);
-  line-height: 1.6;
 }
 
-[data-theme="dark"] .line-number-gutter,
-[data-theme="drac"] .line-number-gutter {
+[data-theme="dark"] .cm-editor .cm-gutters,
+[data-theme="drac"] .cm-editor .cm-gutters {
   background: rgba(255, 255, 255, 0.03);
 }
 
-.line-num {
-  display: flex;
-  align-items: flex-start;
-  justify-content: flex-end;
-  box-sizing: border-box;
+.cm-editor .cm-lineNumbers .cm-gutterElement {
+  opacity: 0.65;
+  padding: 0 4px 0 12px;
 }
 
-.line-mirror {
-  visibility: hidden;
-  position: absolute;
-  top: 0;
-  left: 0;
-  height: 0;
-  overflow: hidden;
-  font-family: "IBM Plex Mono", "SFMono-Regular", Consolas, monospace;
-  font-size: var(--editor-font-size);
-  line-height: 1.6;
-  white-space: pre-wrap;
-  word-break: break-word;
-  pointer-events: none;
-  z-index: -1;
+.cm-editor .cm-foldGutter .cm-gutterElement {
+  cursor: pointer;
+  color: var(--text-muted);
 }
 
-.find-highlight-overlay {
-  position: absolute;
-  inset: 0;
-  padding: 24px;
-  padding-left: 72px;
-  overflow: hidden;
-  pointer-events: none;
-  color: transparent;
-  white-space: pre;
-  font-family: "IBM Plex Mono", "SFMono-Regular", Consolas, monospace;
-  font-size: var(--editor-font-size);
-  line-height: 1.6;
-  z-index: 1;
+.cm-editor .cm-foldGutter .cm-gutterElement:hover {
+  color: var(--accent);
 }
 
-.find-highlight-overlay mark {
+.cm-editor .cm-foldPlaceholder {
+  background: var(--accent-tint);
+  border: none;
+  border-radius: 4px;
+  color: var(--accent);
+  padding: 0 6px;
+  margin: 0 2px;
+}
+
+/* Find matches (driven via setSearchQuery; CM's own panel is never opened) */
+.cm-editor .cm-searchMatch {
   background-color: var(--accent-warning-soft);
-  color: transparent;
   border-radius: 3px;
 }
 
-.find-highlight-overlay mark.active {
+.cm-editor .cm-searchMatch.cm-searchMatch-selected {
   background-color: var(--accent-warning);
-  color: transparent;
+}
+
+/* Other occurrences of the selected text (accent tint, deliberately distinct
+   from the warning-tinted find matches above) */
+.cm-editor .cm-selectionMatch {
+  background-color: var(--accent-tint);
+  border-radius: 3px;
+}
+
+/* Active line. Must stay translucent: this layer paints above the
+   drawSelection selection layer, an opaque color would hide selections on
+   the caret line. --hover is low-alpha in all three themes. */
+.cm-editor .cm-activeLine {
+  background-color: var(--hover);
+}
+
+.cm-editor .cm-activeLineGutter {
+  background-color: var(--hover);
+  color: var(--accent);
+}
+
+/* Markdown syntax highlighting (classHighlighter tok- classes) */
+.cm-editor .tok-heading {
+  color: var(--accent);
+  font-weight: 700;
+}
+
+.cm-editor .tok-emphasis {
+  font-style: italic;
+}
+
+.cm-editor .tok-strong {
+  font-weight: 700;
+}
+
+.cm-editor .tok-strikethrough {
+  text-decoration: line-through;
+}
+
+.cm-editor .tok-link {
+  color: var(--accent);
+  text-decoration: underline;
+}
+
+.cm-editor .tok-url {
+  color: var(--text-muted);
+}
+
+.cm-editor .tok-monospace {
+  background: var(--kbd-bg);
+  border-radius: 3px;
+}
+
+.cm-editor .tok-quote {
+  color: var(--text-muted);
+  font-style: italic;
+}
+
+.cm-editor .tok-meta,
+.cm-editor .tok-processingInstruction {
+  color: var(--text-tertiary);
+}
+
+.cm-editor .tok-contentSeparator {
+  color: var(--text-tertiary);
+  font-weight: 700;
+}
+
+/* Command palette modal (shared styles with viewer; duplicated so editor
+   window doesn't depend on styles.css) */
+.cmd-palette-backdrop {
+  position: fixed; inset: 0;
+  background: rgba(0, 0, 0, 0.3);
+  z-index: 2000;
+  display: none;
+  align-items: flex-start;
+  justify-content: center;
+  padding-top: 12vh;
+}
+.cmd-palette-backdrop.show { display: flex; }
+.cmd-palette {
+  width: min(560px, 92vw);
+  max-height: 60vh;
+  display: flex;
+  flex-direction: column;
+  background: var(--toolbar-bg);
+  border: 1px solid var(--separator);
+  border-radius: 10px;
+  box-shadow: var(--overlay-shadow);
+  backdrop-filter: blur(20px) saturate(180%);
+  -webkit-backdrop-filter: blur(20px) saturate(180%);
+  overflow: hidden;
+}
+.cmd-palette-input {
+  border: none; outline: none;
+  padding: 14px 16px;
+  font-size: 14px;
+  background: transparent;
+  color: var(--text-primary);
+  border-bottom: 1px solid var(--separator);
+  font-family: inherit;
+}
+.cmd-palette-list {
+  overflow-y: auto;
+  max-height: calc(60vh - 48px);
+}
+.cmd-palette-item {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 8px 16px;
+  cursor: pointer;
+  font-size: 13px;
+  color: var(--text-primary);
+}
+.cmd-palette-item.active {
+  background: var(--selected);
+  color: var(--accent);
+}
+.cmd-palette-item .hint {
+  color: var(--text-muted);
+  font-size: 11px;
+  font-family: "IBM Plex Mono", "SFMono-Regular", Consolas, monospace;
 }
 
 @media (max-width: 900px) {

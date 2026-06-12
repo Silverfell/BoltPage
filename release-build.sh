@@ -80,18 +80,22 @@ REF=$(git -C "$ROOT_DIR" rev-parse --abbrev-ref HEAD 2>/dev/null || echo "main")
 DEFAULT_REF=$(gh repo view -R "$REPO_SLUG" --json defaultBranchRef -q .defaultBranchRef.name 2>/dev/null || echo "main")
 echo "==> Triggering workflow on ref: $REF (repo default: $DEFAULT_REF)"
 
+# The Windows build lives in release.yml (build-windows job), which also
+# supports workflow_dispatch. There is no separate windows-build.yml.
+WORKFLOW_FILE="release.yml"
+
 # Ensure workflow exists on GitHub for this branch; if not, suggest pushing
-if ! gh workflow view -R "$REPO_SLUG" windows-build.yml >/dev/null 2>&1; then
-  echo "⚠️  Workflow windows-build.yml not found on GitHub for $REPO_SLUG." >&2
+if ! gh workflow view -R "$REPO_SLUG" "$WORKFLOW_FILE" >/dev/null 2>&1; then
+  echo "⚠️  Workflow $WORKFLOW_FILE not found on GitHub for $REPO_SLUG." >&2
   echo "   GitHub requires the workflow file to exist on the repository's DEFAULT branch ($DEFAULT_REF)." >&2
-  echo "   Ensure .github/workflows/windows-build.yml is pushed to $DEFAULT_REF." >&2
+  echo "   Ensure .github/workflows/$WORKFLOW_FILE is pushed to $DEFAULT_REF." >&2
   if [[ "${AUTO_GIT_PUSH:-0}" == "1" ]]; then
     echo "==> AUTO_GIT_PUSH=1 set; pushing workflow to default branch ($DEFAULT_REF) ..."
     # Push current branch to the repo's default branch, to ensure workflow presence
     git -C "$ROOT_DIR" push origin "$REF":"$DEFAULT_REF"
     # recheck
     sleep 3
-    if ! gh workflow view -R "$REPO_SLUG" windows-build.yml >/dev/null 2>&1; then
+    if ! gh workflow view -R "$REPO_SLUG" "$WORKFLOW_FILE" >/dev/null 2>&1; then
       echo "❌ Workflow still not visible on GitHub. Push may have failed or different default branch in repo." >&2
       exit 1
     fi
@@ -102,37 +106,26 @@ if ! gh workflow view -R "$REPO_SLUG" windows-build.yml >/dev/null 2>&1; then
   fi
 fi
 
-# Trigger the workflow (uses the workflow file we added). If dispatch fails (permissions),
-# fallback to pushing a temporary tag matching 'v*' to trigger the tag workflow automatically.
-if ! gh workflow run -R "$REPO_SLUG" windows-build.yml --ref "$REF" >/dev/null 2>&1; then
-  echo "⚠️  'gh workflow run' failed (likely missing 'workflow' scope or Actions disabled)."
-  echo "   Falling back to temporary tag push to trigger build on GitHub."
-  TEMP_TAG="v${VERSION}-ci-$(date +%s)"
-  echo "==> Creating temporary tag: $TEMP_TAG"
-  git -C "$ROOT_DIR" tag -f "$TEMP_TAG" "$REF"
-  git -C "$ROOT_DIR" push -f origin "refs/tags/$TEMP_TAG"
-  REF="$TEMP_TAG"
+# Trigger the workflow. No tag-push fallback: pushing a v* tag triggers
+# release.yml's create-release job and would publish an unintended public
+# GitHub Release.
+if ! gh workflow run -R "$REPO_SLUG" "$WORKFLOW_FILE" --ref "$REF" >/dev/null 2>&1; then
+  echo "❌ 'gh workflow run' failed (likely missing 'workflow' scope or Actions disabled)." >&2
+  echo "   Grant the scope with: gh auth refresh -s workflow" >&2
+  exit 1
 fi
 
 # Find the latest run for this workflow on the selected ref
 sleep 3
-RUN_ID=""
-if [[ "$REF" == v* ]]; then
-  # For tag builds, match by head SHA of the tag
-  TAG_SHA=$(git -C "$ROOT_DIR" rev-list -n 1 "$REF")
-RUN_ID=$(gh run list -R "$REPO_SLUG" --workflow windows-build.yml --json databaseId,createdAt,headSha \
-    -q "[.[] | select(.headSha == '$TAG_SHA')] | sort_by(.createdAt) | reverse | .[0].databaseId" 2>/dev/null || echo "")
-else
-RUN_ID=$(gh run list -R "$REPO_SLUG" --workflow windows-build.yml --json databaseId,createdAt,headBranch \
+RUN_ID=$(gh run list -R "$REPO_SLUG" --workflow "$WORKFLOW_FILE" --json databaseId,createdAt,headBranch \
     -q "[.[] | select(.headBranch == '$REF')] | sort_by(.createdAt) | reverse | .[0].databaseId" 2>/dev/null || echo "")
-fi
 if [[ -z "$RUN_ID" ]]; then
   # Fallback: any latest run
-  RUN_ID=$(gh run list -R "$REPO_SLUG" --workflow windows-build.yml --json databaseId,createdAt \
+  RUN_ID=$(gh run list -R "$REPO_SLUG" --workflow "$WORKFLOW_FILE" --json databaseId,createdAt \
     -q 'sort_by(.createdAt) | reverse | .[0].databaseId')
 fi
 if [[ -z "$RUN_ID" ]]; then
-  echo "❌ Could not determine workflow run ID for windows-build.yml on $REPO_SLUG" >&2
+  echo "❌ Could not determine workflow run ID for $WORKFLOW_FILE on $REPO_SLUG" >&2
   exit 1
 fi
 echo "==> Waiting for workflow run to complete (run id: $RUN_ID)"
@@ -140,7 +133,7 @@ gh run watch -R "$REPO_SLUG" "$RUN_ID"
 
 echo "==> Downloading Windows artifacts"
 rm -rf "$WIN_OUT_DIR" && mkdir -p "$WIN_OUT_DIR"
-gh run download -R "$REPO_SLUG" "$RUN_ID" -n boltpage-windows -D "$WIN_OUT_DIR"
+gh run download -R "$REPO_SLUG" "$RUN_ID" -n windows-build -D "$WIN_OUT_DIR"
 
 # Locate the NSIS EXE in the downloaded artifacts
 WIN_EXE=$(find "$WIN_OUT_DIR" -type f -name "*.exe" | head -n1 || true)
@@ -152,13 +145,6 @@ fi
 WIN_OUT_NAME="BoltPage-${VERSION}-windows.exe"
 cp -f "$WIN_EXE" "$PUBLIC_DIR/$WIN_OUT_NAME"
 echo "✅ Copied Windows EXE to: $PUBLIC_DIR/$WIN_OUT_NAME"
-
-# Cleanup: delete temporary tag if used
-if [[ "${TEMP_TAG:-}" != "" ]]; then
-  echo "==> Cleaning up temporary tag $TEMP_TAG"
-  git -C "$ROOT_DIR" tag -d "$TEMP_TAG" >/dev/null 2>&1 || true
-  git -C "$ROOT_DIR" push origin ":refs/tags/$TEMP_TAG" >/dev/null 2>&1 || true
-fi
 
 ########################################
 # 3) Update website links and cleanup old binaries

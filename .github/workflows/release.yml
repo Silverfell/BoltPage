@@ -116,6 +116,21 @@ jobs:
           xcrun stapler staple "$dmg"
         done
 
+    # Tauri names DMGs BoltPage_<ver>_<rust-arch>.dmg; the Homebrew cask and
+    # PUBLISHING.md expect BoltPage-<ver>-arm64.dmg / BoltPage-<ver>-x64.dmg.
+    # Rename here so released assets match the cask URLs.
+    - name: Rename DMGs to distribution names
+      run: |
+        VERSION=$(node -p "require('./boltpage/package.json').version")
+        cd boltpage/target/aarch64-apple-darwin/release/bundle/dmg
+        for dmg in BoltPage_*.dmg; do
+          mv "$dmg" "BoltPage-${VERSION}-arm64.dmg"
+        done
+        cd ../../../../x86_64-apple-darwin/release/bundle/dmg
+        for dmg in BoltPage_*.dmg; do
+          mv "$dmg" "BoltPage-${VERSION}-x64.dmg"
+        done
+
     - name: Upload macOS ARM64 artifacts
       uses: actions/upload-artifact@v4
       with:
@@ -237,8 +252,8 @@ jobs:
           ## BoltPage ${{ github.ref_name }}
 
           ### Downloads
-          - **macOS (Apple Silicon)**: Download the `*_aarch64.dmg` file below
-          - **macOS (Intel)**: Download the `*_x64.dmg` file below
+          - **macOS (Apple Silicon)**: Download the `*-arm64.dmg` file below
+          - **macOS (Intel)**: Download the `*-x64.dmg` file below
           - **Windows**: Download the `.exe` installer below
 
           ### Changes

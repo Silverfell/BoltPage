@@ -794,6 +794,86 @@ html[data-toolbar-density="label"] .toolbar-btn:not(.icon-only) > svg { display:
   font-weight: 600;
 }
 
+/* Sidebar mode tabs (Files | Outline), shown only with a workspace folder */
+.sidebar-tabs {
+  display: flex;
+  gap: 2px;
+  padding: 2px;
+  margin-bottom: 8px;
+  border-radius: 7px;
+  background: var(--hover);
+}
+
+.sidebar-tabs[hidden] {
+  display: none;
+}
+
+.sidebar-tab {
+  flex: 1;
+  height: 22px;
+  border: none;
+  border-radius: 5px;
+  background: transparent;
+  color: var(--text-primary);
+  font-family: inherit;
+  font-size: 11px;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.sidebar-tab.active {
+  background: var(--content-bg);
+  color: var(--accent);
+  box-shadow: 0 1px 2px rgba(0, 0, 0, 0.08);
+}
+
+#file-tree[hidden],
+#toc-nav[hidden] {
+  display: none;
+}
+
+/* Workspace file tree (lazy, one fetched level per expand) */
+.tree-item {
+  display: block;
+  width: 100%;
+  text-align: left;
+  padding: 4px 8px;
+  border: none;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--text-primary);
+  font-family: inherit;
+  font-size: 12.5px;
+  cursor: pointer;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  transition: background-color 0.12s ease, color 0.12s ease;
+}
+
+.tree-item:hover {
+  background: var(--hover);
+}
+
+.tree-item.tree-file.active {
+  background: var(--selected);
+  color: var(--accent);
+  font-weight: 600;
+}
+
+.tree-dir::before {
+  content: "\25B8";
+  display: inline-block;
+  width: 12px;
+  margin-right: 2px;
+  color: var(--text-muted);
+  font-size: 10px;
+}
+
+.tree-dir.expanded::before {
+  content: "\25BE";
+}
+
 .content-stage {
   flex: 1;
   min-width: 0;
@@ -984,9 +1064,102 @@ html[data-toolbar-density="label"] .toolbar-btn:not(.icon-only) > svg { display:
   margin: 0 auto;
   padding: 0;
   color: var(--text-color);
-  font-family: "Iowan Old Style", "Palatino Linotype", "Book Antiqua", Georgia, serif;
+  font-family: var(--document-font-family, "Iowan Old Style", "Palatino Linotype", "Book Antiqua", Georgia, serif);
   font-size: var(--document-font-size);
   line-height: 1.72;
+}
+
+/* Callouts / admonitions (GitHub-style `> [!KIND]`) */
+.markdown-body .callout {
+  margin: 0 0 16px;
+  padding: 12px 14px;
+  border-left: 3px solid var(--callout-accent, var(--accent));
+  border-radius: 6px;
+  background: color-mix(in srgb, var(--callout-accent, var(--accent)) 12%, transparent);
+}
+.markdown-body .callout-title {
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  font-size: 12px;
+  color: var(--callout-accent, var(--accent));
+  margin-bottom: 6px;
+}
+.markdown-body .callout-body > *:last-child { margin-bottom: 0; }
+.markdown-body .callout-body > *:first-child { margin-top: 0; }
+.markdown-body .callout-note      { --callout-accent: var(--accent); }
+.markdown-body .callout-tip       { --callout-accent: var(--accent-success); }
+.markdown-body .callout-important { --callout-accent: #7c3aed; }
+.markdown-body .callout-warning   { --callout-accent: var(--accent-warning); }
+.markdown-body .callout-caution   { --callout-accent: var(--danger); }
+
+/* Math (KaTeX container hints) */
+.markdown-body .math-display { overflow-x: auto; padding: 4px 0; }
+
+/* Mermaid containers */
+.markdown-body pre.mermaid {
+  background: transparent;
+  padding: 0;
+  text-align: center;
+  font-family: inherit;
+}
+.markdown-body pre.mermaid svg { max-width: 100%; height: auto; }
+
+/* Command palette modal */
+.cmd-palette-backdrop {
+  position: fixed; inset: 0;
+  background: rgba(0, 0, 0, 0.3);
+  z-index: 2000;
+  display: none;
+  align-items: flex-start;
+  justify-content: center;
+  padding-top: 12vh;
+}
+.cmd-palette-backdrop.show { display: flex; }
+.cmd-palette {
+  width: min(560px, 92vw);
+  max-height: 60vh;
+  display: flex;
+  flex-direction: column;
+  background: var(--toolbar-bg);
+  border: 1px solid var(--separator);
+  border-radius: 10px;
+  box-shadow: var(--overlay-shadow);
+  backdrop-filter: blur(20px) saturate(180%);
+  -webkit-backdrop-filter: blur(20px) saturate(180%);
+  overflow: hidden;
+}
+.cmd-palette-input {
+  border: none; outline: none;
+  padding: 14px 16px;
+  font-size: 14px;
+  background: transparent;
+  color: var(--text-primary);
+  border-bottom: 1px solid var(--separator);
+  font-family: inherit;
+}
+.cmd-palette-list {
+  overflow-y: auto;
+  max-height: calc(60vh - 48px);
+}
+.cmd-palette-item {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 8px 16px;
+  cursor: pointer;
+  font-size: 13px;
+  color: var(--text-primary);
+}
+.cmd-palette-item.active {
+  background: var(--selected);
+  color: var(--accent);
+}
+.cmd-palette-item .hint {
+  color: var(--text-muted);
+  font-size: 11px;
+  font-family: "IBM Plex Mono", "SFMono-Regular", Consolas, monospace;
 }
 
 .markdown-body code.language-json {
