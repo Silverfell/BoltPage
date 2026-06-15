@@ -64,6 +64,8 @@
   - Session list is an ordered Vec under pref_lock; quitting sets a QUITTING flag (RunEvent::ExitRequested) so windows closed by quit keep their session entries.
   - Preference store contract: the map may hold any subset of keys (save_preference_key writes one at a time), so AppPreferences carries #[serde(default)]; a partial map must never reset preferences.
   - Release DMGs are renamed in release.yml to BoltPage-<ver>-arm64.dmg / BoltPage-<ver>-x64.dmg so GitHub assets match the Homebrew cask URLs.
+  - Windows CI signing is real: release.yml imports the PFX secret, reads its thumbprint, and injects bundle.windows.certificateThumbprint at build time (committed config stays unsigned so local dev builds work); builds are unsigned only when the secret is absent.
+  - Single-source version sync: scripts/sync-version.sh (Tauri beforeBuildCommand) owns the Cargo.toml + tauri.conf.json version; build-release.sh only syncs names + the Homebrew cask, never the version.
 
 - Non-goals:
   - Cross-platform builds not supported.
