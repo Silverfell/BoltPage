@@ -64,6 +64,7 @@ fn list_dir_inner(dir: &Path) -> Result<Vec<DirEntryInfo>, String> {
 fn walk_workspace(
     dir: &Path,
     root: &Path,
+    canonical_root: &Path,
     depth: usize,
     out: &mut Vec<DirEntryInfo>,
     truncated: &mut bool,
@@ -82,7 +83,15 @@ fn walk_workspace(
         }
         let path = PathBuf::from(&entry.path);
         if entry.is_dir {
-            walk_workspace(&path, root, depth + 1, out, truncated);
+            // Don't follow directory symlinks that escape the workspace: only
+            // recurse when the canonical target stays under the granted root,
+            // so the index can't disclose paths outside the folder.
+            match fs::canonicalize(&path) {
+                Ok(canon) if canon.starts_with(canonical_root) => {
+                    walk_workspace(&path, root, canonical_root, depth + 1, out, truncated);
+                }
+                _ => continue,
+            }
         } else {
             // Join components with '/' explicitly so switcher labels are
             // identical across platforms (Windows would otherwise emit '\').
@@ -148,6 +157,12 @@ pub(crate) async fn get_workspace_folder(app: AppHandle) -> Result<Option<String
 
 #[tauri::command]
 pub(crate) async fn clear_workspace_folder(app: AppHandle) -> Result<(), String> {
+    // Revoke the directory grant, not just the preference: otherwise the folder
+    // stays in allowed_dirs and backend commands keep read/write access to it
+    // until the process exits.
+    if let Some(folder) = prefs::read_string_pref(&app, "workspace_folder") {
+        io::revoke_dir(&app, &folder);
+    }
     prefs::save_preference_key_inner(&app, "workspace_folder", serde_json::Value::Null).await
 }
 
@@ -173,11 +188,13 @@ pub(crate) async fn list_workspace_files(app: AppHandle) -> Result<WorkspaceFile
     };
     io::check_path_allowed(&app, &folder)?;
     let root = PathBuf::from(folder);
+    let canonical_root =
+        fs::canonicalize(&root).map_err(|e| format!("Failed to resolve workspace: {e}"))?;
     tauri::async_runtime::spawn_blocking(move || {
         let mut files = Vec::new();
         let mut truncated = false;
-        walk_workspace(&root, &root, 0, &mut files, &mut truncated);
-        files.sort_by(|a, b| a.name.to_lowercase().cmp(&b.name.to_lowercase()));
+        walk_workspace(&root, &root, &canonical_root, 0, &mut files, &mut truncated);
+        files.sort_by_key(|a| a.name.to_lowercase());
         Ok(WorkspaceFiles { files, truncated })
     })
     .await
@@ -224,7 +241,8 @@ mod tests {
 
         let mut files = Vec::new();
         let mut truncated = false;
-        walk_workspace(&root, &root, 0, &mut files, &mut truncated);
+        let canonical_root = fs::canonicalize(&root).unwrap();
+        walk_workspace(&root, &root, &canonical_root, 0, &mut files, &mut truncated);
         let mut names: Vec<String> = files.iter().map(|f| f.name.clone()).collect();
         names.sort();
         assert_eq!(
@@ -234,5 +252,26 @@ mod tests {
         assert!(!truncated);
 
         fs::remove_dir_all(root).unwrap();
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn walk_workspace_skips_symlink_escape() {
+        let root = unique_temp_dir();
+        let outside = unique_temp_dir();
+        fs::write(outside.join("secret.md"), "x").unwrap();
+        fs::write(root.join("inside.md"), "x").unwrap();
+        std::os::unix::fs::symlink(&outside, root.join("link")).unwrap();
+
+        let mut files = Vec::new();
+        let mut truncated = false;
+        let canonical_root = fs::canonicalize(&root).unwrap();
+        walk_workspace(&root, &root, &canonical_root, 0, &mut files, &mut truncated);
+        let names: Vec<String> = files.iter().map(|f| f.name.clone()).collect();
+        // The symlinked external dir must not be followed: only inside.md.
+        assert_eq!(names, vec!["inside.md".to_string()]);
+
+        fs::remove_dir_all(root).unwrap();
+        fs::remove_dir_all(outside).unwrap();
     }
 }

@@ -109,6 +109,21 @@ pub(crate) fn allow_dir(app: &AppHandle, dir: &str) -> Result<(), String> {
     Ok(())
 }
 
+/// Revoke a previously granted folder (e.g. when the user closes the
+/// workspace), so backend commands stop passing its prefix check. Best-effort:
+/// a non-canonicalizable path matches nothing in the set and is a no-op.
+pub(crate) fn revoke_dir(app: &AppHandle, dir: &str) {
+    let Ok(canonical) = fs::canonicalize(dir) else {
+        return;
+    };
+    let state = app.state::<AppState>();
+    state
+        .allowed_dirs
+        .write()
+        .expect("allowed_dirs lock poisoned")
+        .remove(&canonical);
+}
+
 /// Register a path as allowed for file I/O commands.
 pub(crate) fn allow_path(app: &AppHandle, path: &str) {
     let normalized = normalize_path(path);

@@ -46,7 +46,7 @@
   - Scroll sync: line height 1.4x, programmatic timeout 100ms, delta thresholds.
   - Debug builds use debug_log macro (eprintln); release builds strip it.
   - Run cargo fmt before committing Rust code.
-  - Release tags must be lightweight, not annotated.
+  - Release tags must be lightweight (not annotated) and applied on main: merge dev into main first, then tag, so every release tag is an ancestor of main. main is branch-protected with a required "CI Success" check (CI runs on PRs, not pushes), so reach it via a PR rather than a direct push.
   - Version source of truth is package.json; scripts/sync-version.sh propagates to tauri.conf.json and Cargo.toml (Cargo.lock via cargo check, Homebrew cask updated manually).
   - UI chrome aligned to Apple HIG: 38pt titlebar material, 10px window radius, 6px control radii, three themes (light/dark/drac), native font stack; .markdown-body keeps serif stack.
   - Cross-window preference broadcasts follow echo-suppression pattern: listener compares payload to local state and early-returns on match (theme, font-size, toolbar-density).

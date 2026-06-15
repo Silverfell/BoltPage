@@ -399,7 +399,7 @@ pub fn run() {
                         MENU_NEW_WINDOW => {
                             let app_clone = app.clone();
                             tauri::async_runtime::spawn(async move {
-                                let _ = window::create_new_window_command(app_clone, None).await;
+                                let _ = window::create_new_window_command(app_clone).await;
                             });
                         }
                         MENU_PRINT | MENU_EXPORT_PDF => {
