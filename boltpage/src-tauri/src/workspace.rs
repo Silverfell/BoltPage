@@ -194,7 +194,7 @@ pub(crate) async fn list_workspace_files(app: AppHandle) -> Result<WorkspaceFile
         let mut files = Vec::new();
         let mut truncated = false;
         walk_workspace(&root, &root, &canonical_root, 0, &mut files, &mut truncated);
-        files.sort_by(|a, b| a.name.to_lowercase().cmp(&b.name.to_lowercase()));
+        files.sort_by_key(|a| a.name.to_lowercase());
         Ok(WorkspaceFiles { files, truncated })
     })
     .await
