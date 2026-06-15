@@ -33,28 +33,6 @@ get_package_info() {
     echo "$version|$app_name"
 }
 
-# Function to update version in a file
-update_version_in_file() {
-    local file_path="$1"
-    local new_version="$2"
-    
-    if [[ ! -f "$file_path" ]]; then
-        echo "⚠️  Warning: $file_path not found, skipping..."
-        return 0
-    fi
-    
-    # Use sed to replace the version - be very precise
-    if [[ "$OS_NAME" == "Darwin" ]]; then
-        # macOS sed requires different syntax
-        sed -i '' "s/^version = \".*\"/version = \"$new_version\"/" "$file_path"
-    else
-        # Linux/Windows sed
-        sed -i "s/^version = \".*\"/version = \"$new_version\"/" "$file_path"
-    fi
-    
-    echo "✅ Updated version in $file_path to: $new_version"
-}
-
 # Function to update app name in a file
 update_app_name_in_file() {
     local file_path="$1"
@@ -100,28 +78,6 @@ update_package_name_in_file() {
     fi
     
     echo "✅ Updated package name in $file_path to: $lowercase_name (lowercase)"
-}
-
-# Function to update JSON version in a file
-update_json_version() {
-    local file_path="$1"
-    local new_version="$2"
-    
-    if [[ ! -f "$file_path" ]]; then
-        echo "⚠️  Warning: $file_path not found, skipping..."
-        return 0
-    fi
-    
-    # Use sed to replace the JSON version - be very precise
-    if [[ "$OS_NAME" == "Darwin" ]]; then
-        # macOS sed requires different syntax
-        sed -i '' "s/\"version\": \".*\"/\"version\": \"$new_version\"/" "$file_path"
-    else
-        # Linux/Windows sed
-        sed -i "s/\"version\": \".*\"/\"version\": \"$new_version\"/" "$file_path"
-    fi
-    
-    echo "✅ Updated JSON version in $file_path to: $new_version"
 }
 
 # Function to update JSON product name in a file
@@ -199,12 +155,10 @@ PACKAGE_NAME=$(echo "$PACKAGE_INFO" | cut -d'|' -f2)
 echo "📋 package.json version: $PACKAGE_VERSION"
 echo "📋 package.json app name: $PACKAGE_NAME"
 
-# Update Cargo.toml - package name should be snake_case, not display name
-update_version_in_file "src-tauri/Cargo.toml" "$PACKAGE_VERSION"
+# Cargo.toml and tauri.conf.json versions are synced by scripts/sync-version.sh,
+# which Tauri runs as beforeBuildCommand in the build below; don't write them
+# here too. Only the name/productName (not handled there) are synced now.
 update_package_name_in_file "src-tauri/Cargo.toml" "$PACKAGE_NAME"
-
-# Update tauri.conf.json
-update_json_version "src-tauri/tauri.conf.json" "$PACKAGE_VERSION"
 update_json_product_name "src-tauri/tauri.conf.json" "$PACKAGE_NAME"
 
 # Update Homebrew cask

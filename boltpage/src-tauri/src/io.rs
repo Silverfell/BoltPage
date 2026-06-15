@@ -1,5 +1,6 @@
 use base64::Engine;
 use lru::LruCache;
+use std::collections::HashSet;
 use std::fs;
 use std::io::Write;
 use std::path::{Path, PathBuf};
@@ -47,21 +48,65 @@ pub(crate) fn pathbuf_to_string(path: &Path) -> String {
 
 // --- Path security ---
 
-/// Verify that `path` was explicitly opened by the user (file dialog, CLI, or
-/// macOS Launch Services).  Prevents a compromised webview from reading /
-/// writing arbitrary files.
+/// Pure allow-check: `normalized` against explicit path grants, and (only for
+/// canonicalizable paths) `canonical` against workspace-folder grants. Raw,
+/// non-canonicalizable paths never dir-match, so `..` segments and dangling
+/// symlinks cannot ride the prefix comparison.
+pub(crate) fn path_allowed_by(
+    normalized: &str,
+    canonical: Option<&Path>,
+    allowed_paths: &HashSet<String>,
+    allowed_dirs: &HashSet<PathBuf>,
+) -> bool {
+    if allowed_paths.contains(normalized) {
+        return true;
+    }
+    match canonical {
+        Some(c) => allowed_dirs.iter().any(|dir| c.starts_with(dir)),
+        None => false,
+    }
+}
+
+/// Verify that `path` was explicitly opened by the user (file dialog, CLI,
+/// macOS Launch Services, recents/menu) or sits inside a user-picked
+/// workspace folder. Prevents a compromised webview from reading / writing
+/// arbitrary files.
 pub(crate) fn check_path_allowed(app: &AppHandle, path: &str) -> Result<(), String> {
-    let normalized = normalize_path(path);
+    let canonical = fs::canonicalize(path).ok();
+    let normalized = canonical
+        .as_ref()
+        .map(|p| p.to_string_lossy().to_string())
+        .unwrap_or_else(|| path.to_string());
     let state = app.state::<AppState>();
     let allowed = state
         .allowed_paths
         .read()
         .expect("allowed_paths lock poisoned");
-    if allowed.contains(&normalized) {
+    let allowed_dirs = state
+        .allowed_dirs
+        .read()
+        .expect("allowed_dirs lock poisoned");
+    if path_allowed_by(&normalized, canonical.as_deref(), &allowed, &allowed_dirs) {
         Ok(())
     } else {
         Err("Access denied: path not authorized".to_string())
     }
+}
+
+/// Register a user-picked folder: any canonicalizable path under it passes
+/// check_path_allowed.
+pub(crate) fn allow_dir(app: &AppHandle, dir: &str) -> Result<(), String> {
+    let canonical = fs::canonicalize(dir).map_err(|e| format!("Failed to resolve folder: {e}"))?;
+    if !canonical.is_dir() {
+        return Err("Not a directory".to_string());
+    }
+    let state = app.state::<AppState>();
+    state
+        .allowed_dirs
+        .write()
+        .expect("allowed_dirs lock poisoned")
+        .insert(canonical);
+    Ok(())
 }
 
 /// Register a path as allowed for file I/O commands.
@@ -115,6 +160,108 @@ pub(crate) async fn push_to_recents(app: &AppHandle, path: &str) -> Result<(), S
     store
         .save()
         .map_err(|e| format!("Failed to save preferences: {e}"))?;
+
+    drop(_lock);
+    // Keep the File > Open Recent submenu current with every recents mutation.
+    let _ = crate::menu::rebuild_app_menu(app);
+
+    Ok(())
+}
+
+/// Mutate the ordered session list ("session_files" pref) under pref_lock.
+/// `add` pushes the path to the end (removing an earlier occurrence first);
+/// `!add` removes it. Order is preserved for session restore.
+async fn session_update(app: &AppHandle, path: &str, add: bool) -> Result<(), String> {
+    let state = app.state::<AppState>();
+    let _lock = state.pref_lock.lock().await;
+
+    let store = app
+        .store(".boltpage.dat")
+        .map_err(|e| format!("Failed to access store: {e}"))?;
+
+    let mut map = store
+        .get("preferences")
+        .and_then(|v| {
+            serde_json::from_value::<serde_json::Map<String, serde_json::Value>>(v.clone()).ok()
+        })
+        .unwrap_or_default();
+
+    let mut vec: Vec<String> = map
+        .get("session_files")
+        .and_then(|v| serde_json::from_value(v.clone()).ok())
+        .unwrap_or_default();
+
+    vec.retain(|p| p != path);
+    if add {
+        vec.push(path.to_string());
+    }
+
+    map.insert(
+        "session_files".into(),
+        serde_json::to_value(vec).map_err(|e| format!("serialize session: {e}"))?,
+    );
+
+    store.set("preferences", serde_json::Value::Object(map));
+    store
+        .save()
+        .map_err(|e| format!("Failed to save preferences: {e}"))?;
+
+    Ok(())
+}
+
+pub(crate) async fn session_add(app: &AppHandle, path: &str) -> Result<(), String> {
+    session_update(app, path, true).await
+}
+
+pub(crate) async fn session_remove(app: &AppHandle, path: &str) -> Result<(), String> {
+    session_update(app, path, false).await
+}
+
+/// Register a file opened *inside an existing window* (welcome-card recents,
+/// the open dialog, the workspace tree). Grants access only when the path is a
+/// known recent; otherwise it must already be allowed (dialog/CLI/dir grants).
+/// Updates open_windows (dropping this window's previous file), the session
+/// list, and recents, so in-window switches stay tracked like window creation.
+#[tauri::command]
+pub(crate) async fn open_tracked_file(
+    app: AppHandle,
+    window: tauri::Window,
+    path: String,
+) -> Result<(), String> {
+    if check_path_allowed(&app, &path).is_err() {
+        let canonical = normalize_path(&path);
+        let known_recent = crate::prefs::read_recent_paths(&app)
+            .iter()
+            .any(|r| normalize_path(r) == canonical);
+        if known_recent {
+            allow_path(&app, &path);
+        } else {
+            return Err("Access denied: path not authorized".to_string());
+        }
+    }
+
+    let label = window.label().to_string();
+    let state = app.state::<AppState>();
+    let mut old_paths: Vec<String> = Vec::new();
+    {
+        let mut open = state.open_windows.write().await;
+        open.retain(|p, l| {
+            if l == &label && p != &path {
+                old_paths.push(p.clone());
+                false
+            } else {
+                true
+            }
+        });
+        open.insert(path.clone(), label);
+    }
+
+    // Sequential awaits: each call is a read-modify-write under pref_lock.
+    for old in old_paths {
+        session_remove(&app, &old).await?;
+    }
+    session_add(&app, &path).await?;
+    push_to_recents(&app, &path).await?;
 
     Ok(())
 }
@@ -415,7 +562,12 @@ pub(crate) async fn render_file_to_html(
 
 // --- Tauri commands: export ---
 
-async fn export_html_inner(app: &AppHandle, path: &str, theme: &str) -> Result<String, String> {
+async fn export_html_inner(
+    app: &AppHandle,
+    path: &str,
+    theme: &str,
+    document_font_stack: Option<&str>,
+) -> Result<String, String> {
     let fragment = render_file_to_html(app.clone(), path.to_string(), theme.to_string()).await?;
     let syntax_css = markrust_core::get_syntax_theme_css(theme).unwrap_or_default();
     let base_css = include_str!("../../src/styles.css");
@@ -431,6 +583,10 @@ async fn export_html_inner(app: &AppHandle, path: &str, theme: &str) -> Result<S
         .and_then(|n| n.to_str())
         .unwrap_or("Exported Document");
 
+    let font_override = document_font_stack
+        .map(|stack| format!("<style>:root{{--document-font-family:{stack};}}</style>"))
+        .unwrap_or_default();
+
     Ok(format!(
         r#"<!DOCTYPE html>
 <html lang="en"{data_theme}>
@@ -444,6 +600,7 @@ async fn export_html_inner(app: &AppHandle, path: &str, theme: &str) -> Result<S
 <style>
 {syntax_css}
 </style>
+{font_override}
 </head>
 <body>
 <div class="content-wrapper">
@@ -461,12 +618,13 @@ pub(crate) async fn save_html_export(
     app: AppHandle,
     path: String,
     theme: String,
+    document_font_stack: Option<String>,
 ) -> Result<Option<String>, String> {
     use tauri_plugin_dialog::DialogExt;
 
     check_path_allowed(&app, &path)?;
 
-    let html = export_html_inner(&app, &path, &theme).await?;
+    let html = export_html_inner(&app, &path, &theme, document_font_stack.as_deref()).await?;
 
     let app_clone = app.clone();
     let selection = tauri::async_runtime::spawn_blocking(move || {
@@ -628,6 +786,79 @@ mod tests {
         assert!(cache.get(&key_a1).is_none());
         assert!(cache.get(&key_a2).is_none());
         assert_eq!(cache.get(&key_b).cloned(), Some("other".to_string()));
+    }
+
+    #[test]
+    fn dir_grant_allows_inside_denies_escapes() {
+        let root = unique_temp_dir();
+        let inside = root.join("doc.md");
+        fs::write(&inside, "x").unwrap();
+        let outside_dir = unique_temp_dir();
+        let outside = outside_dir.join("secret.md");
+        fs::write(&outside, "x").unwrap();
+
+        let mut dirs: HashSet<PathBuf> = HashSet::new();
+        dirs.insert(fs::canonicalize(&root).unwrap());
+        let paths: HashSet<String> = HashSet::new();
+
+        // Inside the granted dir: allowed.
+        let c_inside = fs::canonicalize(&inside).unwrap();
+        assert!(path_allowed_by(
+            &c_inside.to_string_lossy(),
+            Some(&c_inside),
+            &paths,
+            &dirs
+        ));
+
+        // `..` escape canonicalizes to a path outside the grant: denied.
+        let escape = root
+            .join("..")
+            .join(outside_dir.file_name().unwrap())
+            .join("secret.md");
+        let c_escape = fs::canonicalize(&escape).unwrap();
+        assert!(!path_allowed_by(
+            &c_escape.to_string_lossy(),
+            Some(&c_escape),
+            &paths,
+            &dirs
+        ));
+
+        // Symlink inside the root pointing outside resolves outside: denied.
+        #[cfg(unix)]
+        {
+            let link = root.join("link.md");
+            std::os::unix::fs::symlink(&outside, &link).unwrap();
+            let c_link = fs::canonicalize(&link).unwrap();
+            assert!(!path_allowed_by(
+                &c_link.to_string_lossy(),
+                Some(&c_link),
+                &paths,
+                &dirs
+            ));
+        }
+
+        // Non-canonicalizable paths never dir-match.
+        let phantom = root.join("does-not-exist.md");
+        assert!(!path_allowed_by(
+            &phantom.to_string_lossy(),
+            None,
+            &paths,
+            &dirs
+        ));
+
+        // Explicit path grants still work independently of dirs.
+        let mut granted: HashSet<String> = HashSet::new();
+        granted.insert(c_inside.to_string_lossy().to_string());
+        let no_dirs: HashSet<PathBuf> = HashSet::new();
+        assert!(path_allowed_by(
+            &c_inside.to_string_lossy(),
+            Some(&c_inside),
+            &granted,
+            &no_dirs
+        ));
+
+        fs::remove_dir_all(root).unwrap();
+        fs::remove_dir_all(outside_dir).unwrap();
     }
 
     #[test]

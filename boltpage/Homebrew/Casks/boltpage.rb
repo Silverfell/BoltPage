@@ -1,6 +1,5 @@
 cask "boltpage" do
-  version "2.0.0"
-  sha256 :no_check # Replace with exact checksums per-arch below when URLs are final
+  version "2.1.0"
 
   name "BoltPage"
   desc "Fast, lightweight Markdown viewer and editor"
@@ -18,7 +17,9 @@ cask "boltpage" do
   end
 
   auto_updates false
-  depends_on macos: ">= :catalina"
+  # Matches bundle.macOS.minimumSystemVersion (10.13) in tauri.conf.json,
+  # which is also Tauri 2's default deployment target.
+  depends_on macos: ">= :high_sierra"
 
   app "BoltPage.app"
 

@@ -7,7 +7,12 @@ use tauri_plugin_store::StoreExt;
 
 use crate::AppState;
 
+// serde(default): the store is also written one key at a time by
+// save_preference_key, so the map can legally hold any subset of fields.
+// Without this, a partial map fails deserialization and get_preferences
+// silently falls back to Default, discarding every saved preference.
 #[derive(Debug, Serialize, Deserialize)]
+#[serde(default)]
 pub(crate) struct AppPreferences {
     pub theme: String,
     pub window_width: u32,
@@ -22,6 +27,8 @@ pub(crate) struct AppPreferences {
     pub toolbar_density: Option<String>,
     pub editor_inspector_visible: Option<bool>,
     pub recent_files: Option<Vec<String>>,
+    pub document_font_family: Option<String>,
+    pub editor_font_family: Option<String>,
 }
 
 impl Default for AppPreferences {
@@ -40,6 +47,8 @@ impl Default for AppPreferences {
             toolbar_density: None,
             editor_inspector_visible: None,
             recent_files: None,
+            document_font_family: None,
+            editor_font_family: None,
         }
     }
 }
@@ -120,6 +129,47 @@ pub(crate) async fn mark_cli_setup_declined(app: AppHandle) -> Result<(), String
     save_preference_key_inner(&app, "cli_setup_prompted", serde_json::Value::Bool(true)).await
 }
 
+/// Read a Vec<String> entry from the preferences map. Returns empty on any
+/// missing/parse failure (the store may legally hold a partial map).
+fn read_string_list(app: &AppHandle, key: &str) -> Vec<String> {
+    let Ok(store) = app.store(".boltpage.dat") else {
+        return Vec::new();
+    };
+    store
+        .get("preferences")
+        .and_then(|v| {
+            serde_json::from_value::<serde_json::Map<String, serde_json::Value>>(v.clone()).ok()
+        })
+        .and_then(|map| {
+            map.get(key)
+                .and_then(|v| serde_json::from_value::<Vec<String>>(v.clone()).ok())
+        })
+        .unwrap_or_default()
+}
+
+/// Raw recent-files list, most-recent first. Dead paths are NOT filtered here;
+/// call sites decide (menu and get_recent_files filter, validation does not).
+pub(crate) fn read_recent_paths(app: &AppHandle) -> Vec<String> {
+    read_string_list(app, "recent_files")
+}
+
+/// Ordered list of files that were open in preview windows (session restore).
+pub(crate) fn read_session_paths(app: &AppHandle) -> Vec<String> {
+    read_string_list(app, "session_files")
+}
+
+/// Read a single string entry from the preferences map (None when missing,
+/// null, or unparseable).
+pub(crate) fn read_string_pref(app: &AppHandle, key: &str) -> Option<String> {
+    let store = app.store(".boltpage.dat").ok()?;
+    store
+        .get("preferences")
+        .and_then(|v| {
+            serde_json::from_value::<serde_json::Map<String, serde_json::Value>>(v.clone()).ok()
+        })
+        .and_then(|map| map.get(key).and_then(|v| v.as_str().map(|s| s.to_string())))
+}
+
 #[derive(Debug, Serialize)]
 pub(crate) struct RecentFile {
     pub path: String,
@@ -130,21 +180,7 @@ pub(crate) struct RecentFile {
 
 #[tauri::command]
 pub(crate) async fn get_recent_files(app: AppHandle) -> Result<Vec<RecentFile>, String> {
-    let store = app
-        .store(".boltpage.dat")
-        .map_err(|e| format!("Failed to access store: {e}"))?;
-
-    let map = store
-        .get("preferences")
-        .and_then(|v| {
-            serde_json::from_value::<serde_json::Map<String, serde_json::Value>>(v.clone()).ok()
-        })
-        .unwrap_or_default();
-
-    let paths: Vec<String> = map
-        .get("recent_files")
-        .and_then(|v| serde_json::from_value::<Vec<String>>(v.clone()).ok())
-        .unwrap_or_default();
+    let paths = read_recent_paths(&app);
 
     let mut out: Vec<RecentFile> = Vec::with_capacity(paths.len());
     for raw in paths {

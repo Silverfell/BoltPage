@@ -80,59 +80,85 @@ REF=$(git -C "$ROOT_DIR" rev-parse --abbrev-ref HEAD 2>/dev/null || echo "main")
 DEFAULT_REF=$(gh repo view -R "$REPO_SLUG" --json defaultBranchRef -q .defaultBranchRef.name 2>/dev/null || echo "main")
 echo "==> Triggering workflow on ref: $REF (repo default: $DEFAULT_REF)"
 
+# The Windows build lives in release.yml (build-windows job), which also
+# supports workflow_dispatch. There is no separate windows-build.yml.
+WORKFLOW_FILE="release.yml"
+
 # Ensure workflow exists on GitHub for this branch; if not, suggest pushing
-if ! gh workflow view -R "$REPO_SLUG" windows-build.yml >/dev/null 2>&1; then
-  echo "⚠️  Workflow windows-build.yml not found on GitHub for $REPO_SLUG." >&2
+if ! gh workflow view -R "$REPO_SLUG" "$WORKFLOW_FILE" >/dev/null 2>&1; then
+  echo "⚠️  Workflow $WORKFLOW_FILE not found on GitHub for $REPO_SLUG." >&2
   echo "   GitHub requires the workflow file to exist on the repository's DEFAULT branch ($DEFAULT_REF)." >&2
-  echo "   Ensure .github/workflows/windows-build.yml is pushed to $DEFAULT_REF." >&2
+  echo "   Ensure .github/workflows/$WORKFLOW_FILE is pushed to $DEFAULT_REF." >&2
   if [[ "${AUTO_GIT_PUSH:-0}" == "1" ]]; then
-    echo "==> AUTO_GIT_PUSH=1 set; pushing workflow to default branch ($DEFAULT_REF) ..."
-    # Push current branch to the repo's default branch, to ensure workflow presence
-    git -C "$ROOT_DIR" push origin "$REF":"$DEFAULT_REF"
+    echo "==> AUTO_GIT_PUSH=1 set; publishing ONLY .github/workflows/$WORKFLOW_FILE to $DEFAULT_REF ..."
+    # Never push the whole working branch onto the default branch: that would land
+    # feature-branch code on $DEFAULT_REF. Instead commit just the workflow file on
+    # a throwaway worktree checked out from origin/$DEFAULT_REF.
+    git -C "$ROOT_DIR" fetch origin "$DEFAULT_REF"
+    WF_WORKTREE="$(mktemp -d)"
+    cleanup_wf_worktree() {
+      git -C "$ROOT_DIR" worktree remove --force "$WF_WORKTREE" >/dev/null 2>&1 || true
+      rm -rf "$WF_WORKTREE"
+    }
+    trap cleanup_wf_worktree EXIT
+    git -C "$ROOT_DIR" worktree add --detach "$WF_WORKTREE" "origin/$DEFAULT_REF" >/dev/null
+    mkdir -p "$WF_WORKTREE/.github/workflows"
+    cp "$ROOT_DIR/.github/workflows/$WORKFLOW_FILE" "$WF_WORKTREE/.github/workflows/$WORKFLOW_FILE"
+    if git -C "$WF_WORKTREE" diff --quiet -- ".github/workflows/$WORKFLOW_FILE"; then
+      echo "   Workflow already current on $DEFAULT_REF; nothing to push."
+    else
+      git -C "$WF_WORKTREE" add ".github/workflows/$WORKFLOW_FILE"
+      git -C "$WF_WORKTREE" commit -m "ci: publish $WORKFLOW_FILE to $DEFAULT_REF for workflow_dispatch" >/dev/null
+      git -C "$WF_WORKTREE" push origin "HEAD:$DEFAULT_REF"
+    fi
+    cleanup_wf_worktree
+    trap - EXIT
     # recheck
     sleep 3
-    if ! gh workflow view -R "$REPO_SLUG" windows-build.yml >/dev/null 2>&1; then
+    if ! gh workflow view -R "$REPO_SLUG" "$WORKFLOW_FILE" >/dev/null 2>&1; then
       echo "❌ Workflow still not visible on GitHub. Push may have failed or different default branch in repo." >&2
       exit 1
     fi
   else
-    echo "👉 Tip: re-run with AUTO_GIT_PUSH=1 to push automatically: AUTO_GIT_PUSH=1 ./release-build.sh" >&2
-    echo "   Or push manually: git push origin $REF:$DEFAULT_REF" >&2
+    echo "👉 Tip: re-run with AUTO_GIT_PUSH=1 to publish just the workflow file: AUTO_GIT_PUSH=1 ./release-build.sh" >&2
+    echo "   Or push .github/workflows/$WORKFLOW_FILE manually from a clean checkout of $DEFAULT_REF." >&2
     exit 1
   fi
 fi
 
-# Trigger the workflow (uses the workflow file we added). If dispatch fails (permissions),
-# fallback to pushing a temporary tag matching 'v*' to trigger the tag workflow automatically.
-if ! gh workflow run -R "$REPO_SLUG" windows-build.yml --ref "$REF" >/dev/null 2>&1; then
-  echo "⚠️  'gh workflow run' failed (likely missing 'workflow' scope or Actions disabled)."
-  echo "   Falling back to temporary tag push to trigger build on GitHub."
-  TEMP_TAG="v${VERSION}-ci-$(date +%s)"
-  echo "==> Creating temporary tag: $TEMP_TAG"
-  git -C "$ROOT_DIR" tag -f "$TEMP_TAG" "$REF"
-  git -C "$ROOT_DIR" push -f origin "refs/tags/$TEMP_TAG"
-  REF="$TEMP_TAG"
+# Trigger the workflow. No tag-push fallback: pushing a v* tag triggers
+# release.yml's create-release job and would publish an unintended public
+# GitHub Release.
+# Newest run id for this ref (jq strings need double quotes, not single).
+latest_run_for_ref() {
+  gh run list -R "$REPO_SLUG" --workflow "$WORKFLOW_FILE" --json databaseId,createdAt,headBranch \
+    -q "[.[] | select(.headBranch == \"$REF\")] | sort_by(.createdAt) | reverse | .[0].databaseId" 2>/dev/null || true
+}
+
+# Record the newest existing run before triggering, so we can recognize the run
+# the dispatch creates rather than attaching to a stale one after a fixed sleep.
+PREV_RUN_ID=$(latest_run_for_ref)
+
+if ! gh workflow run -R "$REPO_SLUG" "$WORKFLOW_FILE" --ref "$REF" >/dev/null 2>&1; then
+  echo "❌ 'gh workflow run' failed (likely missing 'workflow' scope or Actions disabled)." >&2
+  echo "   Grant the scope with: gh auth refresh -s workflow" >&2
+  exit 1
 fi
 
-# Find the latest run for this workflow on the selected ref
-sleep 3
+# Poll for the dispatched run: a run id on this ref that differs from PREV_RUN_ID.
+# Sleep-in-loop is intentional: GitHub registers the run asynchronously.
+echo "==> Waiting for the dispatched run to register ..."
 RUN_ID=""
-if [[ "$REF" == v* ]]; then
-  # For tag builds, match by head SHA of the tag
-  TAG_SHA=$(git -C "$ROOT_DIR" rev-list -n 1 "$REF")
-RUN_ID=$(gh run list -R "$REPO_SLUG" --workflow windows-build.yml --json databaseId,createdAt,headSha \
-    -q "[.[] | select(.headSha == '$TAG_SHA')] | sort_by(.createdAt) | reverse | .[0].databaseId" 2>/dev/null || echo "")
-else
-RUN_ID=$(gh run list -R "$REPO_SLUG" --workflow windows-build.yml --json databaseId,createdAt,headBranch \
-    -q "[.[] | select(.headBranch == '$REF')] | sort_by(.createdAt) | reverse | .[0].databaseId" 2>/dev/null || echo "")
-fi
+for _ in $(seq 1 30); do
+  CANDIDATE=$(latest_run_for_ref)
+  if [[ -n "$CANDIDATE" && "$CANDIDATE" != "$PREV_RUN_ID" ]]; then
+    RUN_ID="$CANDIDATE"
+    break
+  fi
+  sleep 2
+done
 if [[ -z "$RUN_ID" ]]; then
-  # Fallback: any latest run
-  RUN_ID=$(gh run list -R "$REPO_SLUG" --workflow windows-build.yml --json databaseId,createdAt \
-    -q 'sort_by(.createdAt) | reverse | .[0].databaseId')
-fi
-if [[ -z "$RUN_ID" ]]; then
-  echo "❌ Could not determine workflow run ID for windows-build.yml on $REPO_SLUG" >&2
+  echo "❌ Timed out waiting for a new $WORKFLOW_FILE run on $REF (previous run id: ${PREV_RUN_ID:-none})." >&2
   exit 1
 fi
 echo "==> Waiting for workflow run to complete (run id: $RUN_ID)"
@@ -140,7 +166,7 @@ gh run watch -R "$REPO_SLUG" "$RUN_ID"
 
 echo "==> Downloading Windows artifacts"
 rm -rf "$WIN_OUT_DIR" && mkdir -p "$WIN_OUT_DIR"
-gh run download -R "$REPO_SLUG" "$RUN_ID" -n boltpage-windows -D "$WIN_OUT_DIR"
+gh run download -R "$REPO_SLUG" "$RUN_ID" -n windows-build -D "$WIN_OUT_DIR"
 
 # Locate the NSIS EXE in the downloaded artifacts
 WIN_EXE=$(find "$WIN_OUT_DIR" -type f -name "*.exe" | head -n1 || true)
@@ -153,22 +179,22 @@ WIN_OUT_NAME="BoltPage-${VERSION}-windows.exe"
 cp -f "$WIN_EXE" "$PUBLIC_DIR/$WIN_OUT_NAME"
 echo "✅ Copied Windows EXE to: $PUBLIC_DIR/$WIN_OUT_NAME"
 
-# Cleanup: delete temporary tag if used
-if [[ "${TEMP_TAG:-}" != "" ]]; then
-  echo "==> Cleaning up temporary tag $TEMP_TAG"
-  git -C "$ROOT_DIR" tag -d "$TEMP_TAG" >/dev/null 2>&1 || true
-  git -C "$ROOT_DIR" push origin ":refs/tags/$TEMP_TAG" >/dev/null 2>&1 || true
-fi
-
 ########################################
 # 3) Update website links and cleanup old binaries
 ########################################
-INDEX_FILE="$ROOT_DIR/astrojs_website/src/pages/index.astro"
-if [[ -f "$INDEX_FILE" ]]; then
+# Locate the page that links the download binaries: default to the known path,
+# allow WEBSITE_INDEX to override, then fall back to discovering any page under
+# astrojs_website/src that already links a .dmg or .exe.
+INDEX_FILE="${WEBSITE_INDEX:-$ROOT_DIR/astrojs_website/src/pages/index.astro}"
+if [[ ! -f "$INDEX_FILE" ]]; then
+  INDEX_FILE=$(grep -rlE 'href="[^"]*\.(dmg|exe)"' "$ROOT_DIR/astrojs_website/src" 2>/dev/null | head -n1 || true)
+fi
+if [[ -n "$INDEX_FILE" && -f "$INDEX_FILE" ]]; then
   echo "==> Updating download links in $INDEX_FILE"
-  # Extract current linked filenames (first .exe and first .dmg)
-  OLD_EXE=$(grep -o 'href="[^"]*\.exe"' "$INDEX_FILE" | head -n1 | sed -E 's/^href="|"$//') || true
-  OLD_DMG=$(grep -o 'href="[^"]*\.dmg"' "$INDEX_FILE" | head -n1 | sed -E 's/^href="|"$//') || true
+  # Extract current linked filenames (first .exe and first .dmg). Two separate
+  # substitutions: one alternation without /g would leave the trailing quote.
+  OLD_EXE=$(grep -o 'href="[^"]*\.exe"' "$INDEX_FILE" | head -n1 | sed -E 's/^href="//; s/"$//') || true
+  OLD_DMG=$(grep -o 'href="[^"]*\.dmg"' "$INDEX_FILE" | head -n1 | sed -E 's/^href="//; s/"$//') || true
 
   # Replace with new filenames (no path prefix, public is root)
   if [[ -n "$OLD_EXE" ]]; then
@@ -191,7 +217,8 @@ if [[ -f "$INDEX_FILE" ]]; then
     rm -f "$PUBLIC_DIR/$OLD_DMG"
   fi
 else
-  echo "⚠️  $INDEX_FILE not found; skipping link update."
+  echo "⚠️  No website download page found under astrojs_website/src (set WEBSITE_INDEX=path to override)." >&2
+  echo "    Binaries were copied to $PUBLIC_DIR but no links were updated." >&2
 fi
 
 ########################################

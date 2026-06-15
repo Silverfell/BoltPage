@@ -186,9 +186,14 @@ pub(crate) async fn create_window_with_file(
     if let Some(path) = file_path {
         let path_str = io::pathbuf_to_string(&path);
         io::allow_path(app, &path_str);
-        let app_state = app.state::<AppState>();
-        let mut open_windows = app_state.open_windows.write().await;
-        open_windows.insert(path_str, window_label.clone());
+        {
+            let app_state = app.state::<AppState>();
+            let mut open_windows = app_state.open_windows.write().await;
+            open_windows.insert(path_str.clone(), window_label.clone());
+        }
+        if let Err(e) = io::session_add(app, &path_str).await {
+            eprintln!("Failed to update session list: {e}");
+        }
     }
 
     Ok(window_label)
@@ -296,9 +301,29 @@ pub(crate) async fn remove_window_from_tracking(
     app: AppHandle,
     window_label: String,
 ) -> Result<(), String> {
-    let state = app.state::<AppState>();
-    let mut open_windows = state.open_windows.write().await;
-    open_windows.retain(|_, label| label != &window_label);
+    let mut removed_paths: Vec<String> = Vec::new();
+    {
+        let state = app.state::<AppState>();
+        let mut open_windows = state.open_windows.write().await;
+        open_windows.retain(|path, label| {
+            if label == &window_label {
+                removed_paths.push(path.clone());
+                false
+            } else {
+                true
+            }
+        });
+    }
+    // During quit, windows close as a side effect: keep the session so the
+    // next launch restores it. Only user-initiated closes drop entries.
+    if !crate::QUITTING.load(std::sync::atomic::Ordering::SeqCst) {
+        // Sequential awaits: read-modify-writes serialized under pref_lock.
+        for path in removed_paths {
+            if let Err(e) = io::session_remove(&app, &path).await {
+                eprintln!("Failed to update session list: {e}");
+            }
+        }
+    }
     Ok(())
 }
 

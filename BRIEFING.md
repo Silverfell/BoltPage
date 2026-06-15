@@ -6,7 +6,7 @@
   - Frontend: HTML/JS/CSS loaded via Tauri webview.
   - Backend: Rust (Tauri 2.x) with markrust-core rendering library.
   - File watchers with debounced notifications (250ms) to multiple subscriber windows.
-  - LRU HTML cache (50 entries) keyed by (path, size, mtime, theme).
+  - LRU HTML cache (50 entries) keyed by (path, size, mtime); rendering is theme-independent (theme applied via CSS class).
   - Dynamic native menus with multi-window support and deduplication.
   - Persistent preferences via tauri-plugin-store (theme, window size, font, word_wrap, line_numbers, toc_visible, toolbar_density, editor_inspector_visible, recent_files).
   - Docked in-page find with Ctrl+F in both preview and editor windows (slot-based, between toolbar and content); match-case and whole-word toggles, all-matches highlighting, 80ms debounce.
@@ -14,11 +14,25 @@
   - Find navigation shortcuts: Cmd/Ctrl+G (next), Shift+Cmd/Ctrl+G (previous), Cmd/Ctrl+E (use selection for find), Cmd/Ctrl+Alt+F (find and replace, editor only).
   - Bidirectional scroll sync between editor and preview with debouncing.
   - PDF viewing via blob URLs with proper cleanup.
-  - CLI usage: launch with file path, auto-creates files if missing.
+  - CLI usage: launch with one or more file paths (one window each), auto-creates missing files.
   - Recent files list (10 entries, most-recent first, dead paths filtered on read; store authoritative via Rust push_to_recents holding pref_lock).
   - Editor inspector rail: words/chars/lines/cursor/selection/UTF-8/EOL, rAF-coalesced; Ctrl+Shift+I toggle.
   - Toolbar density (icon-label / icon / label) with live cross-window broadcast via EVENT_TOOLBAR_DENSITY_CHANGED.
   - HIG-native macOS chrome: semantic material tokens (--content-bg / --toolbar-bg / --sidebar-bg), 26pt grouped toolbar, 6px control radii, backdrop-filter retained only on .app-header.
+  - Markdown format shortcuts in editor: Cmd+B bold, Cmd+I italic, Cmd+Shift+U insert-link, Cmd+Shift+K strikethrough (CodeMirror dispatches preserve undo). Cmd+K is reserved for the chord prefix.
+  - Editor core is CodeMirror 6 (vendored pinned bundle, ~543 KB): markdown syntax highlighting (classHighlighter + per-theme tok- CSS), heading-section folding via lang-markdown + foldGutter (view-only; save always writes full text), line numbers and word wrap behind compartments.
+  - Editor ergonomics: Enter continues list/quote markers and Backspace deletes empty ones (markdownKeymap, registered ahead of defaultKeymap); Tab/Shift+Tab indent list items; multi-cursor via Alt+click and Alt+drag column selection; active-line + selection-occurrence highlighting; scrollPastEnd with documentPadding-compensated percent scroll sync.
+  - On-type live preview: editor broadcasts the unsaved buffer (150ms debounce, >2MB falls back to save path); preview patches only changed top-level blocks, KaTeX/Mermaid re-render scoped to inserted nodes, TOC rebuilt only when the heading outline changes.
+  - Workspace folder: File > Open Folder… (Cmd+Shift+O) grants a directory; sidebar gains Files | Outline tabs with a lazy tree; Cmd+O / File > Open becomes a fuzzy quick switcher over the workspace (Browse… row reaches the dialog); one global workspace, persisted.
+  - Session restore: files open at quit reopen on launch (no CLI args); native File > Open Recent submenu with Clear Menu, rebuilt on every recents change.
+  - Command palette opened via Cmd+K Cmd+P chord or the Edit > Command Palette… menu item; fuzzy-subsequence filter, per-window action list.
+  - Math rendering: pulldown-cmark ENABLE_MATH tags `$...$` / `$$...$$`; KaTeX 0.16.11 bundled locally, rendered per-element after HTML swap.
+  - Mermaid rendering: ```mermaid fences emit `<pre class="mermaid">`; Mermaid 11.4.1 bundled locally, runs after each swap and re-initializes on theme change.
+  - Callouts / admonitions: GitHub syntax `> [!NOTE|TIP|IMPORTANT|WARNING|CAUTION]` rewritten to `<div class="callout callout-{kind}">` via regex post-processor before sanitization.
+  - Paste URL over selection: editor auto-links when the pasted clipboard text is a URL and the textarea has a non-empty selection.
+  - Typography presets in View popover: document font (Serif/Sans/Mono) and editor font (IBM Plex/JetBrains/SF Mono); broadcast across windows; persisted via document_font_family / editor_font_family prefs; HTML export honors the document pref.
+  - Editor watches its own file: external changes auto-reload a clean buffer (caret/scroll preserved) and show a "File changed on disk" warning badge on a dirty buffer (autosave stays last-writer-wins). Preview refreshes once when its editor window closes.
+  - EOL preservation: buffer text is LF-normalized (textarea semantics); the on-disk CRLF/LF mode is detected on load and re-applied on save.
 
 - Key decisions:
   - RwLock for read-heavy state (open_windows, html_cache); single Arc<Mutex<FileWatcherInner>> for file watchers.
@@ -39,14 +53,28 @@
   - Recent files push is authoritative in Rust (io::push_to_recents under pref_lock); JS refreshes on DOM-ready and window focus via invoke('get_recent_files').
   - Edit actions (Undo/Redo/Cut/Copy/Paste/Select All) use tauri PredefinedMenuItem so they route through AppKit responder chain on macOS and Win32 messages on Windows; no JS performEditAction shim remains. Preview still installs a copy-event listener to guarantee text/html + text/plain on the clipboard.
   - macOS application submenu (About, Services, Hide, Hide Others, Show All, Quit) is cfg(target_os = "macos"); Quit moves out of File on mac, stays in File on Windows. About stays in Help on Windows.
-  - Editor textarea has spellcheck enabled, caret-color and ::selection tokens defined per theme; replace operations use setRangeText to keep the native undo stack intact.
+  - Editor spellcheck via CodeMirror contentAttributes; caret and selection colors themed via .cm-cursor / .cm-selectionBackground tokens per theme.
+  - Ammonia sanitizer is now a cached Builder (add_generic_attributes(["class"]) + allow <input type/checked/disabled>) — root-cause fix for syntect classes being stripped by the previous ammonia::clean default. Math/mermaid/callout tags flow through the same whitelist.
+  - Syntect default-fancy is extended with 8 vendored .sublime-syntax packs under markrust-core/syntaxes/ (ini, kotlin, swift, ts, tsx, scss, toml, dockerfile), loaded via include_str! + SyntaxDefinition::load_from_str + SyntaxSetBuilder so the compiled binary carries them without runtime filesystem access.
+  - Renderer outputs pre-tagged math spans/divs and mermaid pre elements; JS side calls katex.render() and mermaid.run() after each content swap. KaTeX 0.16.11 and Mermaid 11.4.1 bundled under src/assets/vendor/ to stay within CSP `default-src 'self'`.
+  - Command palette + chord shortcuts use a shared registry in shared.js. setupChordShortcuts runs on capture phase with a 400ms window, calls the registered single-key action on timeout; drops the prefix intent if a non-matching second key arrives.
+  - CodeMirror 6 vendored as a pinned esbuild bundle (scripts/vendor-codemirror.sh; audit: zero eval/new Function, CSP unchanged); assembled from explicit extensions, never basicSetup (its searchKeymap conflicts with the docked find bar); the find bar drives @codemirror/search programmatically (SearchQuery/setSearchQuery); native menu Undo/Redo reach CM history via beforeinput historyUndo mapping.
+  - Preview patching keyed by pre-enhancement block hashes in a WeakMap (KaTeX/Mermaid mutate rendered nodes in place, so live DOM never equals fresh parser output); diff is common prefix/suffix, middle run replaced; mermaid sources stashed in dataset.bpSrc so theme switches can re-render processed diagrams.
+  - Workspace access control: allowed_dirs holds canonicalized folders; a path passes only if its canonicalized form sits under a granted dir (non-canonicalizable paths never dir-match, blocking .. and dangling-symlink rides). Recents-based grants flow through open_tracked_file, which also keeps open_windows/session/recents tracking correct for in-window switches.
+  - Session list is an ordered Vec under pref_lock; quitting sets a QUITTING flag (RunEvent::ExitRequested) so windows closed by quit keep their session entries.
+  - Preference store contract: the map may hold any subset of keys (save_preference_key writes one at a time), so AppPreferences carries #[serde(default)]; a partial map must never reset preferences.
+  - Release DMGs are renamed in release.yml to BoltPage-<ver>-arm64.dmg / BoltPage-<ver>-x64.dmg so GitHub assets match the Homebrew cask URLs.
+  - Windows CI signing is real: release.yml imports the PFX secret, reads its thumbprint, and injects bundle.windows.certificateThumbprint at build time (committed config stays unsigned so local dev builds work); builds are unsigned only when the secret is absent.
+  - Single-source version sync: scripts/sync-version.sh (Tauri beforeBuildCommand) owns the Cargo.toml + tauri.conf.json version; build-release.sh only syncs names + the Homebrew cask, never the version.
 
 - Non-goals:
   - Cross-platform builds not supported.
   - macOS 10.13+ minimum required for builds.
+  - Workspace v1 excludes: full-text search across the folder, wiki-links, backlinks, recursive folder watching (tree refreshes on window focus).
 
 - Dependencies:
   - Rust toolchain (2021 edition).
   - Node.js/npm for Tauri CLI.
+  - Vendored frontend bundles: KaTeX 0.16.11, Mermaid 11.4.1, CodeMirror 6 (pinned versions in scripts/vendor-codemirror.sh).
   - macOS: Apple Developer credentials for release builds.
   - Windows: Optional WiX Toolset v3.x for MSI installers.

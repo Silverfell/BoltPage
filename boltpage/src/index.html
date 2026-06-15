@@ -5,6 +5,7 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>BoltPage</title>
     <link rel="stylesheet" href="styles.css">
+    <link rel="stylesheet" href="/assets/vendor/katex/katex.min.css">
     <script type="module" src="/main.js" defer></script>
 </head>
 <body>
@@ -106,6 +107,26 @@
                                     <button type="button" class="density-option" data-density="label">Text Only</button>
                                 </div>
                             </div>
+                            <div class="menu-divider"></div>
+                            <div class="menu-section">
+                                <span class="menu-section-label">Typography</span>
+                                <div class="setting-row">
+                                    <span class="setting-label">Document Font</span>
+                                    <div class="seg" role="group" aria-label="Document font">
+                                        <button type="button" class="doc-font-option" data-font="serif-iowan">Serif</button>
+                                        <button type="button" class="doc-font-option" data-font="sans-system">Sans</button>
+                                        <button type="button" class="doc-font-option" data-font="mono-plex">Mono</button>
+                                    </div>
+                                </div>
+                                <div class="setting-row">
+                                    <span class="setting-label">Editor Font</span>
+                                    <div class="seg" role="group" aria-label="Editor font">
+                                        <button type="button" class="ed-font-option" data-font="mono-plex">IBM Plex</button>
+                                        <button type="button" class="ed-font-option" data-font="mono-jetbrains">JetBrains</button>
+                                        <button type="button" class="ed-font-option" data-font="mono-sf">SF Mono</button>
+                                    </div>
+                                </div>
+                            </div>
                         </div>
                     </div>
                 </div>
@@ -127,6 +148,11 @@
                         </svg>
                     </button>
                 </div>
+                <div id="sidebar-tabs" class="sidebar-tabs" hidden role="tablist" aria-label="Sidebar mode">
+                    <button id="sidebar-tab-files" type="button" class="sidebar-tab" role="tab" aria-selected="false">Files</button>
+                    <button id="sidebar-tab-outline" type="button" class="sidebar-tab" role="tab" aria-selected="true">Outline</button>
+                </div>
+                <nav id="file-tree" hidden></nav>
                 <nav id="toc-nav"></nav>
             </aside>
             <button id="toc-open-btn" class="toc-open-btn" hidden title="Open sidebar" aria-label="Open sidebar">
@@ -143,6 +169,7 @@
                             <p class="welcome-tagline">A fast, focused Markdown reader.</p>
                             <div class="welcome-actions">
                                 <button id="welcome-open-btn" class="wel-btn primary" type="button">Open file…</button>
+                                <button id="welcome-folder-btn" class="wel-btn secondary" type="button">Open folder…</button>
                                 <button id="welcome-new-btn" class="wel-btn secondary" type="button">New document</button>
                             </div>
                             <div class="recent-list" hidden>

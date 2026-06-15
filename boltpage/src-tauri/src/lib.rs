@@ -28,6 +28,13 @@ mod menu;
 mod prefs;
 mod watchers;
 mod window;
+mod workspace;
+
+/// Set on RunEvent::ExitRequested. Window-close cleanup consults it so windows
+/// closed as a side effect of quitting keep their session entries (next launch
+/// restores them); only user-initiated closes remove entries.
+pub(crate) static QUITTING: std::sync::atomic::AtomicBool =
+    std::sync::atomic::AtomicBool::new(false);
 
 /// Type alias for resize task map to reduce complexity
 type ResizeTaskMap = HashMap<String, (tauri::async_runtime::JoinHandle<()>, u32, u32)>;
@@ -53,6 +60,10 @@ struct AppState {
     /// Uses std::sync::RwLock (not tokio) so sync commands can read it.
     allowed_paths: Arc<StdRwLock<HashSet<String>>>,
 
+    /// Canonicalized workspace folders; any canonicalizable path under one of
+    /// these is allowed for file I/O (folder picks are user intent).
+    allowed_dirs: Arc<StdRwLock<HashSet<std::path::PathBuf>>>,
+
     /// Serializes read-modify-write cycles on the preference store
     /// to prevent concurrent saves from overwriting each other.
     pref_lock: Arc<Mutex<()>>,
@@ -67,6 +78,7 @@ impl Default for AppState {
                 std::num::NonZeroUsize::new(50).unwrap(),
             ))),
             allowed_paths: Arc::new(StdRwLock::new(HashSet::new())),
+            allowed_dirs: Arc::new(StdRwLock::new(HashSet::new())),
             pref_lock: Arc::new(Mutex::new(())),
         }
     }
@@ -134,17 +146,28 @@ else
 fi
 "#;
 
-    let escaped_content = script_content.replace("'", "'\\''");
+    // Write the wrapper to a temp file first: embedding the multiline,
+    // double-quote-laden script directly in an AppleScript string literal is
+    // not possible (raw `"` and newlines terminate the literal). The shell
+    // command below contains only single-quoted paths, which are safe inside
+    // an AppleScript double-quoted string.
+    let temp_path = std::env::temp_dir().join(format!("boltpage-cli-{}.sh", uuid::Uuid::new_v4()));
+    fs::write(&temp_path, script_content)
+        .map_err(|e| format!("Failed to write temp CLI script: {e}"))?;
+    let temp_str = temp_path.to_string_lossy();
 
     let script = format!(
-        r#"do shell script "mkdir -p /usr/local/bin && printf '%s' '{escaped_content}' > '{script_path}' && chmod +x '{script_path}'" with administrator privileges"#
+        r#"do shell script "mkdir -p /usr/local/bin && cp '{temp_str}' '{script_path}' && chmod +x '{script_path}'" with administrator privileges"#
     );
 
     let output = Command::new("osascript")
         .arg("-e")
         .arg(&script)
         .output()
-        .map_err(|e| format!("Failed to execute osascript: {e}"))?;
+        .map_err(|e| format!("Failed to execute osascript: {e}"));
+
+    let _ = fs::remove_file(&temp_path);
+    let output = output?;
 
     if output.status.success() {
         Ok(
@@ -214,14 +237,14 @@ async fn setup_cli_access() -> Result<String, String> {
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     let args: Vec<String> = std::env::args().collect();
-    let mut file_path = args.get(1).cloned();
-    if let Some(ref p) = file_path {
-        if p.starts_with('-') {
-            file_path = None;
+    // All non-flag arguments are files to open; the CLI wrapper passes every
+    // argument through, so dropping all but the first would lose files.
+    let mut file_paths: Vec<String> = Vec::new();
+    for raw in args.iter().skip(1) {
+        if raw.starts_with('-') {
+            continue;
         }
-    }
-    if let Some(ref path_str) = file_path {
-        if let Some(pathbuf) = io::resolve_file_path(path_str) {
+        if let Some(pathbuf) = io::resolve_file_path(raw) {
             if !pathbuf.exists() {
                 if let Some(parent) = pathbuf.parent() {
                     let _ = fs::create_dir_all(parent);
@@ -235,7 +258,7 @@ pub fn run() {
                     eprintln!("Failed to create file from CLI arg {pathbuf:?}: {e}");
                 }
             }
-            file_path = Some(pathbuf.to_string_lossy().to_string());
+            file_paths.push(pathbuf.to_string_lossy().to_string());
         }
     }
 
@@ -259,6 +282,7 @@ pub fn run() {
             io::render_file_to_html,
             io::save_html_export,
             io::open_file_dialog,
+            io::open_tracked_file,
             io::create_new_markdown_file,
             prefs::save_preference_key,
             prefs::get_preferences,
@@ -269,10 +293,17 @@ pub fn run() {
             menu::broadcast_theme_change,
             menu::broadcast_toolbar_density_change,
             menu::broadcast_font_size_change,
+            menu::broadcast_font_family_change,
             menu::broadcast_editor_window_closed,
+            menu::broadcast_editor_buffer,
             menu::get_syntax_css,
             watchers::start_file_watcher,
             watchers::stop_file_watcher,
+            workspace::open_folder_dialog,
+            workspace::get_workspace_folder,
+            workspace::clear_workspace_folder,
+            workspace::list_dir,
+            workspace::list_workspace_files,
             window::show_window,
             window::print_current_window,
             window::refresh_preview,
@@ -298,6 +329,7 @@ pub fn run() {
                 // never reach this callback; the OS routes them to the responder.
                 const EMIT_ACTIONS: &[(&str, &str)] = &[
                     (MENU_OPEN, EVENT_MENU_OPEN),
+                    (MENU_OPEN_FOLDER, EVENT_MENU_OPEN_FOLDER),
                     (MENU_CLOSE, EVENT_MENU_CLOSE),
                     (MENU_FIND, EVENT_MENU_FIND),
                     (MENU_FIND_NEXT, EVENT_MENU_FIND_NEXT),
@@ -305,6 +337,11 @@ pub fn run() {
                     (MENU_FIND_USE_SELECTION, EVENT_MENU_FIND_USE_SELECTION),
                     (MENU_FIND_REPLACE, EVENT_MENU_FIND_REPLACE),
                     (MENU_EXPORT_HTML, EVENT_MENU_EXPORT_HTML),
+                    (MENU_FORMAT_BOLD, EVENT_MENU_FORMAT_BOLD),
+                    (MENU_FORMAT_ITALIC, EVENT_MENU_FORMAT_ITALIC),
+                    (MENU_FORMAT_LINK, EVENT_MENU_FORMAT_LINK),
+                    (MENU_FORMAT_STRIKE, EVENT_MENU_FORMAT_STRIKE),
+                    (MENU_COMMAND_PALETTE, EVENT_MENU_COMMAND_PALETTE),
                 ];
 
                 let id = event.id().as_ref();
@@ -318,6 +355,37 @@ pub fn run() {
                         let _ = w.set_focus();
                         let _ = w.show();
                     }
+                } else if id == MENU_RECENT_CLEAR {
+                    let app_clone = app.clone();
+                    tauri::async_runtime::spawn(async move {
+                        if let Err(e) = prefs::save_preference_key_inner(
+                            &app_clone,
+                            "recent_files",
+                            serde_json::Value::Array(Vec::new()),
+                        )
+                        .await
+                        {
+                            eprintln!("Failed to clear recents: {e}");
+                        }
+                        let _ = menu::rebuild_app_menu(&app_clone);
+                    });
+                } else if let Some(path) = menu::decode_recent_menu_id(id) {
+                    // The id was built from our own recents store, so clicking
+                    // it is user intent: grant access like a dialog pick.
+                    io::allow_path(app, &path);
+                    let app_clone = app.clone();
+                    tauri::async_runtime::spawn(async move {
+                        if let Err(e) = io::push_to_recents(&app_clone, &path).await {
+                            eprintln!("Failed to push recents (menu): {e}");
+                        }
+                        if let Some(resolved) = io::resolve_file_path(&path) {
+                            if let Err(e) =
+                                window::create_window_with_file(&app_clone, Some(resolved)).await
+                            {
+                                eprintln!("Failed to open recent file: {e}");
+                            }
+                        }
+                    });
                 } else {
                     match id {
                         MENU_NEW_FILE => {
@@ -387,32 +455,79 @@ pub fn run() {
                 }
             });
 
-            if let Some(ref p) = file_path {
-                io::allow_path(app.handle(), p);
+            if !file_paths.is_empty() {
+                for p in &file_paths {
+                    io::allow_path(app.handle(), p);
+                }
                 let handle = app.handle().clone();
-                let path_str = p.clone();
+                let paths = file_paths.clone();
                 tauri::async_runtime::spawn(async move {
-                    if let Err(e) = io::push_to_recents(&handle, &path_str).await {
-                        eprintln!("Failed to push recents (CLI arg): {e}");
+                    // Sequential awaits: recents order must match argument order
+                    // (each push is a read-modify-write under pref_lock).
+                    for path_str in paths {
+                        if let Err(e) = io::push_to_recents(&handle, &path_str).await {
+                            eprintln!("Failed to push recents (CLI arg): {e}");
+                        }
                     }
                 });
             }
 
-            if let Some(resolved_path) = file_path.and_then(|p| io::resolve_file_path(&p)) {
-                tauri::async_runtime::block_on(window::create_window_with_file(
-                    app.handle(),
-                    Some(resolved_path),
-                ))?;
-            } else {
+            let mut resolved: Vec<std::path::PathBuf> = file_paths
+                .iter()
+                .filter_map(|p| io::resolve_file_path(p))
+                .collect();
+
+            if resolved.is_empty() {
+                // No CLI files: restore the previous session (files that were
+                // open in preview windows at last quit), oldest-opened first.
+                let session: Vec<std::path::PathBuf> = prefs::read_session_paths(app.handle())
+                    .iter()
+                    .filter(|p| std::path::Path::new(p).exists())
+                    .filter_map(|p| io::resolve_file_path(p))
+                    .collect();
+                for p in &session {
+                    io::allow_path(app.handle(), &p.to_string_lossy());
+                }
                 let app_handle = app.handle().clone();
 
                 tauri::async_runtime::spawn(async move {
                     tokio::task::yield_now().await;
 
+                    // Sequential awaits: restore windows in saved order; each
+                    // open re-appends to the session list, preserving it.
+                    for path in session {
+                        if let Err(e) =
+                            window::create_window_with_file(&app_handle, Some(path.clone())).await
+                        {
+                            eprintln!("Failed to restore session window for {path:?}: {e}");
+                        }
+                    }
+
                     if app_handle.webview_windows().is_empty() {
                         let _ = window::create_window_with_file(&app_handle, None).await;
                     }
                 });
+            } else {
+                let first = resolved.remove(0);
+                tauri::async_runtime::block_on(window::create_window_with_file(
+                    app.handle(),
+                    Some(first),
+                ))?;
+                if !resolved.is_empty() {
+                    let handle = app.handle().clone();
+                    tauri::async_runtime::spawn(async move {
+                        // Sequential awaits: windows open in argument order and each
+                        // open mutates shared open_windows tracking.
+                        for path in resolved {
+                            if let Err(e) =
+                                window::create_window_with_file(&handle, Some(path.clone())).await
+                            {
+                                eprintln!("Failed to open window for {path:?}: {e}");
+                            }
+                        }
+                        let _ = menu::rebuild_app_menu(&handle);
+                    });
+                }
             }
 
             Ok(())
@@ -494,6 +609,11 @@ pub fn run() {
         .build(tauri::generate_context!())
         .expect("error while building tauri application")
         .run(|_app, _event| {
+            // Covers Cmd+Q (PredefinedMenuItem::quit), the Windows File > Quit
+            // item (app.exit), and last-window-closed exits.
+            if matches!(_event, tauri::RunEvent::ExitRequested { .. }) {
+                QUITTING.store(true, std::sync::atomic::Ordering::SeqCst);
+            }
             #[cfg(target_os = "macos")]
             if let tauri::RunEvent::Opened { urls } = _event {
                 for url in urls.iter() {
@@ -540,5 +660,23 @@ mod tests {
         .unwrap();
 
         assert_eq!(prefs.toc_visible, Some(false));
+    }
+
+    /// The store is written one key at a time by save_preference_key, so a
+    /// fresh install that never triggered a full save_preferences holds a
+    /// partial map. serde(default) must fill the missing fields instead of
+    /// failing deserialization (which silently reset every preference).
+    #[test]
+    fn app_preferences_deserialize_partial_map_keeps_known_keys() {
+        let prefs: AppPreferences = serde_json::from_value(serde_json::json!({
+            "theme": "light",
+            "font_size": 20
+        }))
+        .unwrap();
+
+        assert_eq!(prefs.theme, "light");
+        assert_eq!(prefs.font_size, Some(20));
+        assert_eq!(prefs.window_width, 900);
+        assert_eq!(prefs.window_height, 800);
     }
 }

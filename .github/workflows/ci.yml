@@ -83,8 +83,10 @@ jobs:
         include:
           - os: macos-14
             target: aarch64-apple-darwin
+            bundles: app,dmg
           - os: windows-latest
             target: x86_64-pc-windows-msvc
+            bundles: nsis
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
@@ -117,7 +119,7 @@ jobs:
 
       - name: Build application (unsigned)
         working-directory: boltpage
-        run: npm run tauri build -- --target ${{ matrix.target }}
+        run: npm run tauri build -- --target ${{ matrix.target }} --bundles ${{ matrix.bundles }}
         env:
           TAURI_PRIVATE_KEY: ""
           TAURI_KEY_PASSWORD: ""

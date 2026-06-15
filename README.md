@@ -24,10 +24,13 @@ You will notice the prompts are not your typical corporate speak you see floatin
 - **Multi-Window Support**: Open multiple files in separate windows, each with independent preferences
 - **Syntax Highlighting**: Beautiful code block highlighting that doesn't look like a dot matrix printer made it
 - **GitHub-Flavored Markdown**: Full support for GFM including tables, task lists, and more
-- **Multiple File Formats**: View and edit Markdown (.md), view-only JSON, YAML, TXT, and PDF files
-- **Live Preview**: See changes in real-time as you edit
-- **File Watching**: Automatic detection of external file changes
-- **Cross-Platform**: Available for macOS, Windows, and Linux
+- **Multiple File Formats**: View and edit Markdown (.md), JSON, YAML, and TXT files; view PDF files
+- **Live Preview**: The preview re-renders as you type, patching only the blocks that changed
+- **CodeMirror Editor**: Markdown syntax highlighting, heading folding, and real find/replace in the editor window
+- **Folder Workspace**: Open a folder for a file tree sidebar and a fuzzy quick switcher (Cmd+O)
+- **Session Restore**: Reopens the files you had open last time; native File > Open Recent menu
+- **File Watching**: Automatic detection of external file changes in both preview and editor
+- **Cross-Platform**: Available for macOS and Windows
 
 ## Installation
 
@@ -44,9 +47,7 @@ Download the latest `.exe` installer from the [Releases](https://github.com/Silv
 
 ### Linux
 
-Completely untested and unverified, but it's there.
-
-Download the latest `.AppImage` or `.deb` package from the [Releases](https://github.com/Silverfell/BoltPage/releases) page.
+Not supported. No Linux artifacts are built or published.
 
 ## Building from Source
 
@@ -113,7 +114,7 @@ BoltPage is built with:
 - **[Rust](https://www.rust-lang.org/)**: Core application logic and markdown processing
 - **[pulldown-cmark](https://github.com/raphlinus/pulldown-cmark)**: Markdown parser
 - **[syntect](https://github.com/trishume/syntect)**: Syntax highlighting
-- **Vanilla JavaScript**: Frontend interface (no framework dependencies)
+- **Vanilla JavaScript**: Frontend interface (no UI framework; the editor core is a vendored [CodeMirror 6](https://codemirror.net/) bundle)
 
 ### CI/CD
 
@@ -122,11 +123,7 @@ BoltPage uses GitHub Actions for automated testing and releases:
 - **Continuous Integration**: Validates all commits to main branch
 - **Release Builds**: Creates signed installers when version tags are pushed
 
-See [CI/CD Documentation](docs/release_CI.md) for complete details on:
-- Workflow triggers and jobs
-- Required GitHub secrets
-- Local testing procedures
-- Troubleshooting guide
+The workflow definitions live in [.github/workflows/](.github/workflows/): `ci.yml` (PR lint, test, build verification) and `release.yml` (tag-triggered signed installers).
 
 ## Contributing
 
