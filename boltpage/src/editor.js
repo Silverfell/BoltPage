@@ -96,6 +96,10 @@ let currentFileKind = KIND_MARKDOWN;
 let editorView = null;
 let isDirty = false;
 let saveTimeout = null;
+// Serialize saves: a save in flight defers the next request via pendingSave so
+// two write_file calls never overlap (which could land out of order).
+let isSaving = false;
+let pendingSave = false;
 let previewWindow = null;
 let isProgrammaticScroll = false;
 let scrollDebounce = null;
@@ -415,49 +419,70 @@ function markDirty() {
     }
 }
 
+// Returns true when the buffer is persisted (or there was nothing to save),
+// false when the write failed. Callers that close the window must honor false.
 async function saveFile() {
-    if (!currentFilePath || !isDirty || !editorView) return;
-
-    let content = editorView.state.doc.toString();
-
-    // For JSON files, normalize to the same pretty-sorted format as preview
-    const lower = currentFilePath.toLowerCase();
-    if (lower.endsWith('.json')) {
-        try {
-            const formatted = await invoke('format_json_pretty', { content });
-            // Rewrite the buffer only when formatting changed it; CM maps the
-            // selection through the change, so the caret stays put.
-            if (formatted !== content) {
-                programmaticChange = true;
-                try {
-                    editorView.dispatch({
-                        changes: { from: 0, to: editorView.state.doc.length, insert: formatted },
-                    });
-                } finally {
-                    programmaticChange = false;
-                }
-                content = formatted;
-            }
-        } catch (e) {
-            console.warn('JSON pretty formatting failed on save; saving raw content:', e);
-        }
+    if (!currentFilePath || !isDirty || !editorView) return true;
+    // A save is already running: let it finish, then flush the newer buffer.
+    if (isSaving) {
+        pendingSave = true;
+        return true;
     }
-
+    isSaving = true;
     try {
-        // Buffer text is LF-normalized; re-apply the file's on-disk EOL mode.
-        const onDisk = inspectorEol === 'CRLF' ? content.replace(/\n/g, '\r\n') : content;
-        await invoke('write_file', { path: currentFilePath, content: onDisk });
-        lastKnownDiskText = content;
-        isDirty = false;
-        updateStatus('Saved');
+        let content = editorView.state.doc.toString();
 
-        // Notify preview window to refresh (fire-and-forget; don't steal focus)
-        if (previewWindow) {
-            invoke('refresh_preview', { window: previewWindow }).catch(() => {});
+        // For JSON files, normalize to the same pretty-sorted format as preview
+        const lower = currentFilePath.toLowerCase();
+        if (lower.endsWith('.json')) {
+            try {
+                const formatted = await invoke('format_json_pretty', { content });
+                // Rewrite the buffer only when formatting changed it; CM maps the
+                // selection through the change, so the caret stays put.
+                if (formatted !== content) {
+                    programmaticChange = true;
+                    try {
+                        editorView.dispatch({
+                            changes: { from: 0, to: editorView.state.doc.length, insert: formatted },
+                        });
+                    } finally {
+                        programmaticChange = false;
+                    }
+                    content = formatted;
+                }
+            } catch (e) {
+                console.warn('JSON pretty formatting failed on save; saving raw content:', e);
+            }
         }
-    } catch (err) {
-        console.error('Failed to save file:', err);
-        updateStatus('Error saving');
+
+        try {
+            // Buffer text is LF-normalized; re-apply the file's on-disk EOL mode.
+            const onDisk = inspectorEol === 'CRLF' ? content.replace(/\n/g, '\r\n') : content;
+            await invoke('write_file', { path: currentFilePath, content: onDisk });
+            lastKnownDiskText = content;
+            // Only clear the dirty flag when the buffer still matches what we
+            // wrote; edits that landed during the write keep it set so the next
+            // save persists them instead of seeing a falsely-clean buffer.
+            isDirty = editorView.state.doc.toString() !== content;
+            updateStatus(isDirty ? 'Modified' : 'Saved');
+
+            // Notify preview window to refresh (fire-and-forget; don't steal focus)
+            if (previewWindow) {
+                invoke('refresh_preview', { window: previewWindow }).catch(() => {});
+            }
+            return true;
+        } catch (err) {
+            console.error('Failed to save file:', err);
+            updateStatus('Error saving');
+            return false;
+        }
+    } finally {
+        isSaving = false;
+        // Edits arrived while this save was in flight: schedule a flush.
+        if (pendingSave) {
+            pendingSave = false;
+            scheduleAutoSave();
+        }
     }
 }
 
@@ -922,7 +947,13 @@ document.addEventListener('DOMContentLoaded', async () => {
             saveTimeout = null;
         }
         if (isDirty) {
-            await saveFile();
+            const ok = await saveFile();
+            if (!ok) {
+                // Save failed (disk full, permission, file replaced): keep the
+                // window and the unsaved buffer rather than discarding edits.
+                // saveFile already set the "Error saving" badge.
+                return;
+            }
         }
         await notifyPreviewEditorClosed();
         appWindow.destroy();

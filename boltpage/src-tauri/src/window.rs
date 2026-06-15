@@ -286,12 +286,12 @@ pub(crate) async fn open_editor_window(
 }
 
 #[tauri::command]
-pub(crate) async fn create_new_window_command(
-    app: AppHandle,
-    file_path: Option<String>,
-) -> Result<String, String> {
-    let resolved_path = file_path.and_then(|p| io::resolve_file_path(&p));
-    create_window_with_file(&app, resolved_path)
+pub(crate) async fn create_new_window_command(app: AppHandle) -> Result<String, String> {
+    // Always a blank window: the webview must not be able to pass an arbitrary
+    // path here, because create_window_with_file grants it via io::allow_path.
+    // File-bearing opens go through trusted Rust entry points (CLI, Launch
+    // Services, recents/menu) that call create_window_with_file directly.
+    create_window_with_file(&app, None)
         .await
         .map_err(|e| format!("Failed to create window: {e}"))
 }
