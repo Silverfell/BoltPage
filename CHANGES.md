@@ -107,3 +107,4 @@ Format: `YYYY-MM-DD [type] description` (max 200 chars). Types: decision, plan, 
 2026-06-15 [note] v2.2.1 released: dev->main via PR #29 (CI-gated, honoring the PR-to-main convention this time), lightweight tag v2.2.1; release run 27583998421 published public Release (arm64/x64 DMG + win setup).
 2026-06-15 [note] release.yml build-macos flaked on bundle_dmg.sh (app built+notarized fine); `gh run rerun --failed` succeeded. Recurring transient on GitHub macOS runners; retry once before investigating.
 2026-06-15 [code] workspace.rs list_workspace_files sort_by->sort_by_key: CI clippy 1.96.0 flags unnecessary_sort_by under -D warnings; local clippy 1.88.0 does not. Surfaced in first PR (main was push-only before).
+2026-06-16 [code] Homebrew cask bumped 2.1.0->2.2.1 (had skipped 2.2.0) with real sha256 for both DMGs, replacing the long-standing REPLACE_WITH_* placeholders. Dev-only; publish to tap separately.
