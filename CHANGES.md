@@ -104,3 +104,6 @@ Format: `YYYY-MM-DD [type] description` (max 200 chars). Types: decision, plan, 
 2026-06-15 [code] saveFile returns success; editor close handler aborts window destroy on a failed final save (disk-full/permission/replaced) instead of discarding the unsaved buffer.
 2026-06-15 [code] Workspace index no longer follows directory symlinks escaping the root (canonical-containment check in walk_workspace); regression test added; closing a workspace now revokes the allowed_dirs grant via io::revoke_dir.
 2026-06-15 [note] Version bumped 2.2.0 to 2.2.1 (package.json, tauri.conf.json, Cargo.toml, Cargo.lock) for the five security/data-loss fixes; Homebrew cask bumped at release.
+2026-06-15 [note] v2.2.1 released: dev->main via PR #29 (CI-gated, honoring the PR-to-main convention this time), lightweight tag v2.2.1; release run 27583998421 published public Release (arm64/x64 DMG + win setup).
+2026-06-15 [note] release.yml build-macos flaked on bundle_dmg.sh (app built+notarized fine); `gh run rerun --failed` succeeded. Recurring transient on GitHub macOS runners; retry once before investigating.
+2026-06-15 [code] workspace.rs list_workspace_files sort_by->sort_by_key: CI clippy 1.96.0 flags unnecessary_sort_by under -D warnings; local clippy 1.88.0 does not. Surfaced in first PR (main was push-only before).
