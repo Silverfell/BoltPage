@@ -111,3 +111,4 @@ Format: `YYYY-MM-DD [type] description` (max 200 chars). Types: decision, plan, 
 2026-06-16 [note] Published Homebrew tap Silverfell/homebrew-tap (Casks/boltpage.rb); install via `brew tap Silverfell/tap` then `brew install --cask boltpage`. Third-party taps require `brew trust` first. Fixed depends_on macos deprecation.
 2026-06-16 [doc] README adds Homebrew install (tap + trust + install); PUBLISHING.md rewritten around the tap as the publish channel and the required per-release cask update.
 2026-06-16 [code] update-cask.sh: post-release script downloads published DMGs, rewrites cask version+sha256 (awk per on_arm/on_intel), pushes to Silverfell/homebrew-tap. release-build.sh + BRIEFING mark cask update REQUIRED each release.
+2026-06-16 [code] Cask depends_on macos removed entirely (current Homebrew disabled it, 'no replacement'); the :high_sierra symbol attempt broke loading. Don't re-add; app enforces 10.13 at runtime.
