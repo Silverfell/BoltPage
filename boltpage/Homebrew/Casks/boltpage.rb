@@ -17,10 +17,10 @@ cask "boltpage" do
   end
 
   auto_updates false
-  # Matches bundle.macOS.minimumSystemVersion (10.13) in tauri.conf.json,
-  # which is also Tauri 2's default deployment target.
-  depends_on macos: :high_sierra
 
+  # No `depends_on macos:` minimum: Homebrew disabled that cask stanza ("no
+  # replacement"). The app enforces its 10.13 floor (tauri.conf.json
+  # bundle.macOS.minimumSystemVersion) at runtime instead.
   app "BoltPage.app"
 
   binary "#{appdir}/BoltPage.app/Contents/MacOS/BoltPage", target: "boltpage"
