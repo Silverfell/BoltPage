@@ -36,6 +36,16 @@ You will notice the prompts are not your typical corporate speak you see floatin
 
 ### macOS
 
+#### Homebrew
+
+```sh
+brew tap Silverfell/tap
+brew trust --cask Silverfell/tap/boltpage   # third-party taps require an explicit trust step
+brew install --cask boltpage
+```
+
+Update later with `brew upgrade --cask boltpage`. The cask is hosted in the [Silverfell/homebrew-tap](https://github.com/Silverfell/homebrew-tap) repository (not Homebrew core), so the `brew tap` step is required first.
+
 #### Direct Download
 Download the latest `.dmg` file from the [Releases](https://github.com/Silverfell/BoltPage/releases) page.
 
