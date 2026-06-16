@@ -19,7 +19,7 @@ cask "boltpage" do
   auto_updates false
   # Matches bundle.macOS.minimumSystemVersion (10.13) in tauri.conf.json,
   # which is also Tauri 2's default deployment target.
-  depends_on macos: ">= :high_sierra"
+  depends_on macos: :high_sierra
 
   app "BoltPage.app"
 
