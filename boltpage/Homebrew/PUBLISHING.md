@@ -1,49 +1,69 @@
 Homebrew Cask: BoltPage
 =======================
 
-This folder contains a cask template for distributing BoltPage via Homebrew.
+BoltPage is distributed via a Homebrew **tap**: [`Silverfell/homebrew-tap`](https://github.com/Silverfell/homebrew-tap)
+(`brew tap Silverfell/tap`). It is **not** in Homebrew core, so it does not
+appear on brew.sh and a bare `brew install --cask boltpage` will not find it
+until the tap is added.
 
 Files
-- `Casks/boltpage.rb`: Cask definition with per-arch URLs and placeholders for SHA256.
+- `Casks/boltpage.rb`: the canonical cask (source of truth). The same file is
+  mirrored into the tap repo under `Casks/boltpage.rb`.
 
-Steps to Publish
-1) Host notarized DMGs
-   - Publish macOS arm64 and x64 DMGs at stable HTTPS URLs, e.g. GitHub Releases:
-     - arm64: https://github.com/<org>/<repo>/releases/download/v1.1.0/BoltPage-1.1.0-arm64.dmg
-     - x64:   https://github.com/<org>/<repo>/releases/download/v1.1.0/BoltPage-1.1.0-x64.dmg
+Required on every release
+-------------------------
 
-2) Compute checksums
-   - Download each DMG locally and compute SHA256:
-     shasum -a 256 BoltPage-1.1.0-arm64.dmg
-     shasum -a 256 BoltPage-1.1.0-x64.dmg
+After the GitHub Release for `v<version>` is published (pushing the `v*` tag
+runs `release.yml`, which builds, notarizes, and uploads the arm64/x64 DMGs),
+you **must** update the cask and push it to the tap. Otherwise existing users'
+`brew upgrade --cask boltpage` never sees the new version.
 
-3) Update the cask
-   - Edit `Homebrew/Casks/boltpage.rb`:
-     - Verify the per-arch URLs match the released asset names
-       (`BoltPage-<version>-arm64.dmg` / `BoltPage-<version>-x64.dmg`,
-       produced by the release workflow's rename step).
-     - Replace the per-arch `sha256` placeholder strings with the real checksums.
-     - Optionally enable `livecheck` if you host on GitHub Releases.
+Use the script from the repo root:
 
-4) Test locally
-   - From the project root:
-     brew install --cask --no-quarantine Homebrew/Casks/boltpage.rb
-   - Verify the app launches and file associations work.
+```sh
+./update-cask.sh
+```
 
-5) Publish
-   Option A: Your own tap (recommended initially)
-   - Create a tap repo, e.g. `github.com/<org>/homebrew-tap`.
-   - Put `Casks/boltpage.rb` under that repo and push.
-   - Users can install via:
-     brew tap <org>/tap
-     brew install --cask boltpage
+It reads the version from `boltpage/package.json`, downloads the published
+DMGs, computes their SHA256, rewrites `Casks/boltpage.rb` (version + both
+checksums; the URLs interpolate `#{version}`), and pushes the cask to the tap.
+Then commit the updated `Casks/boltpage.rb` in this repo so the source stays in
+sync (the script prints the exact command). Use `DRY_RUN=1 ./update-cask.sh` to
+rewrite the cask locally without pushing.
 
-   Option B: Submit to Homebrew Cask main
-   - Ensure the cask follows Homebrew style/conventions and popularity guidelines.
-   - Open a PR to `Homebrew/homebrew-cask` with `Casks/boltpage.rb`.
+Manual fallback (if not using the script)
+------------------------------------------
+
+1. Download each released DMG and compute SHA256:
+   ```sh
+   shasum -a 256 BoltPage-<version>-arm64.dmg
+   shasum -a 256 BoltPage-<version>-x64.dmg
+   ```
+2. Edit `Casks/boltpage.rb`: bump `version`, and replace the per-arch `sha256`
+   values. Verify the interpolated URLs match the released asset names
+   (`BoltPage-<version>-arm64.dmg` / `BoltPage-<version>-x64.dmg`, produced by
+   `release.yml`'s rename step).
+3. Copy the file into the tap repo's `Casks/boltpage.rb`, commit, and push.
+
+Install (for users)
+--------------------
+
+```sh
+brew tap Silverfell/tap
+brew trust --cask Silverfell/tap/boltpage   # third-party tap casks must be trusted before install
+brew install --cask boltpage
+```
 
 Notes
 - `auto_updates false` is correct (no in-app updater).
-- Minimum macOS is High Sierra (10.13), matching bundle.macOS.minimumSystemVersion in tauri.conf.json.
-- The `zap` stanza removes app data and preferences; verify paths after first install/run.
+- The cask intentionally has no `depends_on macos:` minimum: current Homebrew
+  has disabled that stanza ("no replacement"). The app enforces its 10.13 floor
+  (`bundle.macOS.minimumSystemVersion` in `tauri.conf.json`) at runtime.
+- The `zap` stanza removes app data and preferences; verify paths after a run.
 
+Promoting to Homebrew core (later)
+----------------------------------
+
+`Homebrew/homebrew-cask` enforces a notability bar (GitHub stars/forks/watchers)
+plus `brew audit --new --cask`. Revisit once the project has real traction; at
+that point run `brew audit --new --cask`, fix what it flags, and open a PR.

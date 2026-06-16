@@ -66,6 +66,7 @@
   - Release DMGs are renamed in release.yml to BoltPage-<ver>-arm64.dmg / BoltPage-<ver>-x64.dmg so GitHub assets match the Homebrew cask URLs.
   - Windows CI signing is real: release.yml imports the PFX secret, reads its thumbprint, and injects bundle.windows.certificateThumbprint at build time (committed config stays unsigned so local dev builds work); builds are unsigned only when the secret is absent.
   - Single-source version sync: scripts/sync-version.sh (Tauri beforeBuildCommand) owns the Cargo.toml + tauri.conf.json version; build-release.sh only syncs names + the Homebrew cask, never the version.
+  - Distribution includes a Homebrew tap (Silverfell/homebrew-tap; install via `brew tap Silverfell/tap` then `brew install --cask boltpage`, third-party casks need `brew trust`). Not in Homebrew core. Every release MUST update Casks/boltpage.rb and push it to the tap via ./update-cask.sh once the GitHub Release publishes, else `brew upgrade` never sees the version.
 
 - Non-goals:
   - Cross-platform builds not supported.
