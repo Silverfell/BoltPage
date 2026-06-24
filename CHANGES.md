@@ -118,3 +118,5 @@ Format: `YYYY-MM-DD [type] description` (max 200 chars). Types: decision, plan, 
 2026-06-24 [code] Ordering-independent resolver: AppState gains had_cli_args/startup_opened_file/startup_blank_label; CLI launch stays in setup; Ready restores session + welcome fallback; a launch Opened reclaims the welcome window only while still pristine (label absent from open_windows), so no document window is ever closed.
 2026-06-24 [note] Version bumped 2.2.2->2.2.3; local unsigned build (BoltPage.app + BoltPage_2.2.3_aarch64.dmg in target/release/bundle/) for testing the RunEvent::Ready startup-window fix.
 2026-06-24 [note] tauri reads tauri.conf.json before beforeBuildCommand syncs it, so a package.json-only bump leaves the first local bundle's metadata a version behind. Build twice or pre-run sync-version.sh.
+2026-06-24 [note] v2.2.3 released: dev->main via PR #32 (CI-gated), lightweight tag v2.2.3; release run 28119446748 published public Release (arm64/x64 DMG + x64 setup). v2.2.2 never committed, skipped.
+2026-06-24 [code] Homebrew cask bumped 2.2.1->2.2.3 with real sha256 for both DMGs (update-cask.sh) and pushed to Silverfell/homebrew-tap.
