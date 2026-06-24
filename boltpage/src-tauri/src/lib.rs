@@ -67,6 +67,21 @@ struct AppState {
     /// Serializes read-modify-write cycles on the preference store
     /// to prevent concurrent saves from overwriting each other.
     pref_lock: Arc<Mutex<()>>,
+
+    /// True when argv carried files. resolve_startup_windows then skips session
+    /// restore, matching the prior CLI-launch behavior. Inert after startup.
+    had_cli_args: std::sync::atomic::AtomicBool,
+
+    /// True once a launch-time RunEvent::Opened has opened a document. Gates the
+    /// welcome-window fallback so a Finder file-launch never leaves a stray empty
+    /// window. Inert after startup.
+    startup_opened_file: std::sync::atomic::AtomicBool,
+
+    /// Label of the welcome window the startup resolver may have created, armed
+    /// so a launch Opened landing just after RunEvent::Ready can reclaim it. The
+    /// reclaim only closes it while still pristine (no file in open_windows), so
+    /// it never touches a document-bearing window.
+    startup_blank_label: std::sync::Mutex<Option<String>>,
 }
 
 impl Default for AppState {
@@ -80,6 +95,9 @@ impl Default for AppState {
             allowed_paths: Arc::new(StdRwLock::new(HashSet::new())),
             allowed_dirs: Arc::new(StdRwLock::new(HashSet::new())),
             pref_lock: Arc::new(Mutex::new(())),
+            had_cli_args: std::sync::atomic::AtomicBool::new(false),
+            startup_opened_file: std::sync::atomic::AtomicBool::new(false),
+            startup_blank_label: std::sync::Mutex::new(None),
         }
     }
 }
@@ -233,6 +251,75 @@ async fn setup_cli_access() -> Result<String, String> {
 }
 
 // --- App entry point ---
+
+/// One-time startup window resolution, run on RunEvent::Ready (after Launch
+/// Services has had its chance to deliver file-open URLs via RunEvent::Opened).
+///
+/// - CLI launch (had_cli_args): windows already created in setup; nothing to do.
+/// - otherwise: restore the saved session, then, only if nothing is open and no
+///   Opened file arrived, show the welcome window. Its label is armed so a
+///   launch Opened landing just after Ready can reclaim it (see RunEvent::Opened
+///   in run()); a self-recheck after arming covers the reverse interleaving.
+async fn resolve_startup_windows(app: tauri::AppHandle) {
+    use std::sync::atomic::Ordering;
+
+    if app.state::<AppState>().had_cli_args.load(Ordering::SeqCst) {
+        return;
+    }
+
+    // Restore the previous session (preview windows open at last quit),
+    // oldest-opened first.
+    let session: Vec<std::path::PathBuf> = prefs::read_session_paths(&app)
+        .iter()
+        .filter(|p| std::path::Path::new(p).exists())
+        .filter_map(|p| io::resolve_file_path(p))
+        .collect();
+    for p in &session {
+        io::allow_path(&app, &p.to_string_lossy());
+    }
+    // Sequential awaits: restore windows in saved order; each open re-appends to
+    // the session list, preserving it.
+    for path in session {
+        if let Err(e) = window::create_window_with_file(&app, Some(path.clone())).await {
+            eprintln!("Failed to restore session window for {path:?}: {e}");
+        }
+    }
+
+    // Welcome fallback: only when nothing is open and no Launch Services file
+    // opened a document. create_window_with_file(None) is the welcome card.
+    let nothing_open = app.webview_windows().is_empty();
+    let file_opened = app
+        .state::<AppState>()
+        .startup_opened_file
+        .load(Ordering::SeqCst);
+    if nothing_open && !file_opened {
+        match window::create_window_with_file(&app, None).await {
+            Ok(label) => {
+                *app.state::<AppState>().startup_blank_label.lock().unwrap() = Some(label);
+                // If an Opened raced through its teardown before we armed (it
+                // took None), reclaim the welcome window ourselves now.
+                if app
+                    .state::<AppState>()
+                    .startup_opened_file
+                    .load(Ordering::SeqCst)
+                {
+                    let stale = app
+                        .state::<AppState>()
+                        .startup_blank_label
+                        .lock()
+                        .unwrap()
+                        .take();
+                    if let Some(stale) = stale {
+                        if let Some(w) = app.get_webview_window(&stale) {
+                            let _ = w.destroy();
+                        }
+                    }
+                }
+            }
+            Err(e) => eprintln!("Failed to create welcome window: {e}"),
+        }
+    }
+}
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
@@ -477,37 +564,19 @@ pub fn run() {
                 .filter_map(|p| io::resolve_file_path(p))
                 .collect();
 
-            if resolved.is_empty() {
-                // No CLI files: restore the previous session (files that were
-                // open in preview windows at last quit), oldest-opened first.
-                let session: Vec<std::path::PathBuf> = prefs::read_session_paths(app.handle())
-                    .iter()
-                    .filter(|p| std::path::Path::new(p).exists())
-                    .filter_map(|p| io::resolve_file_path(p))
-                    .collect();
-                for p in &session {
-                    io::allow_path(app.handle(), &p.to_string_lossy());
+            if !resolved.is_empty() {
+                // CLI files: open them now, before the event loop starts. Flag
+                // the launch so resolve_startup_windows (RunEvent::Ready) skips
+                // session restore, matching the prior CLI-launch behavior.
+                {
+                    let state = app.handle().state::<AppState>();
+                    state
+                        .had_cli_args
+                        .store(true, std::sync::atomic::Ordering::SeqCst);
+                    state
+                        .startup_opened_file
+                        .store(true, std::sync::atomic::Ordering::SeqCst);
                 }
-                let app_handle = app.handle().clone();
-
-                tauri::async_runtime::spawn(async move {
-                    tokio::task::yield_now().await;
-
-                    // Sequential awaits: restore windows in saved order; each
-                    // open re-appends to the session list, preserving it.
-                    for path in session {
-                        if let Err(e) =
-                            window::create_window_with_file(&app_handle, Some(path.clone())).await
-                        {
-                            eprintln!("Failed to restore session window for {path:?}: {e}");
-                        }
-                    }
-
-                    if app_handle.webview_windows().is_empty() {
-                        let _ = window::create_window_with_file(&app_handle, None).await;
-                    }
-                });
-            } else {
                 let first = resolved.remove(0);
                 tauri::async_runtime::block_on(window::create_window_with_file(
                     app.handle(),
@@ -529,6 +598,10 @@ pub fn run() {
                     });
                 }
             }
+            // The no-CLI case (session restore, else the welcome window) runs in
+            // resolve_startup_windows on RunEvent::Ready, so a Launch Services
+            // file-open (RunEvent::Opened) can suppress or reclaim the welcome
+            // window regardless of Opened-vs-Ready delivery order.
 
             Ok(())
         })
@@ -614,6 +687,11 @@ pub fn run() {
             if matches!(_event, tauri::RunEvent::ExitRequested { .. }) {
                 QUITTING.store(true, std::sync::atomic::Ordering::SeqCst);
             }
+            // Startup window resolution runs here (not in setup) so any Launch
+            // Services file-open delivered via RunEvent::Opened is already known.
+            if matches!(_event, tauri::RunEvent::Ready) {
+                tauri::async_runtime::spawn(resolve_startup_windows(_app.clone()));
+            }
             #[cfg(target_os = "macos")]
             if let tauri::RunEvent::Opened { urls } = _event {
                 for url in urls.iter() {
@@ -624,6 +702,8 @@ pub fn run() {
                 let app_clone = _app.clone();
                 let urls = urls.clone();
                 tauri::async_runtime::spawn(async move {
+                    use std::sync::atomic::Ordering;
+                    let mut opened_any = false;
                     for url in urls {
                         if let Some(path) = io::resolve_file_path(url.as_ref()) {
                             if let Err(e) =
@@ -631,11 +711,41 @@ pub fn run() {
                             {
                                 eprintln!("Failed to push recents (Launch Services): {e}");
                             }
-                            if let Err(e) =
-                                window::create_window_with_file(&app_clone, Some(path.clone()))
-                                    .await
+                            match window::create_window_with_file(&app_clone, Some(path.clone()))
+                                .await
                             {
-                                eprintln!("Failed to open window for {path:?}: {e}");
+                                Ok(_) => opened_any = true,
+                                Err(e) => eprintln!("Failed to open window for {path:?}: {e}"),
+                            }
+                        }
+                    }
+                    // Reclaim the welcome window the startup resolver may have
+                    // created, so a Finder file-launch never leaves a stray empty
+                    // window beside the document. Ordering-independent: if Opened
+                    // ran first, the resolver never creates the welcome at all.
+                    // Set the flag before take() so the resolver's self-recheck
+                    // and this teardown cannot both miss the armed label.
+                    if opened_any {
+                        app_clone
+                            .state::<AppState>()
+                            .startup_opened_file
+                            .store(true, Ordering::SeqCst);
+                        let armed = app_clone
+                            .state::<AppState>()
+                            .startup_blank_label
+                            .lock()
+                            .unwrap()
+                            .take();
+                        if let Some(label) = armed {
+                            // Keep a welcome window that has since had a file
+                            // opened into it (now a value in open_windows); only
+                            // close a still-pristine one.
+                            let open_windows = app_clone.state::<AppState>().open_windows.clone();
+                            let pristine = !open_windows.read().await.values().any(|l| l == &label);
+                            if pristine {
+                                if let Some(w) = app_clone.get_webview_window(&label) {
+                                    let _ = w.destroy();
+                                }
                             }
                         }
                     }

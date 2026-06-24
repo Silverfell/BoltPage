@@ -1,3 +1,8 @@
 [workspace]
 members = ["src-tauri", "markrust-core"]
 resolver = "2"
+
+# Profiles are only honored at the workspace root.
+[profile.release]
+strip = true        # drop the symbol table (~3MB); release backtraces become address-only
+panic = "abort"     # omit unwind tables (~2MB); a panic aborts immediately instead of unwinding
