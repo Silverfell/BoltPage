@@ -252,6 +252,12 @@ async fn setup_cli_access() -> Result<String, String> {
 
 // --- App entry point ---
 
+/// Grace period after Ready to let a Launch Services file-open (RunEvent::Opened)
+/// land before deciding session-restore-vs-welcome. A cold-start file double-click
+/// delivers its file via Opened, which can arrive just after Ready; observing it
+/// here lets a file launch open ONLY the clicked file (no session restore).
+const STARTUP_OPENED_GRACE_MS: u64 = 100;
+
 /// One-time startup window resolution, run on RunEvent::Ready (after Launch
 /// Services has had its chance to deliver file-open URLs via RunEvent::Opened).
 ///
@@ -264,6 +270,19 @@ async fn resolve_startup_windows(app: tauri::AppHandle) {
     use std::sync::atomic::Ordering;
 
     if app.state::<AppState>().had_cli_args.load(Ordering::SeqCst) {
+        return;
+    }
+
+    // A Launch Services file-open (Finder double-click) arrives via RunEvent::Opened
+    // with had_cli_args=false and can land just after Ready. Wait briefly so it is
+    // observable here; if a file launch happened, the Opened handler already opened
+    // the clicked file, so skip session restore and the welcome window entirely.
+    sleep(Duration::from_millis(STARTUP_OPENED_GRACE_MS)).await;
+    if app
+        .state::<AppState>()
+        .startup_opened_file
+        .load(Ordering::SeqCst)
+    {
         return;
     }
 
