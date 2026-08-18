@@ -133,9 +133,13 @@ pub(crate) fn convert_to_logical(window: &tauri::Window, width: u32, height: u32
 
 // --- Window creation ---
 
+/// `startup_gated`: true only for windows the startup resolver creates (session
+/// restore, welcome). Their labels enter startup_gated so show_window can veto
+/// them if a document launch is observed by their show moment.
 pub(crate) async fn create_window_with_file(
     app: &AppHandle,
     file_path: Option<PathBuf>,
+    startup_gated: bool,
 ) -> tauri::Result<String> {
     let prefs = prefs::get_preferences(app.clone()).unwrap_or_default();
 
@@ -162,6 +166,16 @@ pub(crate) async fn create_window_with_file(
         let open_windows = app_state.open_windows.read().await;
         if let Some(existing_label) = open_windows.get(&path.to_string_lossy().to_string()) {
             if let Some(window) = app.get_webview_window(existing_label) {
+                if !startup_gated {
+                    // An explicit open landing on a window the startup resolver
+                    // created un-gates it: the user asked for this file, so its
+                    // show moment must show it.
+                    app_state
+                        .startup_gated
+                        .lock()
+                        .unwrap()
+                        .remove(existing_label);
+                }
                 let _ = window.set_focus();
                 return Ok(existing_label.to_string());
             }
@@ -171,15 +185,25 @@ pub(crate) async fn create_window_with_file(
 
     let (width, height) = calculate_window_size(app, &prefs)?;
 
+    // All windows start hidden; the frontend invokes show_window after its
+    // first render (the show-time gate lives there).
     let _window = WebviewWindowBuilder::new(app, &window_label, url)
         .title(&title)
         .inner_size(width, height)
-        .visible(file_path.is_none())
+        .visible(false)
         .initialization_script(format!(
             "document.documentElement.setAttribute('data-theme', {});",
             serde_json::to_string(&prefs.theme).unwrap()
         ))
         .build()?;
+
+    if startup_gated {
+        app.state::<AppState>()
+            .startup_gated
+            .lock()
+            .unwrap()
+            .insert(window_label.clone());
+    }
 
     let _ = menu::rebuild_app_menu(app);
 
@@ -218,7 +242,37 @@ pub(crate) fn print_current_window(window: tauri::WebviewWindow) -> Result<(), S
 // --- Tauri commands ---
 
 #[tauri::command]
-pub(crate) fn show_window(app: AppHandle, window_label: String) -> Result<(), String> {
+pub(crate) async fn show_window(app: AppHandle, window_label: String) -> Result<(), String> {
+    let state = app.state::<AppState>();
+    // The show-time gate: a startup window (session restore / welcome) reaching
+    // its show moment after a document launch was observed is destroyed unseen —
+    // unless it is itself a requested document, in which case it IS the doc
+    // window and must show (also keeps the Opened dedupe from ever racing a
+    // destroy of a same-label window).
+    let was_gated = state.startup_gated.lock().unwrap().remove(&window_label);
+    if was_gated
+        && state
+            .doc_open_requested
+            .load(std::sync::atomic::Ordering::SeqCst)
+    {
+        let requested = match decode_file_path_from_window_label_str(&window_label) {
+            Ok(Some(path)) => state.doc_open_paths.lock().unwrap().contains(&path),
+            _ => false,
+        };
+        if !requested {
+            // Deliberately no session_remove: the saved session must survive a
+            // file launch so the next plain launch still restores it.
+            {
+                let mut open_windows = state.open_windows.write().await;
+                open_windows.retain(|_, label| label != &window_label);
+            }
+            if let Some(window) = app.get_webview_window(&window_label) {
+                let _ = window.destroy();
+            }
+            let _ = menu::rebuild_app_menu(&app);
+            return Ok(());
+        }
+    }
     if let Some(window) = app.get_webview_window(&window_label) {
         window
             .show()
@@ -291,7 +345,7 @@ pub(crate) async fn create_new_window_command(app: AppHandle) -> Result<String, 
     // path here, because create_window_with_file grants it via io::allow_path.
     // File-bearing opens go through trusted Rust entry points (CLI, Launch
     // Services, recents/menu) that call create_window_with_file directly.
-    create_window_with_file(&app, None)
+    create_window_with_file(&app, None, false)
         .await
         .map_err(|e| format!("Failed to create window: {e}"))
 }
