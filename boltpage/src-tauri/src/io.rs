@@ -752,7 +752,7 @@ pub(crate) async fn create_new_markdown_file(app: AppHandle) -> Result<Option<St
         eprintln!("Failed to push recents (create_new_markdown_file): {e}");
     }
 
-    let window_label = crate::window::create_window_with_file(&app, Some(path))
+    let window_label = crate::window::create_window_with_file(&app, Some(path), false)
         .await
         .map_err(|e| format!("Failed to open window: {e}"))?;
 

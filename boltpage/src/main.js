@@ -1512,6 +1512,7 @@ async function stopFileWatcher() {
 
 // Initialize app
 window.addEventListener('DOMContentLoaded', async () => {
+  let filePath = null;
   try {
 
         setupEventListeners();
@@ -1703,7 +1704,6 @@ window.addEventListener('DOMContentLoaded', async () => {
         });
         
         // Get file path from window label (single source of truth)
-        let filePath = null;
         try {
             filePath = await invoke('get_file_path_from_window_label');
         } catch (err) {
@@ -1721,6 +1721,19 @@ window.addEventListener('DOMContentLoaded', async () => {
         }
     } catch (error) {
         console.error('[CRITICAL ERROR] Initialization failed:', error);
+    }
+    // No-file (welcome / blank) windows are created hidden like document
+    // windows; show once the card is ready so the startup gate can veto it.
+    // Runs outside the try so a mid-init exception still surfaces the window.
+    if (!filePath) {
+        try {
+            const visible = await appWindow.isVisible();
+            if (!visible) {
+                await invoke('show_window', { windowLabel: appWindow.label });
+            }
+        } catch (err) {
+            console.error('Failed to show window:', err);
+        }
     }
 });
 

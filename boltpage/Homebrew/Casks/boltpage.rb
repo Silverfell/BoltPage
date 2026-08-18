@@ -1,5 +1,5 @@
 cask "boltpage" do
-  version "2.2.3"
+  version "2.2.4"
 
   name "BoltPage"
   desc "Fast, lightweight Markdown viewer and editor"
@@ -8,12 +8,12 @@ cask "boltpage" do
   # Update these URLs with your GitHub releases or hosting location
   on_arm do
     url "https://github.com/Silverfell/BoltPage/releases/download/v#{version}/BoltPage-#{version}-arm64.dmg"
-    sha256 "338a913434d2f7734840b3835ba483d75083b79d87bdf1c68c6711b71695ca4e"
+    sha256 "3014f2b970e3de173dd55d9a19169289b01271c8a9025da2ac7e50e1318a5561"
   end
 
   on_intel do
     url "https://github.com/Silverfell/BoltPage/releases/download/v#{version}/BoltPage-#{version}-x64.dmg"
-    sha256 "58f71933508d64a4de01d300addebcfae9462982ed4e8a90e488c4f0ce8e777e"
+    sha256 "68e9dd256a210dffac93e7edc0f5aa737e605aa33edc95a9fba7f06de6803a04"
   end
 
   auto_updates false
