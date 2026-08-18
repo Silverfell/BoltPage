@@ -82,10 +82,12 @@
   - macOS: Apple Developer credentials for release builds.
   - Windows: Optional WiX Toolset v3.x for MSI installers.
 
-- Areas:
+- Areas: startup, editor, preview, workspace, prefs, menu, render, find, ui, release.
 - Breaking-change context:
 - Current focus: v2.2.5 shipped (startup show-gate, decision 126); no active work in flight.
 - Next steps: Confirm on the installed 2.2.5 build that the cold-start double-click repro is gone and File > New Window behaves (its menu path could not be automated); log any regression as a new note.
 - Open questions:
 - Do-not-touch:
 - Environment quirks:
+  - osascript has no assistive access on this machine: System Events window/menu automation fails (-1719/-25211). For visible-window checks, compile a CGWindowList probe (clang -framework CoreGraphics) — it needs no permissions and counts only visible windows.
+  - CI clippy runs a newer toolchain than local; run `cargo clippy --all-targets -- -D warnings` locally before any release (doc_lazy_continuation broke PR #33).
