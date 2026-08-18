@@ -84,8 +84,8 @@
 
 - Areas:
 - Breaking-change context:
-- Current focus: Startup show-gate implemented and matrix-verified (decision 126, plan 127 as revised — see note 129); awaiting user confirmation of the original cold-start repro on their build.
-- Next steps: User manually verifies the Finder double-click repro and File > New Window (menu-click automation blocked by assistive access); then version bump, release, and cask update per the release decisions above.
+- Current focus: v2.2.5 shipped (startup show-gate, decision 126); no active work in flight.
+- Next steps: Confirm on the installed 2.2.5 build that the cold-start double-click repro is gone and File > New Window behaves (its menu path could not be automated); log any regression as a new note.
 - Open questions:
 - Do-not-touch:
 - Environment quirks:
