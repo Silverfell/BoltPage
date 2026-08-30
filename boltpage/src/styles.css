@@ -828,8 +828,79 @@ html[data-toolbar-density="label"] .toolbar-btn:not(.icon-only) > svg { display:
 }
 
 #file-tree[hidden],
-#toc-nav[hidden] {
+#toc-nav[hidden],
+#search-panel[hidden] {
   display: none;
+}
+
+/* Workspace full-text search (Search tab). The sidebar itself scrolls
+   (block layout), matching the Files tree. */
+.search-panel {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.search-input {
+  width: 100%;
+  box-sizing: border-box;
+  height: 26px;
+  padding: 0 8px;
+  border: 1px solid var(--border-color);
+  border-radius: 6px;
+  background: var(--content-bg);
+  color: var(--text-primary);
+  font-family: inherit;
+  font-size: 12.5px;
+}
+
+.search-input:focus {
+  outline: none;
+  border-color: var(--accent);
+}
+
+.search-status {
+  font-size: 11px;
+  color: var(--text-muted);
+  padding: 0 2px;
+}
+
+
+.search-hit {
+  display: block;
+  width: 100%;
+  text-align: left;
+  padding: 4px 8px;
+  border: none;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--text-primary);
+  font-family: inherit;
+  cursor: pointer;
+  transition: background-color 0.12s ease;
+}
+
+.search-hit:hover {
+  background: var(--hover);
+}
+
+.search-hit-loc {
+  display: block;
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--accent);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.search-hit-preview {
+  display: block;
+  font-size: 12px;
+  color: var(--text-secondary);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 /* Workspace file tree (lazy, one fetched level per expand) */
@@ -1092,6 +1163,31 @@ html[data-toolbar-density="label"] .toolbar-btn:not(.icon-only) > svg { display:
 .markdown-body .callout-important { --callout-accent: #7c3aed; }
 .markdown-body .callout-warning   { --callout-accent: var(--accent-warning); }
 .markdown-body .callout-caution   { --callout-accent: var(--danger); }
+
+/* Front matter (YAML metadata block, rendered collapsed) */
+.markdown-body details.front-matter {
+  margin: 0 0 16px;
+  padding: 8px 14px;
+  border: 1px solid var(--border-color);
+  border-radius: 6px;
+  background: var(--surface-panel);
+  font-size: 0.85em;
+}
+.markdown-body details.front-matter summary {
+  cursor: pointer;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  font-size: 11px;
+  color: var(--text-secondary);
+  user-select: none;
+}
+.markdown-body details.front-matter pre {
+  margin: 8px 0 4px;
+  padding: 0;
+  background: transparent;
+  border: none;
+}
 
 /* Math (KaTeX container hints) */
 .markdown-body .math-display { overflow-x: auto; padding: 4px 0; }

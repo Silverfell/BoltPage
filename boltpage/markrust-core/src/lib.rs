@@ -65,11 +65,17 @@ fn sanitizer() -> &'static ammonia::Builder<'static> {
     SANITIZER.get_or_init(|| {
         let mut b = ammonia::Builder::default();
         b.add_generic_attributes(&["class"]);
+        // `id` is needed for in-document anchors (footnote refs/definitions,
+        // heading slugs). The frontend prefixes every preview id with "md-"
+        // after insertion, so a document id can never clobber an app element.
+        b.add_generic_attributes(&["id"]);
         // Task-list checkboxes emitted by pulldown-cmark's ENABLE_TASKLISTS
         // option: <input type="checkbox" disabled [checked]>. `input` is not
         // in ammonia's default tag set.
         b.add_tags(&["input"]);
         b.add_tag_attributes("input", &["type", "checked", "disabled"]);
+        // Front-matter blocks render as a collapsed <details>.
+        b.add_tags(&["details", "summary"]);
         b
     })
 }
@@ -142,17 +148,32 @@ pub fn parse_markdown_with_theme(content: &str, _theme_name: &str) -> String {
     options.insert(Options::ENABLE_STRIKETHROUGH);
     options.insert(Options::ENABLE_TASKLISTS);
     options.insert(Options::ENABLE_MATH);
+    options.insert(Options::ENABLE_YAML_STYLE_METADATA_BLOCKS);
 
     let parser = Parser::new_ext(content, options);
 
     let mut in_code_block = false;
     let mut code_block_lang = String::new();
     let mut code_block_content = String::new();
+    // YAML front matter (`---` fences at the very start of the document) is
+    // captured out of the event stream and re-emitted as a collapsed
+    // <details> block instead of leaking into the body as a broken heading.
+    let mut in_metadata = false;
+    let mut front_matter = String::new();
 
     let mut events = Vec::new();
 
     for event in parser {
         match event {
+            Event::Start(Tag::MetadataBlock(_)) => {
+                in_metadata = true;
+            }
+            Event::End(TagEnd::MetadataBlock(_)) => {
+                in_metadata = false;
+            }
+            Event::Text(text) if in_metadata => {
+                front_matter.push_str(&text);
+            }
             Event::Start(Tag::CodeBlock(kind)) => {
                 in_code_block = true;
                 code_block_lang = match kind {
@@ -215,6 +236,12 @@ pub fn parse_markdown_with_theme(content: &str, _theme_name: &str) -> String {
     }
 
     let mut html_output = String::new();
+    if !front_matter.trim().is_empty() {
+        html_output.push_str(&format!(
+            r#"<details class="front-matter"><summary>Front matter</summary><pre>{}</pre></details>"#,
+            escape_html(front_matter.trim_end())
+        ));
+    }
     html::push_html(&mut html_output, events.into_iter());
 
     let with_callouts = rewrite_callouts(&html_output);
@@ -318,6 +345,74 @@ mod tests {
             );
             assert!(out.contains(&expected), "kind={kind} got: {out}");
         }
+    }
+
+    #[test]
+    fn front_matter_renders_as_details_block() {
+        let out = parse_markdown("---\ntitle: Test Doc\ntags: [a, b]\n---\n\n# Hello\n");
+        assert!(
+            out.contains(r#"<details class="front-matter">"#),
+            "got: {out}"
+        );
+        assert!(out.contains("title: Test Doc"), "got: {out}");
+        // The body still renders normally after the metadata block.
+        assert!(out.contains("<h1"), "got: {out}");
+        assert!(out.contains("Hello"), "got: {out}");
+    }
+
+    #[test]
+    fn no_front_matter_no_details_block() {
+        let out = parse_markdown("# Hi\n\nBody text.\n");
+        assert!(!out.contains("front-matter"), "got: {out}");
+    }
+
+    #[test]
+    fn mid_document_thematic_break_is_not_front_matter() {
+        let out = parse_markdown("para\n\n---\n\nafter\n");
+        assert!(out.contains("<hr"), "got: {out}");
+        assert!(!out.contains("front-matter"), "got: {out}");
+    }
+
+    #[test]
+    fn unclosed_leading_dashes_stay_a_thematic_break() {
+        // A doc that opens with `---` but never closes it must not have its
+        // body swallowed as metadata (verified against pulldown-cmark 0.12).
+        let out = parse_markdown("---\n\nHello world\n");
+        assert!(out.contains("<hr"), "got: {out}");
+        assert!(out.contains("Hello world"), "got: {out}");
+        assert!(!out.contains("front-matter"), "got: {out}");
+    }
+
+    #[test]
+    fn relative_image_src_survives_sanitization() {
+        // The preview's data-URI hydration and the export embedder both read
+        // the relative src back out of the sanitized HTML; if ammonia's URL
+        // policy ever strips relative URLs, local images silently die.
+        let out = parse_markdown("![diagram](assets/my%20chart.png)\n");
+        assert!(
+            out.contains(r#"src="assets/my%20chart.png""#),
+            "relative img src stripped: {out}"
+        );
+        assert!(out.contains(r#"alt="diagram""#), "alt stripped: {out}");
+    }
+
+    #[test]
+    fn relative_link_href_survives_sanitization() {
+        // Same contract for relative file links (resolve_doc_link flow).
+        let out = parse_markdown("[guide](docs/guide.md)\n");
+        assert!(
+            out.contains(r#"href="docs/guide.md""#),
+            "relative href stripped: {out}"
+        );
+    }
+
+    #[test]
+    fn footnote_ids_survive_sanitization() {
+        let out = parse_markdown("ref[^1]\n\n[^1]: note\n");
+        // Both the reference link (href="#...") and the definition's id must
+        // survive, or in-document footnote navigation has nothing to target.
+        assert!(out.contains("href=\"#"), "footnote href stripped: {out}");
+        assert!(out.contains("id=\""), "footnote id stripped: {out}");
     }
 
     #[test]

@@ -84,6 +84,7 @@ import {
     replaceAll as cmReplaceAll,
     highlightSelectionMatches,
     classHighlighter,
+    vim,
 } from '/assets/vendor/codemirror/codemirror.min.js';
 
 const { invoke } = window.__TAURI__.core;
@@ -126,6 +127,8 @@ let bufferSizeWarned = false;
 // CM compartments for the togglable bits.
 const gutterCompartment = new Compartment();
 const wrapCompartment = new Compartment();
+const vimCompartment = new Compartment();
+let vimModeEnabled = false;
 
 // Track last synced position to filter micro-scrolls
 let lastSyncedLine = null;
@@ -143,6 +146,9 @@ function detectFileKind(filePath) {
 
 function buildEditorExtensions() {
     return [
+        // vim() must precede every other keymap or its Normal-mode bindings
+        // lose to them (per @replit/codemirror-vim docs).
+        vimCompartment.of(vimModeEnabled ? vim() : []),
         history(),
         drawSelection(),
         // Multi-cursor: Alt+click adds carets, Alt+drag column-selects.
@@ -315,13 +321,41 @@ function scheduleInspectorUpdate() {
     });
 }
 
+// --- Readability (prose files only) ---
+const READING_WPM = 220;
+// REASON: the syllable pass is O(doc) and runs on every rAF-coalesced
+// inspector update; beyond this size show "–" instead of stuttering typing.
+const MAX_READABILITY_CHARS = 500_000;
+// Below this many words the score swings wildly; not worth showing.
+const MIN_READABILITY_WORDS = 20;
+
+function estimateSyllables(word) {
+    const w = word.toLowerCase().replace(/[^a-z]/g, '');
+    if (!w) return 0;
+    if (w.length <= 3) return 1;
+    const groups = w.replace(/e$/, '').match(/[aeiouy]+/g);
+    return Math.max(1, groups ? groups.length : 1);
+}
+
+/** Flesch-Kincaid grade level over raw text (markdown syntax counts as prose;
+ *  the score is a gauge, not a citation). */
+function fleschKincaidGrade(text, words) {
+    if (!words.length) return null;
+    const sentences = (text.match(/[.!?]+(\s|$)/g) || []).length || 1;
+    let syllables = 0;
+    for (const w of words) syllables += estimateSyllables(w);
+    const grade = 0.39 * (words.length / sentences) + 11.8 * (syllables / words.length) - 15.59;
+    return Math.max(0, grade);
+}
+
 function updateInspector() {
     const inspectorEl = document.getElementById('editor-inspector');
     if (!inspectorEl || inspectorEl.hasAttribute('hidden')) return;
     if (!editorView) return;
     const state = editorView.state;
     const text = state.doc.toString();
-    const words = (text.trim().match(/\S+/g) || []).length;
+    const wordList = text.trim().match(/\S+/g) || [];
+    const words = wordList.length;
     const chars = text.length;
     const lines = text === '' ? 0 : state.doc.lines;
 
@@ -346,6 +380,31 @@ function updateInspector() {
     if (elSel) elSel.textContent = String(selLen);
     if (elEncoding) elEncoding.textContent = 'UTF-8';
     if (elEol) elEol.textContent = inspectorEol;
+
+    // Reading time and Flesch-Kincaid grade only make sense for prose.
+    const isProse = currentFileKind === KIND_MARKDOWN || currentFileKind === KIND_TXT;
+    const elReading = el('inspector-reading');
+    const elGrade = el('inspector-grade');
+    const elReadingLabel = el('inspector-reading-label');
+    const elGradeLabel = el('inspector-grade-label');
+    for (const n of [elReading, elReadingLabel, elGrade, elGradeLabel]) {
+        if (n) n.hidden = !isProse;
+    }
+    if (isProse) {
+        if (elReading) {
+            elReading.textContent = words === 0
+                ? '–'
+                : `${Math.max(1, Math.round(words / READING_WPM))} min`;
+        }
+        if (elGrade) {
+            if (words < MIN_READABILITY_WORDS || chars > MAX_READABILITY_CHARS) {
+                elGrade.textContent = '–';
+            } else {
+                const grade = fleschKincaidGrade(text, wordList);
+                elGrade.textContent = grade === null ? '–' : grade.toFixed(1);
+            }
+        }
+    }
 }
 
 async function notifyPreviewEditorClosed() {
@@ -398,6 +457,19 @@ function toggleWordWrap() {
     applyWordWrap();
     invoke('save_preference_key', { key: 'word_wrap', value: wordWrapEnabled })
         .catch(err => console.error('Failed to save word_wrap preference:', err));
+}
+
+function toggleVimMode() {
+    vimModeEnabled = !vimModeEnabled;
+    if (editorView) {
+        editorView.dispatch({
+            effects: vimCompartment.reconfigure(vimModeEnabled ? vim() : []),
+        });
+        editorView.focus();
+    }
+    updateStatus(vimModeEnabled ? 'Vim mode on' : 'Vim mode off');
+    invoke('save_preference_key', { key: 'editor_vim_mode', value: vimModeEnabled })
+        .catch(err => console.error('Failed to save editor_vim_mode preference:', err));
 }
 
 // === Status, save, external changes ==============================
@@ -628,8 +700,48 @@ function cmInsertLink(view) {
     view.focus();
 }
 
-/** Paste URL over a non-empty selection → auto-link. */
+/** Read a pasted image, save it to assets/ beside the doc, insert the link. */
+async function insertPastedImage(view, blob) {
+    try {
+        const buf = new Uint8Array(await blob.arrayBuffer());
+        let binary = '';
+        const CHUNK = 0x8000;
+        for (let i = 0; i < buf.length; i += CHUNK) {
+            binary += String.fromCharCode.apply(null, buf.subarray(i, i + CHUNK));
+        }
+        const rel = await invoke('save_clipboard_image', {
+            docPath: currentFilePath,
+            dataB64: btoa(binary),
+        });
+        const range = view.state.selection.main;
+        view.dispatch({
+            changes: { from: range.from, to: range.to, insert: `![](${rel})` },
+            // Caret lands in the alt-text slot: ![|](assets/…)
+            selection: EditorSelection.cursor(range.from + 2),
+        });
+        view.focus();
+        updateStatus(`Image saved to ${rel}`);
+    } catch (err) {
+        console.error('Failed to paste image:', err);
+        updateStatus('Error pasting image');
+    }
+}
+
+/** Paste image → save to assets/; paste URL over a non-empty selection → auto-link. */
 function handleEditorPaste(e, view) {
+    if (currentFileKind === KIND_MARKDOWN && currentFilePath && e.clipboardData) {
+        const pastableTypes = ['image/png', 'image/jpeg', 'image/gif', 'image/webp'];
+        for (const item of e.clipboardData.items) {
+            if (item.kind === 'file' && pastableTypes.includes(item.type)) {
+                const blob = item.getAsFile();
+                if (blob) {
+                    e.preventDefault();
+                    insertPastedImage(view, blob);
+                    return true;
+                }
+            }
+        }
+    }
     const text = (e.clipboardData && e.clipboardData.getData('text/plain') || '').trim();
     if (!isUrlLike(text)) return false;
     const range = view.state.selection.main;
@@ -733,6 +845,7 @@ async function initialize() {
         applyFontSize(prefs.font_size);
         wordWrapEnabled = prefs.word_wrap === true;
         showLineNumbers = prefs.show_line_numbers !== false;
+        vimModeEnabled = prefs.editor_vim_mode === true;
         applyToolbarDensity(prefs.toolbar_density);
         applyInspectorVisibility(prefs.editor_inspector_visible === true);
         applyFontFamily({
@@ -1241,6 +1354,7 @@ function buildPaletteActions() {
         { id: 'inspector',     label: 'Toggle Inspector',          hint: '⌘⇧I',    run: () => toggleInspector() },
         { id: 'line-nums',     label: 'Toggle Line Numbers',                       run: () => toggleLineNumbers() },
         { id: 'word-wrap',     label: 'Toggle Word Wrap',                          run: () => toggleWordWrap() },
+        { id: 'vim-mode',      label: `Vim Mode: ${vimModeEnabled ? 'Off' : 'On'}`, run: () => toggleVimMode() },
         { id: 'fold-all',      label: 'Fold All Headings',                         run: () => { if (editorView) foldAll(editorView); } },
         { id: 'unfold-all',    label: 'Unfold All',                                run: () => { if (editorView) unfoldAll(editorView); } },
         { id: 'new-window',    label: 'New Window',                hint: '⌘⇧N',    run: () => invoke('create_new_window_command').catch(console.error) },

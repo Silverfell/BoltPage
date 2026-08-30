@@ -150,9 +150,15 @@
                 </div>
                 <div id="sidebar-tabs" class="sidebar-tabs" hidden role="tablist" aria-label="Sidebar mode">
                     <button id="sidebar-tab-files" type="button" class="sidebar-tab" role="tab" aria-selected="false">Files</button>
+                    <button id="sidebar-tab-search" type="button" class="sidebar-tab" role="tab" aria-selected="false">Search</button>
                     <button id="sidebar-tab-outline" type="button" class="sidebar-tab" role="tab" aria-selected="true">Outline</button>
                 </div>
                 <nav id="file-tree" hidden></nav>
+                <div id="search-panel" class="search-panel" hidden>
+                    <input id="search-input" class="search-input" type="text" placeholder="Search workspace…" aria-label="Search workspace" />
+                    <div id="search-status" class="search-status" hidden></div>
+                    <div id="search-results" class="search-results" role="list"></div>
+                </div>
                 <nav id="toc-nav"></nav>
             </aside>
             <button id="toc-open-btn" class="toc-open-btn" hidden title="Open sidebar" aria-label="Open sidebar">

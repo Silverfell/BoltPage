@@ -14,7 +14,8 @@ trap 'rm -rf "$WORK_DIR"' EXIT
 cd "$WORK_DIR"
 npm init -y --silent > /dev/null
 
-# Pinned exact versions (audited 2026-06-11: no eval / new Function).
+# Pinned exact versions (audited 2026-06-11: no eval / new Function;
+# codemirror-vim added 2026-08-30, same audit).
 npm install --silent --save-exact \
   codemirror@6.0.2 \
   @codemirror/view@6.43.1 \
@@ -23,7 +24,8 @@ npm install --silent --save-exact \
   @codemirror/language@6.12.3 \
   @codemirror/lang-markdown@6.5.0 \
   @codemirror/search@6.7.0 \
-  @lezer/highlight@1.2.3
+  @lezer/highlight@1.2.3 \
+  @replit/codemirror-vim@6.4.0
 
 cat > entry.js << 'EOF'
 // Explicit exports only. basicSetup is deliberately excluded: its searchKeymap
@@ -48,6 +50,7 @@ export {
     highlightSelectionMatches,
 } from '@codemirror/search';
 export { classHighlighter, tags } from '@lezer/highlight';
+export { vim, Vim } from '@replit/codemirror-vim';
 EOF
 
 npx --yes esbuild entry.js --bundle --minify --format=esm \
@@ -68,7 +71,8 @@ cp codemirror.min.js "$OUT_DIR/"
              @codemirror/language @codemirror/lang-markdown @codemirror/search \
              @lezer/highlight @lezer/common @lezer/markdown @lezer/lr \
              @codemirror/lang-html @codemirror/lang-css @codemirror/lang-javascript \
-             @codemirror/autocomplete @codemirror/lint style-mod w3c-keyname crelt; do
+             @codemirror/autocomplete @codemirror/lint style-mod w3c-keyname crelt \
+             @replit/codemirror-vim; do
     f="node_modules/$pkg/LICENSE"
     if [ -f "$f" ]; then
       echo "=== $pkg $(node -p "require('./node_modules/$pkg/package.json').version") ==="
