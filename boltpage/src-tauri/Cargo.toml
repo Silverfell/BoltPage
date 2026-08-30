@@ -1,6 +1,6 @@
 [package]
 name = "boltpage"
-version = "2.2.5"
+version = "3.0.0"
 description = "A Tauri App"
 authors = ["BoltPage Contributors"]
 edition = "2021"
