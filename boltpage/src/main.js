@@ -308,10 +308,35 @@ async function ensureSyntaxCss(theme) {
             styleEl = document.createElement('style');
             styleEl.id = 'syntax-css';
             document.head.appendChild(styleEl);
+            // The user stylesheet must stay last in the cascade; this invoke
+            // can resolve after ensureCustomCss appended it at boot.
+            const userCss = document.getElementById('user-css');
+            if (userCss) document.head.appendChild(userCss);
         }
         styleEl.textContent = css;
     } catch (err) {
         console.error('Failed to load syntax CSS:', err);
+    }
+}
+
+/**
+ * Load the user's custom stylesheet into a <style> appended (or re-appended)
+ * at the end of <head>, so it always wins the cascade over theme and syntax
+ * styles. Reloaded on window focus; editing it externally then switching
+ * back picks the changes up.
+ */
+async function ensureCustomCss() {
+    try {
+        const css = await invoke('get_custom_css');
+        let styleEl = document.getElementById('user-css');
+        if (!styleEl) {
+            styleEl = document.createElement('style');
+            styleEl.id = 'user-css';
+        }
+        if (styleEl.textContent !== css) styleEl.textContent = css;
+        document.head.appendChild(styleEl);
+    } catch (err) {
+        console.error('Failed to load custom CSS:', err);
     }
 }
 
@@ -424,10 +449,16 @@ function applyPreviewHtml(html) {
 
     const insertedEls = inserted.filter(n => n.nodeType === Node.ELEMENT_NODE);
     if (insertedEls.length) {
+        // Prefix document-supplied ids so they can never clobber app element
+        // ids; heading slugs are recomputed over the whole container because
+        // dedupe counters are document-wide.
+        prefixPreviewIds(insertedEls);
         // fire-and-forget, scoped to what actually changed
         renderMath(insertedEls).catch(() => {});
         renderMermaid(insertedEls).catch(() => {});
+        hydrateLocalImages(insertedEls).catch(() => {});
     }
+    assignHeadingSlugs(container);
 
     const tocSig = tocSignatureOf(container);
     const tocChanged = tocSig !== lastTocSignature;
@@ -569,28 +600,32 @@ async function initWorkspace() {
 function updateSidebarTabs() {
     const tabsRow = document.getElementById('sidebar-tabs');
     const filesTab = document.getElementById('sidebar-tab-files');
+    const searchTab = document.getElementById('sidebar-tab-search');
     const outlineTab = document.getElementById('sidebar-tab-outline');
     const fileTree = document.getElementById('file-tree');
+    const searchPanel = document.getElementById('search-panel');
     const tocNav = document.getElementById('toc-nav');
     if (!tabsRow || !fileTree || !tocNav) return;
 
     const hasWorkspace = !!workspaceFolder;
     tabsRow.hidden = !hasWorkspace;
     const showFiles = hasWorkspace && workspaceTabActive === 'files';
+    const showSearch = hasWorkspace && workspaceTabActive === 'search';
     fileTree.hidden = !showFiles;
-    tocNav.hidden = showFiles;
-    if (filesTab) {
-        filesTab.classList.toggle('active', showFiles);
-        filesTab.setAttribute('aria-selected', showFiles ? 'true' : 'false');
-    }
-    if (outlineTab) {
-        outlineTab.classList.toggle('active', !showFiles);
-        outlineTab.setAttribute('aria-selected', showFiles ? 'false' : 'true');
-    }
-    if (showFiles) {
+    if (searchPanel) searchPanel.hidden = !showSearch;
+    tocNav.hidden = showFiles || showSearch;
+    const setTabState = (tab, active) => {
+        if (!tab) return;
+        tab.classList.toggle('active', active);
+        tab.setAttribute('aria-selected', active ? 'true' : 'false');
+    };
+    setTabState(filesTab, showFiles);
+    setTabState(searchTab, showSearch);
+    setTabState(outlineTab, !showFiles && !showSearch);
+    if (showFiles || showSearch) {
         const sidebarLabel = document.querySelector('.sidebar-label');
         const sidebarCaption = document.querySelector('.sidebar-caption');
-        if (sidebarLabel) sidebarLabel.textContent = 'Files';
+        if (sidebarLabel) sidebarLabel.textContent = showFiles ? 'Files' : 'Search';
         if (sidebarCaption) {
             sidebarCaption.textContent = String(workspaceFolder).split(/[/\\]/).pop() || workspaceFolder;
         }
@@ -602,6 +637,10 @@ function setSidebarTab(tab) {
     updateSidebarTabs();
     // Re-assert the outline labels buildTOC owns when switching back.
     if (tab === 'outline') buildTOC();
+    if (tab === 'search') {
+        const input = document.getElementById('search-input');
+        if (input) { input.focus(); input.select(); }
+    }
 }
 
 async function refreshFileTree() {
@@ -694,6 +733,12 @@ async function closeFolder() {
     workspaceTabActive = 'outline';
     const tree = document.getElementById('file-tree');
     if (tree) tree.innerHTML = '';
+    const searchResults = document.getElementById('search-results');
+    if (searchResults) searchResults.innerHTML = '';
+    const searchInput = document.getElementById('search-input');
+    if (searchInput) searchInput.value = '';
+    const searchStatus = document.getElementById('search-status');
+    if (searchStatus) searchStatus.hidden = true;
     updateSidebarTabs();
     buildTOC();
 }
@@ -726,6 +771,95 @@ function ensureQuickSwitcher() {
     if (quickSwitcherPalette) return quickSwitcherPalette;
     quickSwitcherPalette = createCommandPalette(document.body, buildQuickSwitcherActions);
     return quickSwitcherPalette;
+}
+
+// --- Workspace full-text search (Search tab) ---
+const SEARCH_TYPE_DEBOUNCE_MS = 250;
+let searchTypeTimer = null;
+let searchPanelBound = false;
+let lastSearchQuery = '';
+
+function initSearchPanel() {
+    if (searchPanelBound) return;
+    const input = document.getElementById('search-input');
+    if (!input) return;
+    searchPanelBound = true;
+    input.addEventListener('input', () => {
+        if (searchTypeTimer) clearTimeout(searchTypeTimer);
+        searchTypeTimer = setTimeout(() => runWorkspaceSearch(input.value), SEARCH_TYPE_DEBOUNCE_MS);
+    });
+    input.addEventListener('keydown', (e) => {
+        if (e.key === 'Enter') {
+            e.preventDefault();
+            if (searchTypeTimer) clearTimeout(searchTypeTimer);
+            runWorkspaceSearch(input.value);
+        }
+    });
+}
+
+async function runWorkspaceSearch(query) {
+    const results = document.getElementById('search-results');
+    const status = document.getElementById('search-status');
+    if (!results || !workspaceFolder) return;
+    lastSearchQuery = query;
+    let res;
+    try {
+        res = await invoke('search_workspace', { query });
+    } catch (err) {
+        console.error('Workspace search failed:', err);
+        return;
+    }
+    if (query !== lastSearchQuery) return; // a newer search superseded this one
+    results.innerHTML = '';
+    const hits = res.hits || [];
+    if (status) {
+        const trimmed = query.trim();
+        if (trimmed.length < 2) {
+            status.hidden = true;
+        } else {
+            status.hidden = false;
+            status.textContent = hits.length === 0
+                ? 'No matches'
+                : `${hits.length} match${hits.length === 1 ? '' : 'es'}${res.truncated ? ' (truncated)' : ''}`;
+        }
+    }
+    const frag = document.createDocumentFragment();
+    for (const hit of hits) {
+        const row = document.createElement('button');
+        row.type = 'button';
+        row.className = 'search-hit';
+        row.setAttribute('role', 'listitem');
+        const loc = document.createElement('span');
+        loc.className = 'search-hit-loc';
+        loc.textContent = `${hit.name}:${hit.line}`;
+        const preview = document.createElement('span');
+        preview.className = 'search-hit-preview';
+        preview.textContent = hit.preview;
+        row.appendChild(loc);
+        row.appendChild(preview);
+        row.title = `${hit.name}:${hit.line}`;
+        row.addEventListener('click', async () => {
+            await openFile(hit.path);
+            openFindWithQuery(query.trim());
+        });
+        frag.appendChild(row);
+    }
+    results.appendChild(frag);
+}
+
+/** Cmd+Shift+F: reveal the sidebar's Search tab (workspace required). */
+function openWorkspaceSearch() {
+    if (!workspaceFolder) {
+        console.info('Workspace search needs an open folder (Cmd+Shift+O).');
+        return;
+    }
+    if (!tocVisible) {
+        toggleTOC();
+        // With no file open toggleTOC only flips the pref; buildTOC applies
+        // the sidebar's show class (same pattern as openFolder).
+        buildTOC();
+    }
+    setSidebarTab('search');
 }
 
 /** Cmd+O / File > Open: fuzzy switcher when a workspace is set, dialog otherwise. */
@@ -1279,8 +1413,11 @@ function setupEventListeners() {
     if (welcomeNewBtn) welcomeNewBtn.addEventListener('click', () => document.getElementById('new-btn').click());
     const filesTabBtn = document.getElementById('sidebar-tab-files');
     if (filesTabBtn) filesTabBtn.addEventListener('click', () => setSidebarTab('files'));
+    const searchTabBtn = document.getElementById('sidebar-tab-search');
+    if (searchTabBtn) searchTabBtn.addEventListener('click', () => setSidebarTab('search'));
     const outlineTabBtn = document.getElementById('sidebar-tab-outline');
     if (outlineTabBtn) outlineTabBtn.addEventListener('click', () => setSidebarTab('outline'));
+    initSearchPanel();
     const tocCloseBtn = document.getElementById('toc-close-btn');
     if (tocCloseBtn) tocCloseBtn.addEventListener('click', toggleTOC);
     const tocOpenBtn = document.getElementById('toc-open-btn');
@@ -1323,6 +1460,7 @@ function setupEventListeners() {
     // Keyboard shortcuts (table-driven; more-specific variants must precede less-specific)
     setupKeyboardShortcuts([
         { key: 'f', ctrl: true, alt: true, action: () => { if (currentKind !== 'pdf') openFindAndReplace(); } },
+        { key: 'f', ctrl: true, shift: true, action: () => openWorkspaceSearch() },
         { key: 'f', ctrl: true, action: () => { if (currentKind !== 'pdf') openFindOverlay(); } },
         { key: 'g', ctrl: true, shift: true, action: () => { if (currentKind !== 'pdf') findPrevious(); } },
         { key: 'g', ctrl: true, action: () => { if (currentKind !== 'pdf') findNext(); } },
@@ -1363,6 +1501,7 @@ function buildPaletteActions() {
         { id: 'new-window',  label: 'New Window',            hint: '⌘⇧N',    run: () => invoke('create_new_window_command') },
     ];
     if (workspaceFolder) {
+        actions.push({ id: 'ws-search',    label: 'Search in Workspace…', hint: '⌘⇧F', run: () => openWorkspaceSearch() });
         actions.push({ id: 'close-folder', label: 'Close Folder', run: () => closeFolder() });
     }
     if (hasFile) {
@@ -1377,6 +1516,8 @@ function buildPaletteActions() {
         actions.push({ id: 'edit',         label: 'Edit…',                           run: () => openEditor() });
     }
     actions.push({ id: 'print',         label: 'Print…',             hint: '⌘P',  run: () => invoke('print_current_window').catch(console.error) });
+    actions.push({ id: 'custom-css',    label: 'Edit Custom CSS…',                 run: () => invoke('open_custom_css').catch(console.error) });
+    actions.push({ id: 'reload-css',    label: 'Reload Custom CSS',                run: () => ensureCustomCss() });
     actions.push({ id: 'theme-light',   label: 'Theme: Light',                     run: () => applyTheme('light') });
     actions.push({ id: 'theme-dark',    label: 'Theme: Dark',                      run: () => applyTheme('dark') });
     actions.push({ id: 'theme-drac',    label: 'Theme: Drac',                      run: () => applyTheme('drac') });
@@ -1425,6 +1566,96 @@ function isAllowedExternalUrl(url) {
     }
 }
 
+// --- In-document anchors and relative links ---
+
+/** Prefix every document-supplied id with "md-" (idempotent). */
+function prefixPreviewIds(scope) {
+    for (const el of collectRenderTargets(scope, '[id]')) {
+        if (!el.id.startsWith('md-')) el.id = 'md-' + el.id;
+    }
+}
+
+/** GitHub-style heading slug: lowercase, punctuation stripped, spaces to
+ *  dashes. Unicode letters/digits are kept (GitHub keeps them too), so
+ *  non-ASCII headings get distinct, linkable slugs. */
+function slugifyHeading(text) {
+    return String(text).trim().toLowerCase()
+        .replace(/[^\p{L}\p{N}_\- ]+/gu, '')
+        .replace(/ /g, '-');
+}
+
+/**
+ * Assign "md-<slug>" ids to every heading, recomputed document-wide so the
+ * duplicate counters stay deterministic across patches. Heading slugs win
+ * over raw-HTML ids on headings, matching GitHub's anchor behavior.
+ */
+function assignHeadingSlugs(container) {
+    const used = new Map();
+    for (const h of container.querySelectorAll('h1, h2, h3, h4, h5, h6')) {
+        const base = slugifyHeading(h.textContent) || 'section';
+        const n = used.get(base) || 0;
+        used.set(base, n + 1);
+        h.id = 'md-' + (n === 0 ? base : `${base}-${n}`);
+    }
+}
+
+/** Scroll to a `#name` anchor: exact prefixed id first, heading slug second. */
+function navigateToAnchor(rawName) {
+    let name;
+    try { name = decodeURIComponent(rawName); } catch (_) { name = rawName; }
+    const target = document.getElementById('md-' + name)
+        || document.getElementById('md-' + slugifyHeading(name));
+    if (target) scrollContentToHeading(target);
+}
+
+/** Resolve a relative link against the current document and open it in-window.
+ *  Percent-decoding and fragment/query stripping happen in Rust (URL join). */
+async function openRelativeLink(href) {
+    if (!currentFilePath || currentKind === 'pdf') return;
+    try {
+        const resolved = await invoke('resolve_doc_link', { base: currentFilePath, href });
+        if (resolved) await openFile(resolved);
+    } catch (err) {
+        console.warn('Cannot open link:', href, err);
+    }
+}
+
+/**
+ * Swap relative <img> sources for data: URIs read through Rust (the webview
+ * origin can't reach the filesystem; CSP allows data: images). Scoped to
+ * inserted nodes, concurrent across images, keyed to the doc path so a
+ * mid-flight file switch can't paint stale images.
+ */
+async function hydrateLocalImages(scope) {
+    if (!currentFilePath || currentKind === 'pdf') return;
+    const docPath = currentFilePath;
+    const imgs = collectRenderTargets(scope, 'img').filter(img => {
+        const src = img.getAttribute('src') || '';
+        return src && !/^(data:|blob:|https?:)/i.test(src);
+    });
+    if (!imgs.length) return;
+    // Small worker pool: each load can move a ~27MB base64 payload over IPC,
+    // so an image-heavy document must not fire them all at once.
+    const MAX_CONCURRENT_IMAGE_LOADS = 4;
+    let next = 0;
+    const worker = async () => {
+        while (next < imgs.length) {
+            const img = imgs[next++];
+            const src = img.getAttribute('src');
+            try {
+                const asset = await invoke('load_doc_asset', { base: docPath, src });
+                if (currentFilePath !== docPath) return;
+                img.src = `data:${asset.mime};base64,${asset.data_b64}`;
+            } catch (err) {
+                img.title = String(err);
+            }
+        }
+    };
+    await Promise.all(
+        Array.from({ length: Math.min(MAX_CONCURRENT_IMAGE_LOADS, imgs.length) }, worker)
+    );
+}
+
 function attachLinkInterceptor() {
     const container = document.getElementById('markdown-content');
     if (!container || container.__linksBound) return;
@@ -1443,8 +1674,13 @@ function attachLinkInterceptor() {
             } catch (err) {
                 console.error('Failed to open external link:', err);
             }
+        } else if (href.startsWith('#')) {
+            navigateToAnchor(href.slice(1));
+        } else if (href && !/^[a-zA-Z][a-zA-Z0-9+.-]*:/.test(href)) {
+            // Relative path: resolve against the current document (Rust
+            // validates containment and grants). Other schemes stay blocked.
+            await openRelativeLink(href);
         }
-        // Block all other schemes
     });
     container.__linksBound = true;
 }
@@ -1519,6 +1755,7 @@ window.addEventListener('DOMContentLoaded', async () => {
         attachLinkInterceptor();
         attachRichCopyHandler();
         await loadPreferences();
+        await ensureCustomCss();
         await initWorkspace();
         // Initial button states
         currentWritable = await updateEditButtonState();
@@ -1534,6 +1771,7 @@ window.addEventListener('DOMContentLoaded', async () => {
             await appWindow.onFocusChanged(({ payload: focused }) => {
                 if (focused) {
                     fetchRecents();
+                    ensureCustomCss();
                     // Pick up externally created/removed files (no recursive
                     // watcher in v1; focus refresh matches the recents pattern).
                     if (workspaceFolder && workspaceTabActive === 'files') {
@@ -1972,6 +2210,18 @@ function openFindOverlay() {
 function openFindAndReplace() {
     // Preview is read-only, so Find-and-Replace collapses to plain Find here.
     openFindOverlay();
+}
+
+/** Open the find bar pre-filled (workspace search result click-through). */
+function openFindWithQuery(query) {
+    if (!query || currentKind === 'pdf') return;
+    ensureFindOverlay();
+    findOverlay.classList.add('show');
+    findVisible = true;
+    findInput.value = query;
+    runFindFromInput();
+    findInput.focus();
+    findInput.select();
 }
 
 function useSelectionForFind(selectionText) {

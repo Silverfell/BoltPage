@@ -8,7 +8,7 @@
   - File watchers with debounced notifications (250ms) to multiple subscriber windows.
   - LRU HTML cache (50 entries) keyed by (path, size, mtime); rendering is theme-independent (theme applied via CSS class).
   - Dynamic native menus with multi-window support and deduplication.
-  - Persistent preferences via tauri-plugin-store (theme, window size, font, word_wrap, line_numbers, toc_visible, toolbar_density, editor_inspector_visible, recent_files).
+  - Persistent preferences via tauri-plugin-store (theme, window size, font, word_wrap, line_numbers, toc_visible, toolbar_density, editor_inspector_visible, recent_files, editor_vim_mode).
   - Docked in-page find with Ctrl+F in both preview and editor windows (slot-based, between toolbar and content); match-case and whole-word toggles, all-matches highlighting, 80ms debounce.
   - Cross-platform native Edit menu via PredefinedMenuItem (Undo/Redo/Cut/Copy/Paste/Select All); Window menu gains Minimize.
   - Find navigation shortcuts: Cmd/Ctrl+G (next), Shift+Cmd/Ctrl+G (previous), Cmd/Ctrl+E (use selection for find), Cmd/Ctrl+Alt+F (find and replace, editor only).
@@ -20,7 +20,7 @@
   - Toolbar density (icon-label / icon / label) with live cross-window broadcast via EVENT_TOOLBAR_DENSITY_CHANGED.
   - HIG-native macOS chrome: semantic material tokens (--content-bg / --toolbar-bg / --sidebar-bg), 26pt grouped toolbar, 6px control radii, backdrop-filter retained only on .app-header.
   - Markdown format shortcuts in editor: Cmd+B bold, Cmd+I italic, Cmd+Shift+U insert-link, Cmd+Shift+K strikethrough (CodeMirror dispatches preserve undo). Cmd+K is reserved for the chord prefix.
-  - Editor core is CodeMirror 6 (vendored pinned bundle, ~543 KB): markdown syntax highlighting (classHighlighter + per-theme tok- CSS), heading-section folding via lang-markdown + foldGutter (view-only; save always writes full text), line numbers and word wrap behind compartments.
+  - Editor core is CodeMirror 6 (vendored pinned bundle, ~654 KB incl. @replit/codemirror-vim): markdown syntax highlighting (classHighlighter + per-theme tok- CSS), heading-section folding via lang-markdown + foldGutter (view-only; save always writes full text), line numbers and word wrap behind compartments.
   - Editor ergonomics: Enter continues list/quote markers and Backspace deletes empty ones (markdownKeymap, registered ahead of defaultKeymap); Tab/Shift+Tab indent list items; multi-cursor via Alt+click and Alt+drag column selection; active-line + selection-occurrence highlighting; scrollPastEnd with documentPadding-compensated percent scroll sync.
   - On-type live preview: editor broadcasts the unsaved buffer (150ms debounce, >2MB falls back to save path); preview patches only changed top-level blocks, KaTeX/Mermaid re-render scoped to inserted nodes, TOC rebuilt only when the heading outline changes.
   - Workspace folder: File > Open Folder… (Cmd+Shift+O) grants a directory; sidebar gains Files | Outline tabs with a lazy tree; Cmd+O / File > Open becomes a fuzzy quick switcher over the workspace (Browse… row reaches the dialog); one global workspace, persisted.
@@ -33,6 +33,14 @@
   - Typography presets in View popover: document font (Serif/Sans/Mono) and editor font (IBM Plex/JetBrains/SF Mono); broadcast across windows; persisted via document_font_family / editor_font_family prefs; HTML export honors the document pref.
   - Editor watches its own file: external changes auto-reload a clean buffer (caret/scroll preserved) and show a "File changed on disk" warning badge on a dirty buffer (autosave stays last-writer-wins). Preview refreshes once when its editor window closes.
   - EOL preservation: buffer text is LF-normalized (textarea semantics); the on-disk CRLF/LF mode is detected on load and re-applied on save.
+  - In-document navigation: anchor and footnote links scroll (preview ids prefixed md-, headings get GitHub-style slug ids); relative file links open in-window via resolve_doc_link (doc-dir containment auto-grants, escapes need an existing grant).
+  - Local images render as data URIs via load_doc_asset (image extension allowlist, 20MB cap); HTML export inlines them and the custom CSS.
+  - YAML front matter renders as a collapsed details block (pulldown metadata events captured out of the stream).
+  - Workspace full-text search: sidebar Search tab (Cmd+Shift+F), case-insensitive substring, 500-hit/2MB-per-file caps on top of the walk caps; result click opens the file and pre-fills the find bar.
+  - Editor Vim mode (vendored @replit/codemirror-vim 6.4.0) behind the editor_vim_mode pref; toggled from the editor command palette.
+  - Editor inspector adds reading time (220wpm) and Flesch-Kincaid grade for markdown/txt (hidden under 20 words or over 500K chars).
+  - Custom preview CSS: custom.css in the app config dir, injected last in the cascade, reloaded on window focus; palette actions Edit/Reload Custom CSS.
+  - Clipboard image paste (PNG/JPEG/GIF/WebP, magic-sniffed) in the markdown editor saves assets/img-<uuid8>.<ext> beside the doc and inserts the link with the caret in the alt slot.
 
 - Key decisions:
   - RwLock for read-heavy state (open_windows, html_cache); single Arc<Mutex<FileWatcherInner>> for file watchers.
@@ -73,7 +81,7 @@
 - Non-goals:
   - Cross-platform builds not supported.
   - macOS 10.13+ minimum required for builds.
-  - Workspace v1 excludes: full-text search across the folder, wiki-links, backlinks, recursive folder watching (tree refreshes on window focus).
+  - Workspace excludes: wiki-links, backlinks, recursive folder watching (tree refreshes on window focus).
 
 - Dependencies:
   - Rust toolchain (2021 edition).
@@ -82,10 +90,12 @@
   - macOS: Apple Developer credentials for release builds.
   - Windows: Optional WiX Toolset v3.x for MSI installers.
 
-- Areas:
+- Areas: startup, editor, preview, workspace, prefs, menu, render, find, ui, release.
 - Breaking-change context:
-- Current focus: Startup show-gate implemented and matrix-verified (decision 126, plan 127 as revised — see note 129); awaiting user confirmation of the original cold-start repro on their build.
-- Next steps: User manually verifies the Finder double-click repro and File > New Window (menu-click automation blocked by assistive access); then version bump, release, and cask update per the release decisions above.
+- Current focus: 3-tier feature batch (plan 135) implemented on dev — viewer completeness (front matter, anchors/links, local images), workspace search, Vim mode, writer polish; unreleased.
+- Next steps: Interactively verify what the headless smoke test cannot (clicking anchors/relative links, search tab flow, vim toggle, custom CSS visuals, image paste — boot+render path already smoke-tested headless, entry 146), then bump the version and release; still confirm on the installed 2.2.5 build that the cold-start double-click repro is gone and File > New Window behaves.
 - Open questions:
 - Do-not-touch:
 - Environment quirks:
+  - osascript has no assistive access on this machine: System Events window/menu automation fails (-1719/-25211). For visible-window checks, compile a CGWindowList probe (clang -framework CoreGraphics) — it needs no permissions and counts only visible windows.
+  - CI clippy runs a newer toolchain than local; run `cargo clippy --all-targets -- -D warnings` locally before any release (doc_lazy_continuation broke PR #33).

@@ -7,12 +7,20 @@ use crate::io;
 use crate::prefs;
 
 /// Extensions surfaced in the workspace tree and quick switcher; matches the
-/// render allowlist plus pdf (viewable).
-const WORKSPACE_EXTENSIONS: &[&str] = &["md", "markdown", "json", "yaml", "yml", "txt", "pdf"];
+/// render allowlist plus pdf (viewable). Also the allowlist for in-document
+/// relative link targets (io::resolve_doc_link).
+pub(crate) const WORKSPACE_EXTENSIONS: &[&str] =
+    &["md", "markdown", "json", "yaml", "yml", "txt", "pdf"];
 
 /// Quick-switcher index caps; truncation is reported, never silent.
 const MAX_WORKSPACE_FILES: usize = 2000;
 const MAX_WORKSPACE_DEPTH: usize = 8;
+
+/// Full-text search caps; truncation is reported, never silent.
+const MAX_SEARCH_RESULTS: usize = 500;
+const MAX_SEARCH_FILE_BYTES: u64 = 2 * 1024 * 1024;
+const SEARCH_PREVIEW_CHARS: usize = 200;
+const MIN_SEARCH_QUERY_CHARS: usize = 2;
 
 fn is_supported_file(path: &Path) -> bool {
     path.extension()
@@ -113,6 +121,64 @@ fn walk_workspace(
     }
 }
 
+#[derive(Debug, Serialize)]
+pub(crate) struct SearchHit {
+    pub path: String,
+    pub name: String,
+    pub line: u32,
+    pub preview: String,
+}
+
+#[derive(Debug, Serialize)]
+pub(crate) struct SearchResults {
+    pub hits: Vec<SearchHit>,
+    pub truncated: bool,
+}
+
+/// Case-insensitive substring search over an already-walked file list.
+/// PDFs are skipped (binary); oversized files are skipped rather than
+/// half-read.
+fn search_files(files: &[DirEntryInfo], query: &str) -> (Vec<SearchHit>, bool) {
+    let needle = query.to_lowercase();
+    let mut hits = Vec::new();
+    let mut truncated = false;
+    'outer: for f in files {
+        let path = Path::new(&f.path);
+        let is_pdf = path
+            .extension()
+            .and_then(|e| e.to_str())
+            .map(|e| e.eq_ignore_ascii_case("pdf"))
+            .unwrap_or(false);
+        if is_pdf {
+            continue;
+        }
+        let Ok(meta) = fs::metadata(path) else {
+            continue;
+        };
+        if meta.len() > MAX_SEARCH_FILE_BYTES {
+            continue;
+        }
+        let Ok(content) = fs::read_to_string(path) else {
+            continue;
+        };
+        for (i, line) in content.lines().enumerate() {
+            if line.to_lowercase().contains(&needle) {
+                if hits.len() >= MAX_SEARCH_RESULTS {
+                    truncated = true;
+                    break 'outer;
+                }
+                hits.push(SearchHit {
+                    path: f.path.clone(),
+                    name: f.name.clone(),
+                    line: (i + 1) as u32,
+                    preview: line.trim().chars().take(SEARCH_PREVIEW_CHARS).collect(),
+                });
+            }
+        }
+    }
+    (hits, truncated)
+}
+
 // --- Tauri commands ---
 
 #[tauri::command]
@@ -201,6 +267,50 @@ pub(crate) async fn list_workspace_files(app: AppHandle) -> Result<WorkspaceFile
     .map_err(|e| format!("Join error: {e}"))?
 }
 
+/// Case-insensitive full-text search across the workspace folder. Reuses the
+/// quick-switcher walk (same depth/count caps); a short or empty query
+/// returns nothing rather than everything.
+#[tauri::command]
+pub(crate) async fn search_workspace(
+    app: AppHandle,
+    query: String,
+) -> Result<SearchResults, String> {
+    let trimmed = query.trim().to_string();
+    let empty = SearchResults {
+        hits: Vec::new(),
+        truncated: false,
+    };
+    if trimmed.chars().count() < MIN_SEARCH_QUERY_CHARS {
+        return Ok(empty);
+    }
+    let Some(folder) = prefs::read_string_pref(&app, "workspace_folder") else {
+        return Ok(empty);
+    };
+    io::check_path_allowed(&app, &folder)?;
+    let root = PathBuf::from(folder);
+    let canonical_root =
+        fs::canonicalize(&root).map_err(|e| format!("Failed to resolve workspace: {e}"))?;
+    tauri::async_runtime::spawn_blocking(move || {
+        let mut files = Vec::new();
+        let mut walk_truncated = false;
+        walk_workspace(
+            &root,
+            &root,
+            &canonical_root,
+            0,
+            &mut files,
+            &mut walk_truncated,
+        );
+        let (hits, hit_truncated) = search_files(&files, &trimmed);
+        Ok(SearchResults {
+            hits,
+            truncated: walk_truncated || hit_truncated,
+        })
+    })
+    .await
+    .map_err(|e| format!("Join error: {e}"))?
+}
+
 // --- Tests ---
 
 #[cfg(test)]
@@ -250,6 +360,34 @@ mod tests {
             vec!["sub/nested.md".to_string(), "top.md".to_string()]
         );
         assert!(!truncated);
+
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn search_files_matches_case_insensitive_with_lines() {
+        let root = unique_temp_dir();
+        fs::write(root.join("a.md"), "Alpha\nthe NEEDLE here\nomega\n").unwrap();
+        fs::write(root.join("b.txt"), "needle on line one\n").unwrap();
+        fs::write(root.join("c.md"), "nothing\n").unwrap();
+
+        let files: Vec<DirEntryInfo> = ["a.md", "b.txt", "c.md"]
+            .iter()
+            .map(|n| DirEntryInfo {
+                name: n.to_string(),
+                path: root.join(n).to_string_lossy().to_string(),
+                is_dir: false,
+            })
+            .collect();
+
+        let (hits, truncated) = search_files(&files, "Needle");
+        assert!(!truncated);
+        assert_eq!(hits.len(), 2);
+        assert_eq!(hits[0].name, "a.md");
+        assert_eq!(hits[0].line, 2);
+        assert!(hits[0].preview.contains("NEEDLE"));
+        assert_eq!(hits[1].name, "b.txt");
+        assert_eq!(hits[1].line, 1);
 
         fs::remove_dir_all(root).unwrap();
     }

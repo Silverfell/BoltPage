@@ -29,6 +29,7 @@ pub(crate) struct AppPreferences {
     pub recent_files: Option<Vec<String>>,
     pub document_font_family: Option<String>,
     pub editor_font_family: Option<String>,
+    pub editor_vim_mode: Option<bool>,
 }
 
 impl Default for AppPreferences {
@@ -49,6 +50,7 @@ impl Default for AppPreferences {
             recent_files: None,
             document_font_family: None,
             editor_font_family: None,
+            editor_vim_mode: None,
         }
     }
 }
