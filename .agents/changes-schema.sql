@@ -1,59 +1,60 @@
-PRAGMA user_version = 2;
-
-CREATE TABLE areas (
-  name TEXT PRIMARY KEY CHECK (name <> '')
-) WITHOUT ROWID;
+BEGIN;
 
 CREATE TABLE entries (
   serial      INTEGER PRIMARY KEY AUTOINCREMENT,
   date        TEXT NOT NULL DEFAULT (date('now','localtime'))
               CHECK (date GLOB '[0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]'),
-  type        TEXT NOT NULL CHECK (type IN ('decision','plan','doc','scope','code','note')),
-  area        TEXT NOT NULL DEFAULT '-',
-  description TEXT NOT NULL CHECK (description <> ''),
-  refs        TEXT
+  type        TEXT NOT NULL CHECK (type IN ('decided','done','changed')),
+  description TEXT NOT NULL CHECK (description <> '')
 );
 
-CREATE TABLE links (
-  from_serial INTEGER NOT NULL,
-  to_serial   INTEGER NOT NULL,
-  kind        TEXT NOT NULL CHECK (kind IN ('supersedes','closes')),
-  PRIMARY KEY (from_serial, to_serial, kind),
-  CHECK (from_serial > to_serial)
-) WITHOUT ROWID;
-
-CREATE TABLE legacy_summaries (
-  month TEXT NOT NULL, area TEXT NOT NULL, description TEXT NOT NULL
+CREATE TABLE tasks (
+  id    INTEGER PRIMARY KEY AUTOINCREMENT,
+  date  TEXT NOT NULL DEFAULT (date('now','localtime'))
+        CHECK (date GLOB '[0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]'),
+  task  TEXT NOT NULL CHECK (task <> '')
 );
 
+-- The log is immutable. These five triggers are the whole of that guarantee.
+-- INSERT OR REPLACE would otherwise rewrite a row without firing the update
+-- trigger, and an explicit low serial would insert below the maximum, so the
+-- insert path is guarded on both counts.
 CREATE TRIGGER entries_no_update BEFORE UPDATE ON entries
   BEGIN SELECT RAISE(ABORT, 'log entries are immutable'); END;
 CREATE TRIGGER entries_no_delete BEFORE DELETE ON entries
   BEGIN SELECT RAISE(ABORT, 'log entries are never deleted'); END;
-CREATE TRIGGER links_no_update BEFORE UPDATE ON links
-  BEGIN SELECT RAISE(ABORT, 'links are immutable'); END;
-CREATE TRIGGER links_no_delete BEFORE DELETE ON links
-  BEGIN SELECT RAISE(ABORT, 'links are never deleted'); END;
-CREATE TRIGGER areas_no_update BEFORE UPDATE ON areas
-  BEGIN SELECT RAISE(ABORT, 'areas are never renamed; log entries reference them'); END;
-CREATE TRIGGER areas_no_delete BEFORE DELETE ON areas
-  BEGIN SELECT RAISE(ABORT, 'areas are never removed; log entries reference them'); END;
-
-CREATE TRIGGER entries_area_known BEFORE INSERT ON entries
-  WHEN NEW.area <> '-' AND NOT EXISTS (SELECT 1 FROM areas WHERE name = NEW.area)
-  BEGIN SELECT RAISE(ABORT, 'unknown area; add it to BRIEFING.md and the areas table first'); END;
+CREATE TRIGGER entries_no_replace BEFORE INSERT ON entries
+  WHEN NEW.serial IS NOT NULL AND EXISTS (SELECT 1 FROM entries WHERE serial = NEW.serial)
+  BEGIN SELECT RAISE(ABORT, 'serials are never reused'); END;
 CREATE TRIGGER entries_no_backfill AFTER INSERT ON entries
   WHEN NEW.serial < (SELECT max(serial) FROM entries)
-  BEGIN SELECT RAISE(ABORT, 'serials append only; never insert between or below existing entries'); END;
-CREATE TRIGGER links_serials_exist BEFORE INSERT ON links
-  WHEN NOT EXISTS (SELECT 1 FROM entries WHERE serial = NEW.from_serial)
-    OR NOT EXISTS (SELECT 1 FROM entries WHERE serial = NEW.to_serial)
-  BEGIN SELECT RAISE(ABORT, 'link names a serial that does not exist'); END;
+  BEGIN SELECT RAISE(ABORT, 'serials append only; never insert below an existing entry'); END;
+CREATE TRIGGER entries_well_formed BEFORE INSERT ON entries
+  WHEN trim(NEW.description) = '' OR length(NEW.description) > 600
+    OR instr(NEW.description, char(10)) > 0 OR instr(NEW.description, char(13)) > 0
+    OR date(NEW.date) IS NOT NEW.date
+  BEGIN SELECT RAISE(ABORT, 'an entry is one non-blank line of at most 600 characters with a real date'); END;
+
+-- Tasks are mutable and deletable; only their shape is enforced, on both paths.
+CREATE TRIGGER tasks_well_formed_insert BEFORE INSERT ON tasks
+  WHEN trim(NEW.task) = '' OR length(NEW.task) > 600
+    OR instr(NEW.task, char(10)) > 0 OR instr(NEW.task, char(13)) > 0
+    OR date(NEW.date) IS NOT NEW.date
+  BEGIN SELECT RAISE(ABORT, 'a task is one non-blank line of at most 600 characters with a real date'); END;
+CREATE TRIGGER tasks_well_formed_update BEFORE UPDATE ON tasks
+  WHEN trim(NEW.task) = '' OR length(NEW.task) > 600
+    OR instr(NEW.task, char(10)) > 0 OR instr(NEW.task, char(13)) > 0
+    OR date(NEW.date) IS NOT NEW.date
+  BEGIN SELECT RAISE(ABORT, 'a task is one non-blank line of at most 600 characters with a real date'); END;
 
 CREATE VIEW log_lines AS
-  SELECT e.serial,
-    printf('%s %03d [%s] (%s) %s', e.date, e.serial, e.type, e.area, e.description)
-    || COALESCE('  ' || (SELECT group_concat(l.kind || '=' || printf('%03d', l.to_serial), ' ')
-                         FROM links l WHERE l.from_serial = e.serial), '')
-    || COALESCE('  refs=' || e.refs, '') AS line
-  FROM entries e;
+  SELECT serial, printf('%s %03d [%s] %s', date, serial, type, description) AS line
+  FROM entries;
+
+CREATE VIEW task_lines AS
+  SELECT id, printf('%s #%02d %s', date, id, task) AS line
+  FROM tasks;
+
+PRAGMA user_version = 8;
+
+COMMIT;
