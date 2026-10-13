@@ -1,6 +1,7 @@
 use pulldown_cmark::{html, CowStr, Event, Options, Parser, Tag, TagEnd};
 use serde_json as serde_json_crate;
 use serde_yaml as serde_yaml_crate;
+use std::collections::{HashMap, HashSet};
 use std::sync::OnceLock;
 use syntect::highlighting::ThemeSet;
 use syntect::html::{css_for_theme_with_class_style, ClassStyle, ClassedHTMLGenerator};
@@ -10,6 +11,9 @@ static SYNTAX_SET: OnceLock<SyntaxSet> = OnceLock::new();
 static THEME_SET: OnceLock<ThemeSet> = OnceLock::new();
 static SANITIZER: OnceLock<ammonia::Builder<'static>> = OnceLock::new();
 static CALLOUT_RE: OnceLock<regex::Regex> = OnceLock::new();
+static TAG_RE: OnceLock<regex::Regex> = OnceLock::new();
+static ATTR_RE: OnceLock<regex::Regex> = OnceLock::new();
+static SLUG_STRIP_RE: OnceLock<regex::Regex> = OnceLock::new();
 
 // Vendored .sublime-syntax packs for languages absent from syntect's
 // default-fancy bundle. Embedded at compile-time via include_str! so the
@@ -66,7 +70,7 @@ fn sanitizer() -> &'static ammonia::Builder<'static> {
         let mut b = ammonia::Builder::default();
         b.add_generic_attributes(&["class"]);
         // `id` is needed for in-document anchors (footnote refs/definitions,
-        // heading slugs). The frontend prefixes every preview id with "md-"
+        // raw-HTML ids). The frontend prefixes every preview id with "md-"
         // after insertion, so a document id can never clobber an app element.
         b.add_generic_attributes(&["id"]);
         // Task-list checkboxes emitted by pulldown-cmark's ENABLE_TASKLISTS
@@ -136,12 +140,211 @@ fn rewrite_callouts(input: &str) -> String {
         .into_owned()
 }
 
-pub fn parse_markdown(content: &str) -> String {
-    parse_markdown_with_theme(content, "light")
+// The three regexes below read ammonia's serialized output, where every
+// attribute is written `name="value"` and `<` in text is always escaped.
+
+/// One tag: closing slash, name, attribute run.
+fn tag_regex() -> &'static regex::Regex {
+    TAG_RE.get_or_init(|| {
+        regex::Regex::new(r#"<(/?)([a-zA-Z][a-zA-Z0-9]*)((?:[^>"]|"[^"]*")*)>"#)
+            .expect("tag regex must compile")
+    })
 }
 
-/// Theme is applied via CSS class on the frontend; param reserved for future per-render theming.
-pub fn parse_markdown_with_theme(content: &str, _theme_name: &str) -> String {
+/// One attribute inside a tag's attribute run: name, value.
+fn attr_regex() -> &'static regex::Regex {
+    ATTR_RE.get_or_init(|| {
+        regex::Regex::new(r#"\s([^\s="]+)="([^"]*)""#).expect("attr regex must compile")
+    })
+}
+
+fn slug_strip_regex() -> &'static regex::Regex {
+    SLUG_STRIP_RE
+        .get_or_init(|| regex::Regex::new(r"[^\p{L}\p{N}_\- ]+").expect("slug regex must compile"))
+}
+
+/// GitHub-style heading slug: lowercase, punctuation stripped, spaces to
+/// dashes. Unicode letters/digits are kept (GitHub keeps them too), so
+/// non-ASCII headings get distinct, linkable slugs.
+fn slugify(text: &str) -> String {
+    // The whitespace set of JavaScript's `trim`, where this rule came from.
+    let trimmed =
+        text.trim_matches(|c: char| (c.is_whitespace() && c != '\u{85}') || c == '\u{feff}');
+    slug_strip_regex()
+        .replace_all(&trimmed.to_lowercase(), "")
+        .replace(' ', "-")
+}
+
+/// Undo the escapes the HTML serializer writes in text and attribute values.
+fn unescape_html(input: &str) -> String {
+    input
+        .replace("&lt;", "<")
+        .replace("&gt;", ">")
+        .replace("&quot;", "\"")
+        .replace("&nbsp;", "\u{a0}")
+        .replace("&amp;", "&")
+}
+
+/// Percent-decode a URL fragment; `None` for a malformed escape or bytes
+/// that are not UTF-8.
+fn percent_decode(input: &str) -> Option<String> {
+    let bytes = input.as_bytes();
+    let mut out = Vec::with_capacity(bytes.len());
+    let mut i = 0;
+    while i < bytes.len() {
+        if bytes[i] == b'%' {
+            let hex = input.get(i + 1..i + 3)?;
+            if !hex.bytes().all(|b| b.is_ascii_hexdigit()) {
+                return None;
+            }
+            out.push(u8::from_str_radix(hex, 16).ok()?);
+            i += 3;
+        } else {
+            out.push(bytes[i]);
+            i += 1;
+        }
+    }
+    String::from_utf8(out).ok()
+}
+
+fn is_heading(tag_name: &str) -> bool {
+    matches!(tag_name, "h1" | "h2" | "h3" | "h4" | "h5" | "h6")
+}
+
+/// Give every heading in sanitized `html` its slug as id, with document-wide
+/// duplicate counters (`intro`, `intro-1`, ...). The slug wins over a
+/// raw-HTML id on a heading, matching GitHub's anchor behavior. An
+/// `href="#name"` whose name is not an id in the document but whose slug is
+/// gets rewritten to the slug.
+///
+/// Runs after the sanitizer: the slugs hold only letters, digits, `_` and
+/// `-`, so they need no escaping and nothing downstream rewrites them.
+fn assign_heading_ids(html: &str) -> String {
+    let tag_re = tag_regex();
+    let attr_re = attr_regex();
+
+    // Heading text in start-tag order, and the ids of everything else.
+    let mut heading_text: Vec<String> = Vec::new();
+    let mut open: Vec<usize> = Vec::new();
+    let mut ids: HashSet<String> = HashSet::new();
+    let mut last = 0;
+    for caps in tag_re.captures_iter(html) {
+        let whole = caps.get(0).expect("group 0 always matches");
+        if !open.is_empty() {
+            let text = unescape_html(&html[last..whole.start()]);
+            for &i in &open {
+                heading_text[i].push_str(&text);
+            }
+        }
+        last = whole.end();
+        let closing = !caps[1].is_empty();
+        if is_heading(&caps[2]) {
+            if closing {
+                open.pop();
+            } else {
+                open.push(heading_text.len());
+                heading_text.push(String::new());
+            }
+        } else if !closing {
+            ids.extend(
+                attr_re
+                    .captures_iter(&caps[3])
+                    .filter(|a| &a[1] == "id")
+                    .map(|a| unescape_html(&a[2])),
+            );
+        }
+    }
+
+    let mut used: HashMap<String, usize> = HashMap::new();
+    let slugs: Vec<String> = heading_text
+        .iter()
+        .map(|text| {
+            let mut base = slugify(text);
+            if base.is_empty() {
+                base.push_str("section");
+            }
+            let n = used.entry(base.clone()).or_insert(0);
+            let slug = if *n == 0 { base } else { format!("{base}-{n}") };
+            *n += 1;
+            slug
+        })
+        .collect();
+    ids.extend(slugs.iter().cloned());
+
+    let mut next_heading = 0;
+    tag_re
+        .replace_all(html, |caps: &regex::Captures| {
+            let (name, attrs) = (&caps[2], &caps[3]);
+            if !caps[1].is_empty() {
+                return caps[0].to_string();
+            }
+            if is_heading(name) {
+                let kept: String = attr_re
+                    .captures_iter(attrs)
+                    .filter(|a| &a[1] != "id")
+                    .map(|a| a[0].to_string())
+                    .collect();
+                let slug = &slugs[next_heading];
+                next_heading += 1;
+                return format!(r#"<{name}{kept} id="{slug}">"#);
+            }
+            if name == "a" {
+                let attrs = attr_re.replace_all(attrs, |a: &regex::Captures| {
+                    if let Some(raw) = a[2].strip_prefix('#').filter(|_| &a[1] == "href") {
+                        let raw = unescape_html(raw);
+                        let target = percent_decode(&raw).unwrap_or(raw);
+                        let slug = slugify(&target);
+                        if !ids.contains(&target) && ids.contains(&slug) {
+                            return format!(r##" href="#{slug}""##);
+                        }
+                    }
+                    a[0].to_string()
+                });
+                return format!("<{name}{attrs}>");
+            }
+            caps[0].to_string()
+        })
+        .into_owned()
+}
+
+/// What a document is rendered as.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Kind {
+    Markdown,
+    Json,
+    Yaml,
+    Txt,
+}
+
+impl Kind {
+    /// Kind for a file extension (no dot, any case); `None` when the
+    /// extension is not one this crate renders.
+    pub fn from_extension(ext: &str) -> Option<Kind> {
+        match ext.to_ascii_lowercase().as_str() {
+            "md" | "markdown" => Some(Kind::Markdown),
+            "json" => Some(Kind::Json),
+            "yaml" | "yml" => Some(Kind::Yaml),
+            "txt" => Some(Kind::Txt),
+            _ => None,
+        }
+    }
+}
+
+/// Render `source` to preview HTML. Theming is applied by CSS on the
+/// frontend, so the output does not depend on the theme.
+pub fn render(kind: Kind, source: &str) -> Result<String, String> {
+    match kind {
+        Kind::Markdown => Ok(render_markdown(source)),
+        Kind::Json => render_json(source),
+        Kind::Yaml => render_yaml(source),
+        Kind::Txt => Ok(format!(
+            r#"<div class="markdown-body"><pre class="plain-text">{}</pre></div>"#,
+            escape_html(source)
+        )),
+    }
+}
+
+fn render_markdown(content: &str) -> String {
     let mut options = Options::empty();
     options.insert(Options::ENABLE_TABLES);
     options.insert(Options::ENABLE_FOOTNOTES);
@@ -245,7 +448,7 @@ pub fn parse_markdown_with_theme(content: &str, _theme_name: &str) -> String {
     html::push_html(&mut html_output, events.into_iter());
 
     let with_callouts = rewrite_callouts(&html_output);
-    sanitizer().clean(&with_callouts).to_string()
+    assign_heading_ids(&sanitizer().clean(&with_callouts).to_string())
 }
 
 pub fn get_syntax_theme_css(theme_name: &str) -> Option<String> {
@@ -268,8 +471,7 @@ pub fn get_syntax_theme_css(theme_name: &str) -> Option<String> {
     Some(css)
 }
 
-/// Theme is applied via CSS class on the frontend; param reserved for future per-render theming.
-pub fn parse_json_with_theme(content: &str, _theme_name: &str) -> Result<String, String> {
+fn render_json(content: &str) -> Result<String, String> {
     let json_value: serde_json_crate::Value =
         serde_json_crate::from_str(content).map_err(|e| format!("Invalid JSON: {e}"))?;
     let pretty = serde_json_crate::to_string_pretty(&json_value)
@@ -277,11 +479,9 @@ pub fn parse_json_with_theme(content: &str, _theme_name: &str) -> Result<String,
     highlight_code(&pretty, &["JSON", "json"], "json")
 }
 
-/// Theme is applied via CSS class on the frontend; param reserved for future per-render theming.
-///
 /// Note: serde_yaml 0.9 uses `IndexMap` for `Mapping`, so key insertion order
 /// from the source document is preserved through the parse/serialize round-trip.
-pub fn parse_yaml_with_theme(content: &str, _theme_name: &str) -> Result<String, String> {
+fn render_yaml(content: &str) -> Result<String, String> {
     let yaml_value: serde_yaml_crate::Value =
         serde_yaml_crate::from_str(content).map_err(|e| format!("Invalid YAML: {e}"))?;
     let pretty = serde_yaml_crate::to_string(&yaml_value)
@@ -293,9 +493,53 @@ pub fn parse_yaml_with_theme(content: &str, _theme_name: &str) -> Result<String,
 mod tests {
     use super::*;
 
+    fn markdown(source: &str) -> String {
+        render(Kind::Markdown, source).unwrap()
+    }
+
+    #[test]
+    fn kind_from_extension() {
+        assert_eq!(Kind::from_extension("md"), Some(Kind::Markdown));
+        assert_eq!(Kind::from_extension("markdown"), Some(Kind::Markdown));
+        assert_eq!(Kind::from_extension("JSON"), Some(Kind::Json));
+        assert_eq!(Kind::from_extension("yaml"), Some(Kind::Yaml));
+        assert_eq!(Kind::from_extension("yml"), Some(Kind::Yaml));
+        assert_eq!(Kind::from_extension("txt"), Some(Kind::Txt));
+        assert_eq!(Kind::from_extension("pdf"), None);
+        assert_eq!(Kind::from_extension(""), None);
+    }
+
+    #[test]
+    fn txt_is_escaped_inside_plain_text_pre() {
+        let out = render(Kind::Txt, "<b>a & 'b'</b>\n# not a heading\n").unwrap();
+        assert_eq!(
+            out,
+            "<div class=\"markdown-body\"><pre class=\"plain-text\">\
+             &lt;b&gt;a &amp; &#039;b&#039;&lt;/b&gt;\n# not a heading\n</pre></div>"
+        );
+    }
+
+    #[test]
+    fn json_is_pretty_printed_and_highlighted() {
+        let out = render(Kind::Json, r#"{"a":1}"#).unwrap();
+        assert!(out.contains(r#"class="language-json""#), "got: {out}");
+        assert!(render(Kind::Json, "{")
+            .unwrap_err()
+            .starts_with("Invalid JSON"));
+    }
+
+    #[test]
+    fn yaml_is_highlighted() {
+        let out = render(Kind::Yaml, "a: 1\n").unwrap();
+        assert!(out.contains(r#"class="language-yaml""#), "got: {out}");
+        assert!(render(Kind::Yaml, "a: [")
+            .unwrap_err()
+            .starts_with("Invalid YAML"));
+    }
+
     #[test]
     fn inline_math_emits_math_inline_span() {
-        let out = parse_markdown("A $\\alpha + \\beta$ B");
+        let out = markdown("A $\\alpha + \\beta$ B");
         assert!(
             out.contains(r#"<span class="math math-inline">"#),
             "got: {out}"
@@ -305,7 +549,7 @@ mod tests {
 
     #[test]
     fn display_math_emits_math_display_div() {
-        let out = parse_markdown("$$\\int_0^1 x\\,dx$$");
+        let out = markdown("$$\\int_0^1 x\\,dx$$");
         assert!(
             out.contains(r#"<div class="math math-display">"#),
             "got: {out}"
@@ -315,14 +559,14 @@ mod tests {
 
     #[test]
     fn mermaid_fence_emits_pre_class() {
-        let out = parse_markdown("```mermaid\ngraph TD;A-->B\n```\n");
+        let out = markdown("```mermaid\ngraph TD;A-->B\n```\n");
         assert!(out.contains(r#"<pre class="mermaid">"#), "got: {out}");
         assert!(out.contains("graph TD;A--&gt;B"), "got: {out}");
     }
 
     #[test]
     fn callout_note_rewrites_blockquote() {
-        let out = parse_markdown("> [!NOTE]\n> Hello\n");
+        let out = markdown("> [!NOTE]\n> Hello\n");
         assert!(
             out.contains(r#"<div class="callout callout-note">"#),
             "got: {out}"
@@ -338,7 +582,7 @@ mod tests {
     fn callout_all_kinds_render() {
         for kind in ["NOTE", "TIP", "IMPORTANT", "WARNING", "CAUTION"] {
             let input = format!("> [!{kind}]\n> body\n");
-            let out = parse_markdown(&input);
+            let out = markdown(&input);
             let expected = format!(
                 r#"<div class="callout callout-{}">"#,
                 kind.to_ascii_lowercase()
@@ -349,7 +593,7 @@ mod tests {
 
     #[test]
     fn front_matter_renders_as_details_block() {
-        let out = parse_markdown("---\ntitle: Test Doc\ntags: [a, b]\n---\n\n# Hello\n");
+        let out = markdown("---\ntitle: Test Doc\ntags: [a, b]\n---\n\n# Hello\n");
         assert!(
             out.contains(r#"<details class="front-matter">"#),
             "got: {out}"
@@ -362,13 +606,13 @@ mod tests {
 
     #[test]
     fn no_front_matter_no_details_block() {
-        let out = parse_markdown("# Hi\n\nBody text.\n");
+        let out = markdown("# Hi\n\nBody text.\n");
         assert!(!out.contains("front-matter"), "got: {out}");
     }
 
     #[test]
     fn mid_document_thematic_break_is_not_front_matter() {
-        let out = parse_markdown("para\n\n---\n\nafter\n");
+        let out = markdown("para\n\n---\n\nafter\n");
         assert!(out.contains("<hr"), "got: {out}");
         assert!(!out.contains("front-matter"), "got: {out}");
     }
@@ -377,7 +621,7 @@ mod tests {
     fn unclosed_leading_dashes_stay_a_thematic_break() {
         // A doc that opens with `---` but never closes it must not have its
         // body swallowed as metadata (verified against pulldown-cmark 0.12).
-        let out = parse_markdown("---\n\nHello world\n");
+        let out = markdown("---\n\nHello world\n");
         assert!(out.contains("<hr"), "got: {out}");
         assert!(out.contains("Hello world"), "got: {out}");
         assert!(!out.contains("front-matter"), "got: {out}");
@@ -388,7 +632,7 @@ mod tests {
         // The preview's data-URI hydration and the export embedder both read
         // the relative src back out of the sanitized HTML; if ammonia's URL
         // policy ever strips relative URLs, local images silently die.
-        let out = parse_markdown("![diagram](assets/my%20chart.png)\n");
+        let out = markdown("![diagram](assets/my%20chart.png)\n");
         assert!(
             out.contains(r#"src="assets/my%20chart.png""#),
             "relative img src stripped: {out}"
@@ -399,7 +643,7 @@ mod tests {
     #[test]
     fn relative_link_href_survives_sanitization() {
         // Same contract for relative file links (resolve_doc_link flow).
-        let out = parse_markdown("[guide](docs/guide.md)\n");
+        let out = markdown("[guide](docs/guide.md)\n");
         assert!(
             out.contains(r#"href="docs/guide.md""#),
             "relative href stripped: {out}"
@@ -408,7 +652,7 @@ mod tests {
 
     #[test]
     fn footnote_ids_survive_sanitization() {
-        let out = parse_markdown("ref[^1]\n\n[^1]: note\n");
+        let out = markdown("ref[^1]\n\n[^1]: note\n");
         // Both the reference link (href="#...") and the definition's id must
         // survive, or in-document footnote navigation has nothing to target.
         assert!(out.contains("href=\"#"), "footnote href stripped: {out}");
@@ -416,8 +660,67 @@ mod tests {
     }
 
     #[test]
+    fn unicode_heading_gets_unicode_slug() {
+        let out = markdown("# Über uns: Straße 1.2\n\n[up](<#Über uns: Straße 1.2>)\n");
+        assert!(
+            out.contains(r#"<h1 id="über-uns-straße-12">"#),
+            "got: {out}"
+        );
+        assert!(
+            out.contains(r##"href="#über-uns-straße-12""##),
+            "got: {out}"
+        );
+    }
+
+    #[test]
+    fn duplicate_headings_count_document_wide() {
+        let out = markdown("# Intro\n\n## Intro\n\n> ### intro\n\n# Intro 1\n");
+        assert!(out.contains(r#"<h1 id="intro">"#), "got: {out}");
+        assert!(out.contains(r#"<h2 id="intro-1">"#), "got: {out}");
+        assert!(out.contains(r#"<h3 id="intro-2">"#), "got: {out}");
+        // No collision check against an earlier counter id: same as before.
+        assert!(out.contains(r#"<h1 id="intro-1">"#), "got: {out}");
+    }
+
+    #[test]
+    fn punctuation_only_heading_is_section() {
+        let out = markdown("# !!!\n\n## ???\n");
+        assert!(out.contains(r#"<h1 id="section">"#), "got: {out}");
+        assert!(out.contains(r#"<h2 id="section-1">"#), "got: {out}");
+    }
+
+    #[test]
+    fn heading_slug_wins_over_raw_html_id() {
+        let out = markdown("<h2 id=\"custom\" class=\"x\">Raw <em>Title</em> &amp; more</h2>\n");
+        assert!(
+            out.contains(r#"<h2 class="x" id="raw-title--more">"#),
+            "got: {out}"
+        );
+        assert!(!out.contains("custom"), "got: {out}");
+    }
+
+    #[test]
+    fn fragment_links_are_rewritten_to_heading_slugs() {
+        let out = markdown(
+            "# Hello, World!\n\n# Exact\n\n<span id=\"Exact\">x</span>\n\n\
+             [a](#Hello,%20World!) [b](#hello-world) [c](#Nope) [d](#Exact) \
+             [e](#Hello%ZZ) [f](other.md#Hello)\n",
+        );
+        assert!(out.contains(r#"<h1 id="hello-world">"#), "got: {out}");
+        assert!(out.contains(r##"href="#hello-world" rel="##), "got: {out}");
+        assert!(!out.contains("#Hello,"), "a not rewritten: {out}");
+        // No heading or id to point at: left alone.
+        assert!(out.contains(r##"href="#Nope""##), "got: {out}");
+        // An exact id match beats the heading whose slug also matches.
+        assert!(out.contains(r##"href="#Exact""##), "got: {out}");
+        // A malformed escape is taken literally; other documents are not ours.
+        assert!(out.contains(r##"href="#Hello%ZZ""##), "got: {out}");
+        assert!(out.contains(r#"href="other.md#Hello""#), "got: {out}");
+    }
+
+    #[test]
     fn syntect_classes_survive_sanitization() {
-        let out = parse_markdown("```rust\nfn main() { println!(\"hi\"); }\n```\n");
+        let out = markdown("```rust\nfn main() { println!(\"hi\"); }\n```\n");
         // syntect emits spans with `class="source rust …"` (ClassStyle::Spaced).
         // The old ammonia::clean stripped them; the Builder keeps class now.
         assert!(
@@ -432,19 +735,19 @@ mod tests {
 
     #[test]
     fn preserves_core_features() {
-        let out = parse_markdown("| a | b |\n|---|---|\n| 1 | 2 |\n");
+        let out = markdown("| a | b |\n|---|---|\n| 1 | 2 |\n");
         assert!(out.contains("<table>"), "table missing: {out}");
 
-        let out = parse_markdown("- [x] done\n- [ ] todo\n");
+        let out = markdown("- [x] done\n- [ ] todo\n");
         assert!(
             out.contains(r#"type="checkbox""#),
             "task list missing: {out}"
         );
 
-        let out = parse_markdown("~~gone~~\n");
+        let out = markdown("~~gone~~\n");
         assert!(out.contains("<del>"), "strikethrough missing: {out}");
 
-        let out = parse_markdown("ref[^1]\n\n[^1]: note\n");
+        let out = markdown("ref[^1]\n\n[^1]: note\n");
         assert!(out.contains("footnote"), "footnote missing: {out}");
     }
 

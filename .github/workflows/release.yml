@@ -7,7 +7,27 @@ on:
   workflow_dispatch:
 
 jobs:
+  check-tag:
+    runs-on: ubuntu-latest
+
+    steps:
+    - name: Checkout repository
+      uses: actions/checkout@v4
+
+    # The Release is named from the pushed tag but the DMGs from package.json,
+    # so a tag that is not v + version would publish mismatched assets. Runs
+    # without a tag (workflow_dispatch on a branch) skip the check.
+    - name: Check tag matches package.json version
+      if: startsWith(github.ref, 'refs/tags/')
+      run: |
+        TAG=$(sh boltpage/scripts/release-identity.sh TAG)
+        if [ "$GITHUB_REF_NAME" != "$TAG" ]; then
+          echo "::error::Pushed tag $GITHUB_REF_NAME does not match package.json version (expected $TAG)"
+          exit 1
+        fi
+
   build-macos:
+    needs: check-tag
     runs-on: macos-14
 
     steps:
@@ -120,17 +140,19 @@ jobs:
 
     # Tauri names DMGs BoltPage_<ver>_<rust-arch>.dmg; the Homebrew cask and
     # PUBLISHING.md expect BoltPage-<ver>-arm64.dmg / BoltPage-<ver>-x64.dmg.
-    # Rename here so released assets match the cask URLs.
+    # Rename here to the names release-identity.sh gives, so released assets
+    # match the cask URLs.
     - name: Rename DMGs to distribution names
       run: |
-        VERSION=$(node -p "require('./boltpage/package.json').version")
+        ARM_DMG=$(sh boltpage/scripts/release-identity.sh ARM_DMG)
+        X64_DMG=$(sh boltpage/scripts/release-identity.sh X64_DMG)
         cd boltpage/target/aarch64-apple-darwin/release/bundle/dmg
         for dmg in BoltPage_*.dmg; do
-          mv "$dmg" "BoltPage-${VERSION}-arm64.dmg"
+          mv "$dmg" "$ARM_DMG"
         done
         cd ../../../../x86_64-apple-darwin/release/bundle/dmg
         for dmg in BoltPage_*.dmg; do
-          mv "$dmg" "BoltPage-${VERSION}-x64.dmg"
+          mv "$dmg" "$X64_DMG"
         done
 
     - name: Upload macOS ARM64 artifacts
@@ -153,6 +175,7 @@ jobs:
         security delete-keychain build.keychain
 
   build-windows:
+    needs: check-tag
     runs-on: windows-latest
     
     steps:

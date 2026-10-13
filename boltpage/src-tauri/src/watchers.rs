@@ -76,7 +76,9 @@ pub(crate) async fn start_file_watcher(
     file_path: String,
     window_label: String,
 ) -> Result<(), String> {
-    io::check_path_allowed(&app, &file_path)?;
+    app.state::<crate::AppState>()
+        .grants
+        .authorize(&file_path)?;
     let watchers = app.state::<FileWatchers>();
     let mut inner = watchers.inner.lock().await;
     unsubscribe_window_from_all(&mut inner, &window_label);

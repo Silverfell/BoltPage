@@ -1,28 +1,18 @@
 import {
-    SCROLL_SYNC_DEBOUNCE_MS,
-    PROGRAMMATIC_SCROLL_TIMEOUT_MS,
-    MIN_SCROLL_DELTA_LINES,
-    MIN_SCROLL_DELTA_PERCENT,
     LINE_HEIGHT_FALLBACK_MULTIPLIER,
-    DEFAULT_FONT_SIZE,
     MIN_FONT_SIZE,
     MAX_FONT_SIZE,
-    FIND_TYPE_DEBOUNCE_MS,
     parsePx,
     escapeHtml,
     directoryFromPath,
+    kindFromPath,
     kindLabel,
-    clampFontSize,
-    createFindOverlay,
-    updateFindCount,
     nextFindIndex,
     buildFindRegex,
     collectFindMatches,
     applyThemeToDocument,
     applyFontFamily,
     resolveFontStack,
-    DEFAULT_DOCUMENT_FONT_ID,
-    DEFAULT_EDITOR_FONT_ID,
     setupKeyboardShortcuts,
     setupChordShortcuts,
     createCommandPalette,
@@ -30,13 +20,8 @@ import {
 } from './shared.js';
 import {
     EVENT_FILE_CHANGED,
-    EVENT_THEME_CHANGED,
-    EVENT_FONT_SIZE_CHANGED,
-    EVENT_FONT_FAMILY_CHANGED,
-    EVENT_TOOLBAR_DENSITY_CHANGED,
     EVENT_EDITOR_WINDOW_CLOSED,
     EVENT_EDITOR_BUFFER_CHANGED,
-    EVENT_SCROLL_SYNC,
     EVENT_MENU_OPEN,
     EVENT_MENU_OPEN_FOLDER,
     EVENT_MENU_CLOSE,
@@ -51,7 +36,13 @@ import {
     KIND_JSON,
     KIND_YAML,
     KIND_TXT,
+    KIND_PDF,
 } from './constants.js';
+import { createPreviewPatcher, collectRenderTargets } from './preview-patcher.js';
+import { createScrollSync } from './scroll-sync.js';
+import { createAppearance } from './appearance.js';
+import { createFindBar } from './find-bar.js';
+import { createCommands } from './commands.js';
 
 const { invoke } = window.__TAURI__.core;
 const { getCurrentWindow } = window.__TAURI__.window;
@@ -61,107 +52,49 @@ const appWindow = getCurrentWindow();
 
 let currentFilePath = null;
 // Last path registered with open_tracked_file. Window-created opens are
-// registered by Rust, so this is seeded with the label-derived path at boot.
+// registered by Rust, so this is seeded with the initial path at boot.
 let lastTrackedPath = null;
-let currentTheme = 'drac';
-let currentKind = KIND_MARKDOWN; // KIND_JSON | KIND_MARKDOWN | KIND_TXT | 'pdf'
+let currentKind = KIND_MARKDOWN; // KIND_JSON | KIND_MARKDOWN | KIND_TXT | KIND_PDF
 let currentPdfUrl = null;
 let currentWritable = null;
-let isProgrammaticScroll = false;
-let scrollDebounce = null;
 let contentEl = null; // scrolling container (.content-wrapper)
-let findOverlay = null;
-let findInput = null;
-let findVisible = false;
-let currentFontSize = 18;
 let updateStatusTimeout = null;
-let currentToolbarDensity = 'icon-label';
-let currentDocFontId = null;
-let currentEdFontId = null;
 let commandPalette = null;
 let katexReady = null;
 let mermaidReady = null;
 
-// Track last synced position to filter micro-scrolls
-let lastSyncedLine = null;
-let lastSyncedPercent = null;
 // Cache offset calculations to avoid repeated DOM walking
 let cachedPreMetrics = null;
 
-async function loadPreferences() {
-    try {
-        const prefs = await invoke('get_preferences');
-        applyFontSize(prefs.font_size);
-        applyTheme(prefs.theme);
-        tocVisible = prefs.toc_visible !== false;
-        applyToolbarDensity(normalizeDensity(prefs.toolbar_density), { save: false, broadcast: false });
-        currentDocFontId = prefs.document_font_family || DEFAULT_DOCUMENT_FONT_ID;
-        currentEdFontId = prefs.editor_font_family || DEFAULT_EDITOR_FONT_ID;
-        applyFontFamily({ documentId: currentDocFontId, editorId: currentEdFontId });
+// Theme, font size, fonts and toolbar density, synced across windows (see
+// appearance.js). Each effect is what this window does to show a value.
+const appearance = createAppearance({ invoke, listen, effects: {
+    theme: async (theme) => {
+        applyThemeToDocument(theme);
         updateViewMenuState();
-    } catch (err) {
-        console.error('Failed to load preferences:', err);
-        applyFontSize(DEFAULT_FONT_SIZE);
-        applyTheme('drac');
-        applyToolbarDensity('icon-label', { save: false, broadcast: false });
-        currentDocFontId = DEFAULT_DOCUMENT_FONT_ID;
-        currentEdFontId = DEFAULT_EDITOR_FONT_ID;
-        applyFontFamily({ documentId: currentDocFontId, editorId: currentEdFontId });
-    }
-}
-
-function changeDocumentFont(id) {
-    if (!id || id === currentDocFontId) return;
-    currentDocFontId = id;
-    applyFontFamily({ documentId: id });
-    savePreference('document_font_family', id);
-    invoke('broadcast_font_family_change', { payload: { document: id, editor: null } })
-        .catch(err => console.error('Failed to broadcast document font change:', err));
-    updateViewMenuState();
-}
-
-function changeEditorFont(id) {
-    if (!id || id === currentEdFontId) return;
-    currentEdFontId = id;
-    applyFontFamily({ editorId: id });
-    savePreference('editor_font_family', id);
-    invoke('broadcast_font_family_change', { payload: { document: null, editor: id } })
-        .catch(err => console.error('Failed to broadcast editor font change:', err));
-    updateViewMenuState();
-}
-
-function normalizeDensity(v) {
-    return v === 'icon' || v === 'label' ? v : 'icon-label';
-}
-
-function applyToolbarDensity(density, options = {}) {
-    const { save = false, broadcast = false } = options;
-    const next = normalizeDensity(density);
-    currentToolbarDensity = next;
-    document.documentElement.dataset.toolbarDensity = next;
-    updateViewMenuState();
-    if (save) savePreference('toolbar_density', next);
-    if (broadcast) {
-        invoke('broadcast_toolbar_density_change', { density: next })
-            .catch(err => console.error('Failed to broadcast toolbar density change:', err));
-    }
-}
-
-async function broadcastThemeChange(theme) {
-    try {
-        await invoke('broadcast_theme_change', { theme });
-    } catch (err) {
-        console.error('Failed to broadcast theme change:', err);
-    }
-}
-
-async function broadcastFontSizeChange(fontSize) {
-    try {
-        await invoke('broadcast_font_size_change', { fontSize });
-    } catch (err) {
-        console.error('Failed to broadcast font size change:', err);
-    }
-}
+        await ensureSyntaxCss(theme);
+        reRenderMermaidForTheme().catch(() => {});
+    },
+    fontSize: (fontSize) => {
+        const anchor = currentFilePath && contentEl ? scrollSync.top() : null;
+        document.documentElement.style.setProperty('--document-font-size', `${fontSize}px`);
+        cachedPreMetrics = null;
+        updateViewMenuState();
+        requestAnimationFrame(() => scrollSync.scrollTo(anchor));
+    },
+    toolbarDensity: (density) => {
+        document.documentElement.dataset.toolbarDensity = density;
+        updateViewMenuState();
+    },
+    documentFont: (id) => {
+        applyFontFamily({ documentId: id });
+        updateViewMenuState();
+    },
+    editorFont: (id) => {
+        applyFontFamily({ editorId: id });
+        updateViewMenuState();
+    },
+} });
 
 async function savePreference(key, value) {
     try {
@@ -171,41 +104,12 @@ async function savePreference(key, value) {
     }
 }
 
-function restorePreviewAnchor(anchor) {
-    if (!anchor || !contentEl) return;
-    if ((anchor.kind === KIND_JSON || anchor.kind === KIND_YAML || anchor.kind === KIND_TXT) && typeof anchor.line === 'number') {
-        scrollPreviewToLine(anchor.line);
-        return;
-    }
-    if (typeof anchor.percent === 'number') {
-        const scrollableHeight = contentEl.scrollHeight - contentEl.clientHeight;
-        if (scrollableHeight > 0) {
-            isProgrammaticScroll = true;
-            contentEl.scrollTop = anchor.percent * scrollableHeight;
-            setTimeout(() => { isProgrammaticScroll = false; }, PROGRAMMATIC_SCROLL_TIMEOUT_MS);
-        }
-    }
-}
-
-function applyFontSize(fontSize, options = {}) {
-    const { save = false, broadcast = false } = options;
-    const nextFontSize = clampFontSize(fontSize);
-    const anchor = currentFilePath && contentEl ? getTopLineForPreview() : null;
-    currentFontSize = nextFontSize;
-    document.documentElement.style.setProperty('--document-font-size', `${currentFontSize}px`);
-    cachedPreMetrics = null;
-    updateViewMenuState();
-    requestAnimationFrame(() => restorePreviewAnchor(anchor));
-    if (save) savePreference('font_size', currentFontSize);
-    if (broadcast) broadcastFontSizeChange(currentFontSize);
-}
-
 function changeFontSize(delta) {
-    applyFontSize(currentFontSize + delta, { save: true, broadcast: true });
+    appearance.set('fontSize', appearance.get('fontSize') + delta);
 }
 
 function isCurrentFileViewOnly() {
-    return currentKind === 'pdf' || (currentFilePath && !isEditableType(currentFilePath));
+    return currentKind === KIND_PDF || (currentFilePath && !isEditableType(currentFilePath));
 }
 
 function currentSidebarModeLabel() {
@@ -217,7 +121,7 @@ function currentSidebarModeLabel() {
 
 function updateViewMenuState() {
     document.querySelectorAll('.theme-option').forEach(btn => {
-        btn.classList.toggle('active', btn.dataset.theme === currentTheme);
+        btn.classList.toggle('active', btn.dataset.theme === appearance.get('theme'));
     });
 
     const railToggle = document.getElementById('rail-toggle-option');
@@ -240,19 +144,20 @@ function updateViewMenuState() {
     const fontSizeIndicator = document.getElementById('font-size-indicator');
     const fontSizeDecreaseBtn = document.getElementById('font-size-decrease-btn');
     const fontSizeIncreaseBtn = document.getElementById('font-size-increase-btn');
-    if (fontSizeIndicator) fontSizeIndicator.textContent = `${currentFontSize}px`;
-    if (fontSizeDecreaseBtn) fontSizeDecreaseBtn.disabled = currentFontSize <= MIN_FONT_SIZE;
-    if (fontSizeIncreaseBtn) fontSizeIncreaseBtn.disabled = currentFontSize >= MAX_FONT_SIZE;
+    const fontSize = appearance.get('fontSize');
+    if (fontSizeIndicator) fontSizeIndicator.textContent = `${fontSize}px`;
+    if (fontSizeDecreaseBtn) fontSizeDecreaseBtn.disabled = fontSize <= MIN_FONT_SIZE;
+    if (fontSizeIncreaseBtn) fontSizeIncreaseBtn.disabled = fontSize >= MAX_FONT_SIZE;
 
     document.querySelectorAll('.density-option').forEach(btn => {
-        btn.classList.toggle('active', btn.dataset.density === currentToolbarDensity);
+        btn.classList.toggle('active', btn.dataset.density === appearance.get('toolbarDensity'));
     });
 
     document.querySelectorAll('.doc-font-option').forEach(btn => {
-        btn.classList.toggle('active', btn.dataset.font === currentDocFontId);
+        btn.classList.toggle('active', btn.dataset.font === appearance.get('documentFont'));
     });
     document.querySelectorAll('.ed-font-option').forEach(btn => {
-        btn.classList.toggle('active', btn.dataset.font === currentEdFontId);
+        btn.classList.toggle('active', btn.dataset.font === appearance.get('editorFont'));
     });
 }
 
@@ -260,9 +165,9 @@ function updateViewMenuState() {
 function updateExportButtonState() {
     const exportBtn = document.getElementById('export-btn');
     if (!exportBtn) return;
-    if (!currentFilePath || currentKind === 'pdf') {
+    if (!currentFilePath || currentKind === KIND_PDF) {
         exportBtn.setAttribute('disabled', 'true');
-        exportBtn.title = currentKind === 'pdf'
+        exportBtn.title = currentKind === KIND_PDF
             ? 'HTML export is unavailable for PDF files'
             : 'Open a file to export HTML';
     } else {
@@ -279,25 +184,13 @@ function updateFindButtonState() {
         findBtn.title = 'Open a file to search';
         return;
     }
-    if (currentKind === 'pdf') {
+    if (currentKind === KIND_PDF) {
         findBtn.setAttribute('disabled', 'true');
         findBtn.title = 'Search is unavailable for PDF files';
         return;
     }
     findBtn.removeAttribute('disabled');
     findBtn.title = 'Find (Ctrl+F)';
-}
-
-function applyTheme(theme) {
-    currentTheme = theme;
-    applyThemeToDocument(theme);
-    savePreference('theme', theme);
-    // Ensure syntax CSS for this theme is loaded
-    ensureSyntaxCss(theme);
-    updateViewMenuState();
-    
-    // Notify all windows of theme change
-    broadcastThemeChange(theme);
 }
 
 async function ensureSyntaxCss(theme) {
@@ -372,115 +265,23 @@ async function renderMath(scope) {
     }
 }
 
-// --- Incremental preview patching ---
-// Each top-level preview node is keyed (WeakMap) by a hash of its
-// pre-enhancement serialization: KaTeX and Mermaid mutate rendered nodes in
-// place, so the live DOM never equals freshly parsed HTML and a direct
-// isEqualNode diff would re-render every diagram on every patch.
-const previewNodeKeys = new WeakMap();
-let lastTocSignature = null;
-
-function hashString(s) {
-    let h = 5381;
-    for (let i = 0; i < s.length; i++) h = ((h << 5) + h + s.charCodeAt(i)) | 0;
-    return String(h);
-}
-
-function previewNodeKey(node) {
-    return hashString(node.nodeType === Node.ELEMENT_NODE ? node.outerHTML : (node.textContent || ''));
-}
-
-function tocSignatureOf(container) {
-    return Array.from(container.querySelectorAll('h1, h2, h3, h4, h5, h6'))
-        .map(h => `${h.tagName}\x1f${h.textContent}`)
-        .join('\x1e');
-}
-
-/**
- * Patch #markdown-content to show `html`, replacing only the changed run of
- * top-level nodes (common prefix/suffix matched by pre-enhancement key; a
- * typing edit yields one contiguous run). Math/Mermaid re-render only inside
- * inserted nodes; scroll is untouched. Returns { full, tocChanged }.
- */
-function applyPreviewHtml(html) {
-    const container = document.getElementById('markdown-content');
-    if (!container) return { full: true, tocChanged: false };
-    // Find-highlight spans would distort the keys of old nodes.
-    clearFindResults();
-
-    const range = document.createRange();
-    range.selectNodeContents(container);
-    const fragment = range.createContextualFragment(html);
-    const newNodes = Array.from(fragment.childNodes);
-    const newKeys = newNodes.map(previewNodeKey);
-    const oldNodes = Array.from(container.childNodes);
-    const oldKeys = oldNodes.map(n => previewNodeKeys.get(n) ?? null);
-
-    let prefix = 0;
-    const maxCommon = Math.min(oldNodes.length, newNodes.length);
-    while (prefix < maxCommon && oldKeys[prefix] !== null && oldKeys[prefix] === newKeys[prefix]) {
-        prefix++;
-    }
-    let suffix = 0;
-    const maxSuffix = maxCommon - prefix;
-    while (
-        suffix < maxSuffix
-        && oldKeys[oldNodes.length - 1 - suffix] !== null
-        && oldKeys[oldNodes.length - 1 - suffix] === newKeys[newNodes.length - 1 - suffix]
-    ) {
-        suffix++;
-    }
-
-    const full = prefix === 0 && suffix === 0;
-
-    for (let i = oldNodes.length - 1 - suffix; i >= prefix; i--) {
-        container.removeChild(oldNodes[i]);
-    }
-    const anchorNode = suffix > 0 ? oldNodes[oldNodes.length - suffix] : null;
-    const inserted = [];
-    for (let i = prefix; i < newNodes.length - suffix; i++) {
-        const n = newNodes[i];
-        previewNodeKeys.set(n, newKeys[i]);
-        container.insertBefore(n, anchorNode);
-        inserted.push(n);
-    }
-
-    cachedPreMetrics = null;
-
-    const insertedEls = inserted.filter(n => n.nodeType === Node.ELEMENT_NODE);
-    if (insertedEls.length) {
-        // Prefix document-supplied ids so they can never clobber app element
-        // ids; heading slugs are recomputed over the whole container because
-        // dedupe counters are document-wide.
-        prefixPreviewIds(insertedEls);
-        // fire-and-forget, scoped to what actually changed
-        renderMath(insertedEls).catch(() => {});
-        renderMermaid(insertedEls).catch(() => {});
-        hydrateLocalImages(insertedEls).catch(() => {});
-    }
-    assignHeadingSlugs(container);
-
-    const tocSig = tocSignatureOf(container);
-    const tocChanged = tocSig !== lastTocSignature;
-    lastTocSignature = tocSig;
-
-    return { full, tocChanged };
-}
-
-/** Resolve `scope` (container element or array of inserted elements) to all
- *  descendants-or-self matching `selector`. */
-function collectRenderTargets(scope, selector) {
-    const roots = Array.isArray(scope) ? scope : [scope];
-    const out = [];
-    for (const root of roots) {
-        if (root.matches && root.matches(selector)) out.push(root);
-        if (root.querySelectorAll) out.push(...root.querySelectorAll(selector));
-    }
-    return out;
-}
+// Every preview render goes through the patcher (see preview-patcher.js).
+const previewContainer = document.getElementById('markdown-content');
+const previewPatcher = createPreviewPatcher({
+    container: previewContainer,
+    parse: (html) => {
+        const range = document.createRange();
+        range.selectNodeContents(previewContainer);
+        return Array.from(range.createContextualFragment(html).childNodes);
+    },
+    enhancers: [renderMath, renderMermaid, hydrateLocalImages],
+    find: { beforePatch: clearFindHighlights, afterPatch: () => findBar.contentChanged() },
+    onOutlineChanged: buildTOC,
+    onMetricsInvalidated: () => { cachedPreMetrics = null; },
+});
 
 function mermaidThemeForCurrent() {
-    return currentTheme === 'light' ? 'default' : 'dark';
+    return appearance.get('theme') === 'light' ? 'default' : 'dark';
 }
 
 function ensureMermaid() {
@@ -554,14 +355,12 @@ async function reRenderMermaidForTheme() {
 
 async function exportHtml() {
     if (!currentFilePath) return;
-    if (currentKind === 'pdf') return;
+    if (currentKind === KIND_PDF) return;
     try {
-        const documentFontStack = currentDocFontId
-            ? resolveFontStack('document', currentDocFontId)
-            : null;
+        const documentFontStack = resolveFontStack('document', appearance.get('documentFont'));
         const result = await invoke('save_html_export', {
             path: currentFilePath,
-            theme: currentTheme,
+            theme: appearance.get('theme'),
             documentFontStack,
         });
         void result;
@@ -840,7 +639,7 @@ async function runWorkspaceSearch(query) {
         row.title = `${hit.name}:${hit.line}`;
         row.addEventListener('click', async () => {
             await openFile(hit.path);
-            openFindWithQuery(query.trim());
+            if (query.trim()) findBar.open(query.trim());
         });
         frag.appendChild(row);
     }
@@ -952,9 +751,7 @@ function scrollContentToHeading(heading) {
     const desired = headRect.top - wrapRect.top + contentEl.scrollTop - 8;
     const maxScroll = Math.max(0, contentEl.scrollHeight - contentEl.clientHeight);
     const target = Math.min(Math.max(0, desired), maxScroll);
-    isProgrammaticScroll = true;
-    contentEl.scrollTo({ top: target, behavior: 'smooth' });
-    setTimeout(() => { isProgrammaticScroll = false; }, PROGRAMMATIC_SCROLL_TIMEOUT_MS);
+    scrollSync.programmatic(() => contentEl.scrollTo({ top: target, behavior: 'smooth' }));
 }
 
 function updateActiveTOCLink() {
@@ -1019,7 +816,7 @@ async function openFile(filePath) {
     try {
         // Register in-window opens (welcome recents, dialog, workspace tree)
         // before rendering: open_tracked_file grants recents access and keeps
-        // open_windows / session / recents tracking correct for this window.
+        // window registry / session / recents tracking correct for this window.
         if (filePath !== lastTrackedPath) {
             try {
                 await invoke('open_tracked_file', { path: filePath });
@@ -1029,21 +826,16 @@ async function openFile(filePath) {
             lastTrackedPath = filePath;
         }
 
-        const lowerPath = String(filePath).toLowerCase();
-        if (lowerPath.endsWith('.pdf')) currentKind = 'pdf';
-        else if (lowerPath.endsWith('.json')) currentKind = KIND_JSON;
-        else if (lowerPath.endsWith('.yaml') || lowerPath.endsWith('.yml')) currentKind = KIND_YAML;
-        else if (lowerPath.endsWith('.txt')) currentKind = KIND_TXT;
-        else currentKind = KIND_MARKDOWN;
+        currentKind = kindFromPath(filePath) || KIND_MARKDOWN;
 
         // Preserve scroll anchor if reloading same file
         let anchor = null;
-        if (currentKind !== 'pdf' && currentFilePath && currentFilePath === filePath && contentEl) {
-            anchor = getTopLineForPreview();
+        if (currentKind !== KIND_PDF && currentFilePath && currentFilePath === filePath && contentEl) {
+            anchor = scrollSync.top();
         }
         let html;
         let usedPdf = false;
-        if (currentKind === 'pdf') {
+        if (currentKind === KIND_PDF) {
             try {
                 const b64 = await invoke('read_file_bytes_b64', { path: filePath });
                 const bytes = Uint8Array.from(atob(b64), c => c.charCodeAt(0));
@@ -1063,7 +855,7 @@ async function openFile(filePath) {
             }
         } else {
             try {
-                html = await invoke('render_file_to_html', { path: filePath, theme: currentTheme });
+                html = await invoke('render_file_to_html', { path: filePath });
             } catch (e) {
                 console.error('Failed to render file:', e);
                 const msg = typeof e === 'string' ? e : (e && e.message) ? e.message : 'Failed to render file';
@@ -1072,20 +864,17 @@ async function openFile(filePath) {
         }
 
         currentFilePath = filePath;
-        let patchResult = { full: true, tocChanged: true };
+        // A full swap (file/kind switches drive sidebar visibility and labels)
+        // or a changed heading outline rebuilds the table of contents inside
+        // the patcher.
+        let fullSwap = true;
         if (usedPdf) {
             // PDFs keep the simple full swap; nothing in them is patchable.
-            clearFindResults();
-            const container = document.getElementById('markdown-content');
-            const range = document.createRange();
-            range.selectNodeContents(container);
-            container.replaceChildren(range.createContextualFragment(html));
-            cachedPreMetrics = null;
-            lastTocSignature = null;
+            previewPatcher.swap(html);
         } else {
             // Patch only the changed top-level blocks; math/mermaid re-render
             // inside the patch, scoped to inserted nodes.
-            patchResult = applyPreviewHtml(html);
+            fullSwap = previewPatcher.patch(html, { outlineOnFull: true }).full;
         }
         // Toggle PDF layout mode
         if (usedPdf) {
@@ -1099,26 +888,10 @@ async function openFile(filePath) {
         currentWritable = await updateEditButtonState();
         updateFindButtonState();
         updateExportButtonState();
-        // Rebuild table of contents on full swaps (file/kind switches drive
-        // sidebar visibility and labels) or when the heading outline changed.
-        if (usedPdf || patchResult.full || patchResult.tocChanged) {
-            buildTOC();
-        }
         updateTreeActiveFile();
         // Restore scroll position only after a full swap; patches leave the
         // scroll untouched and the percent-based anchor would jolt it.
-        if (anchor && patchResult.full) {
-            if ((anchor.kind === KIND_JSON || anchor.kind === KIND_YAML || anchor.kind === KIND_TXT) && typeof anchor.line === 'number') {
-                scrollPreviewToLine(anchor.line);
-            } else if (typeof anchor.percent === 'number') {
-                const scrollableHeight = contentEl.scrollHeight - contentEl.clientHeight;
-                if (scrollableHeight > 0) {
-                    isProgrammaticScroll = true;
-                    contentEl.scrollTop = anchor.percent * scrollableHeight;
-                    setTimeout(() => { isProgrammaticScroll = false; }, PROGRAMMATIC_SCROLL_TIMEOUT_MS);
-                }
-            }
-        }
+        if (fullSwap) scrollSync.scrollTo(anchor);
 
         // Ensure window title reflects the opened file (overrides default index.html title)
         try {
@@ -1175,28 +948,37 @@ function getPreAndMetrics() {
     return cachedPreMetrics;
 }
 
-function getTopLineForPreview() {
-    if (currentKind === KIND_JSON || currentKind === KIND_YAML || currentKind === KIND_TXT) {
-        const m = getPreAndMetrics();
-        if (!m) return null;
-        const offset = Math.max(0, contentEl.scrollTop - m.preTop);
-        const line = Math.floor(offset / m.lineHeight) + 1;
-        return { kind: currentKind, line };
-    }
-    // Fallback: percent scroll for markdown
-    const maxScroll = Math.max(1, contentEl.scrollHeight - contentEl.clientHeight);
-    const percent = Math.max(0, Math.min(1, contentEl.scrollTop / maxScroll));
-    return { kind: KIND_MARKDOWN, percent };
-}
-
-function scrollPreviewToLine(line) {
-    const m = getPreAndMetrics();
-    if (!m) return;
-    const y = m.preTop + (Math.max(1, line) - 1) * m.lineHeight;
-    isProgrammaticScroll = true;
-    contentEl.scrollTop = y;
-    setTimeout(() => { isProgrammaticScroll = false; }, PROGRAMMATIC_SCROLL_TIMEOUT_MS);
-}
+const scrollSync = createScrollSync({
+    adapter: {
+        label: appWindow.label,
+        filePath: () => currentFilePath,
+        kind: () => (currentKind === KIND_PDF ? null : currentKind),
+        topLine() {
+            const m = getPreAndMetrics();
+            if (!m) return null;
+            const offset = Math.max(0, contentEl.scrollTop - m.preTop);
+            return Math.floor(offset / m.lineHeight) + 1;
+        },
+        topPercent() {
+            const maxScroll = Math.max(1, contentEl.scrollHeight - contentEl.clientHeight);
+            return Math.max(0, Math.min(1, contentEl.scrollTop / maxScroll));
+        },
+        scrollToLine(line) {
+            const m = getPreAndMetrics();
+            if (!m) return false;
+            contentEl.scrollTop = m.preTop + (Math.max(1, line) - 1) * m.lineHeight;
+        },
+        scrollToPercent(percent) {
+            const scrollableHeight = contentEl.scrollHeight - contentEl.clientHeight;
+            if (scrollableHeight <= 0) return false;
+            contentEl.scrollTop = percent * scrollableHeight;
+        },
+    },
+    emit: (payload) => invoke('broadcast_scroll_sync', { payload })
+        .catch((e) => console.warn('Failed to broadcast scroll sync:', e)),
+    listen,
+    clock: window,
+});
 
 function offsetTopWithin(container, el) {
     let y = 0;
@@ -1233,21 +1015,14 @@ async function renderBufferToPreview(kind, content) {
     bufferRenderBusy = true;
     try {
         let html;
-        if (kind === KIND_JSON) {
+        try {
+            html = await invoke('render_buffer_to_html', { kind, content });
+        } catch (err) {
             // Mid-typing JSON/YAML is usually invalid; keep the last good render.
-            try { html = await invoke('parse_json_with_theme', { content, theme: currentTheme }); }
-            catch (_) { return; }
-        } else if (kind === KIND_YAML) {
-            try { html = await invoke('parse_yaml_with_theme', { content, theme: currentTheme }); }
-            catch (_) { return; }
-        } else if (kind === KIND_TXT) {
-            // Same shape render_file_to_html emits for txt.
-            html = `<div class="markdown-body"><pre class="plain-text">${escapeHtml(content)}</pre></div>`;
-        } else {
-            html = await invoke('parse_markdown_with_theme', { content, theme: currentTheme });
+            if (kind === KIND_JSON || kind === KIND_YAML) return;
+            throw err;
         }
-        const result = applyPreviewHtml(html);
-        if (result.tocChanged) buildTOC();
+        previewPatcher.patch(html);
     } catch (err) {
         console.warn('On-type preview render failed:', err);
     } finally {
@@ -1378,15 +1153,8 @@ async function updateEditButtonState() {
 }
 
 function isEditableType(filePath) {
-    const lower = String(filePath).toLowerCase();
-    return (
-        lower.endsWith('.md') ||
-        lower.endsWith('.markdown') ||
-        lower.endsWith('.txt') ||
-        lower.endsWith('.json') ||
-        lower.endsWith('.yaml') ||
-        lower.endsWith('.yml')
-    );
+    const kind = kindFromPath(filePath);
+    return kind !== null && kind !== KIND_PDF;
 }
 
 function setupEventListeners() {
@@ -1404,7 +1172,7 @@ function setupEventListeners() {
     document.getElementById('edit-btn').addEventListener('click', openEditor);
     document.getElementById('export-btn').addEventListener('click', exportHtml);
     const findBtn = document.getElementById('find-btn');
-    if (findBtn) findBtn.addEventListener('click', toggleFindOverlay);
+    if (findBtn) findBtn.addEventListener('click', findBar.toggle);
     const welcomeOpenBtn = document.getElementById('welcome-open-btn');
     if (welcomeOpenBtn) welcomeOpenBtn.addEventListener('click', () => document.getElementById('open-btn').click());
     const welcomeFolderBtn = document.getElementById('welcome-folder-btn');
@@ -1425,7 +1193,7 @@ function setupEventListeners() {
     // Theme menu
     document.querySelectorAll('.theme-option').forEach(btn => {
         btn.addEventListener('click', (e) => {
-            applyTheme(e.target.dataset.theme);
+            appearance.set('theme', e.target.dataset.theme);
             toggleThemeMenu();
         });
     });
@@ -1433,18 +1201,16 @@ function setupEventListeners() {
     // Toolbar density seg buttons
     document.querySelectorAll('.density-option').forEach(btn => {
         btn.addEventListener('click', (e) => {
-            const value = e.currentTarget.dataset.density;
-            if (!value || value === currentToolbarDensity) return;
-            applyToolbarDensity(value, { save: true, broadcast: true });
+            appearance.set('toolbarDensity', e.currentTarget.dataset.density);
         });
     });
 
     // Typography font-family seg buttons
     document.querySelectorAll('.doc-font-option').forEach(btn => {
-        btn.addEventListener('click', (e) => changeDocumentFont(e.currentTarget.dataset.font));
+        btn.addEventListener('click', (e) => appearance.set('documentFont', e.currentTarget.dataset.font));
     });
     document.querySelectorAll('.ed-font-option').forEach(btn => {
-        btn.addEventListener('click', (e) => changeEditorFont(e.currentTarget.dataset.font));
+        btn.addEventListener('click', (e) => appearance.set('editorFont', e.currentTarget.dataset.font));
     });
     
     // Click outside theme menu to close
@@ -1457,79 +1223,58 @@ function setupEventListeners() {
     });
 
     
-    // Keyboard shortcuts (table-driven; more-specific variants must precede less-specific)
-    setupKeyboardShortcuts([
-        { key: 'f', ctrl: true, alt: true, action: () => { if (currentKind !== 'pdf') openFindAndReplace(); } },
-        { key: 'f', ctrl: true, shift: true, action: () => openWorkspaceSearch() },
-        { key: 'f', ctrl: true, action: () => { if (currentKind !== 'pdf') openFindOverlay(); } },
-        { key: 'g', ctrl: true, shift: true, action: () => { if (currentKind !== 'pdf') findPrevious(); } },
-        { key: 'g', ctrl: true, action: () => { if (currentKind !== 'pdf') findNext(); } },
-        { key: 'p', ctrl: true, action: () => { if (currentKind !== 'pdf') invoke('print_current_window').catch(err => console.error('Print failed:', err)); } },
-        { key: 'o', ctrl: true, shift: true, action: () => openFolder() },
-        { key: 'o', ctrl: true, action: () => openFileSmart() },
-        { key: 'r', ctrl: true, action: () => refreshFile() },
-        { key: 't', ctrl: true, action: () => toggleThemeMenu() },
-        { key: 'e', ctrl: true, shift: true, action: () => exportHtml() },
-        { key: 'e', ctrl: true, action: () => {
-            const sel = window.getSelection && window.getSelection().toString();
-            if (sel) { useSelectionForFind(sel); return; }
-            openEditor();
-        } },
-        { key: 'n', ctrl: true, shift: true, action: () => invoke('create_new_window_command').catch(err => console.error('Failed to create new window:', err)) },
-        { key: 'n', ctrl: true, action: () => createNewMarkdownFile() },
-        { key: 'a', ctrl: true, action: () => selectAllDocument() },
-        { key: 'w', ctrl: true, action: () => appWindow.close() },
-    ]);
-
-    // Command palette via Cmd+K Cmd+P chord
-    setupChordShortcuts([{
-        key1: 'k', ctrl1: true,
-        secondKeys: [
-            { key2: 'p', ctrl2: true, action: () => openPalette() },
-        ],
-    }]);
+    setupKeyboardShortcuts(commands.shortcuts);
+    setupChordShortcuts(commands.chords);
 }
 
-function buildPaletteActions() {
-    const hasFile = !!currentFilePath;
-    const isPdf = currentKind === 'pdf';
-    const actions = [
-        { id: 'open',        label: 'Open File…',            hint: '⌘O',     run: () => openFileSmart() },
-        { id: 'open-dialog', label: 'Open File (Dialog)…',                   run: () => openFile() },
-        { id: 'open-folder', label: 'Open Folder…',          hint: '⌘⇧O',    run: () => openFolder() },
-        { id: 'new',         label: 'New File…',             hint: '⌘N',     run: () => createNewMarkdownFile() },
-        { id: 'new-window',  label: 'New Window',            hint: '⌘⇧N',    run: () => invoke('create_new_window_command') },
-    ];
-    if (workspaceFolder) {
-        actions.push({ id: 'ws-search',    label: 'Search in Workspace…', hint: '⌘⇧F', run: () => openWorkspaceSearch() });
-        actions.push({ id: 'close-folder', label: 'Close Folder', run: () => closeFolder() });
-    }
-    if (hasFile) {
-        actions.push({ id: 'refresh', label: 'Refresh',       hint: '⌘R',    run: () => refreshFile() });
-    }
-    actions.push({ id: 'toggle-sidebar', label: 'Toggle Sidebar',   run: () => toggleTOC() });
-    if (hasFile && !isPdf) {
-        actions.push({ id: 'find',         label: 'Find…',            hint: '⌘F',   run: () => openFindOverlay() });
-        actions.push({ id: 'find-next',    label: 'Find Next',        hint: '⌘G',   run: () => findNext() });
-        actions.push({ id: 'find-prev',    label: 'Find Previous',    hint: '⇧⌘G',  run: () => findPrevious() });
-        actions.push({ id: 'export-html',  label: 'Export as HTML…',  hint: '⌘⇧E',  run: () => exportHtml() });
-        actions.push({ id: 'edit',         label: 'Edit…',                           run: () => openEditor() });
-    }
-    actions.push({ id: 'print',         label: 'Print…',             hint: '⌘P',  run: () => invoke('print_current_window').catch(console.error) });
-    actions.push({ id: 'custom-css',    label: 'Edit Custom CSS…',                 run: () => invoke('open_custom_css').catch(console.error) });
-    actions.push({ id: 'reload-css',    label: 'Reload Custom CSS',                run: () => ensureCustomCss() });
-    actions.push({ id: 'theme-light',   label: 'Theme: Light',                     run: () => applyTheme('light') });
-    actions.push({ id: 'theme-dark',    label: 'Theme: Dark',                      run: () => applyTheme('dark') });
-    actions.push({ id: 'theme-drac',    label: 'Theme: Drac',                      run: () => applyTheme('drac') });
-    actions.push({ id: 'font-size-inc', label: 'Text Size: Increase',              run: () => changeFontSize(1) });
-    actions.push({ id: 'font-size-dec', label: 'Text Size: Decrease',              run: () => changeFontSize(-1) });
-    actions.push({ id: 'close',         label: 'Close Window',       hint: '⌘W',   run: () => appWindow.close() });
-    return actions;
-}
+// --- Commands (viewer): keys, menu events and palette entries ---
+const notPdf = () => currentKind !== KIND_PDF;
+const hasTextFile = () => !!currentFilePath && currentKind !== KIND_PDF;
+
+// Palette order is table order.
+const commands = createCommands([
+    { id: 'open',        keys: 'Mod+O',       menu: EVENT_MENU_OPEN,        label: 'Open File…',          action: () => openFileSmart() },
+    { id: 'open-dialog',                                                    label: 'Open File (Dialog)…', action: () => openFile() },
+    { id: 'open-folder', keys: 'Mod+Shift+O', menu: EVENT_MENU_OPEN_FOLDER, label: 'Open Folder…',        action: () => openFolder() },
+    { id: 'new',         keys: 'Mod+N',                                     label: 'New File…',           action: () => createNewMarkdownFile() },
+    { id: 'new-window',  keys: 'Mod+Shift+N',                               label: 'New Window',
+      action: () => invoke('create_new_window_command').catch(err => console.error('Failed to create new window:', err)) },
+    { id: 'ws-search',   keys: 'Mod+Shift+F', label: 'Search in Workspace…', listed: () => !!workspaceFolder, action: () => openWorkspaceSearch() },
+    { id: 'close-folder',                     label: 'Close Folder',      available: () => !!workspaceFolder, action: () => closeFolder() },
+    { id: 'refresh',     keys: 'Mod+R',       label: 'Refresh',              listed: () => !!currentFilePath, action: () => refreshFile() },
+    { id: 'toggle-sidebar',                   label: 'Toggle Sidebar',                                        action: () => toggleTOC() },
+    { id: 'find',        keys: 'Mod+F',       menu: EVENT_MENU_FIND,      label: 'Find…',
+      available: notPdf, listed: hasTextFile, action: () => findBar.open() },
+    { id: 'find-next',   keys: 'Mod+G',       menu: EVENT_MENU_FIND_NEXT, label: 'Find Next',
+      available: notPdf, listed: hasTextFile, action: () => findBar.next() },
+    { id: 'find-prev',   keys: 'Mod+Shift+G', menu: EVENT_MENU_FIND_PREV, label: 'Find Previous',
+      available: notPdf, listed: hasTextFile, action: () => findBar.previous() },
+    { id: 'export-html', keys: 'Mod+Shift+E', menu: EVENT_MENU_EXPORT_HTML, menuDelay: 50, label: 'Export as HTML…',
+      listed: hasTextFile, action: () => exportHtml() },
+    { id: 'edit',                             label: 'Edit…', available: hasTextFile, action: () => openEditor() },
+    // Cmd+P does nothing on a PDF; the palette entry is always there.
+    { id: 'print',       keys: 'Mod+P',       label: 'Print…', available: notPdf, listed: () => true,
+      action: () => invoke('print_current_window').catch(err => console.error('Print failed:', err)) },
+    { id: 'custom-css',    label: 'Edit Custom CSS…',    action: () => invoke('open_custom_css').catch(console.error) },
+    { id: 'reload-css',    label: 'Reload Custom CSS',   action: () => ensureCustomCss() },
+    { id: 'theme-light',   label: 'Theme: Light',        action: () => appearance.set('theme', 'light') },
+    { id: 'theme-dark',    label: 'Theme: Dark',         action: () => appearance.set('theme', 'dark') },
+    { id: 'theme-drac',    label: 'Theme: Drac',         action: () => appearance.set('theme', 'drac') },
+    { id: 'font-size-inc', label: 'Text Size: Increase', action: () => changeFontSize(1) },
+    { id: 'font-size-dec', label: 'Text Size: Decrease', action: () => changeFontSize(-1) },
+    { id: 'close',       keys: 'Mod+W',       menu: EVENT_MENU_CLOSE, label: 'Close Window', action: () => appWindow.close() },
+    // Not in the palette.
+    { id: 'replace',     keys: 'Mod+Alt+F',   menu: EVENT_MENU_FIND_REPLACE, action: () => findBar.openReplace() },
+    { id: 'use-selection-or-edit', keys: 'Mod+E', action: () => { if (!findBar.useSelection()) openEditor(); } },
+    { id: 'use-selection', menu: EVENT_MENU_FIND_USE_SELECTION, action: () => findBar.useSelection() },
+    { id: 'theme-menu',  keys: 'Mod+T',       action: () => toggleThemeMenu() },
+    { id: 'select-all',  keys: 'Mod+A',       action: () => selectAllDocument() },
+    { id: 'palette',     keys: 'Mod+K Mod+P', menu: EVENT_MENU_COMMAND_PALETTE, action: () => openPalette() },
+], { mac: true, hasFocus: () => document.hasFocus() });
 
 function ensureCommandPalette() {
     if (commandPalette) return commandPalette;
-    commandPalette = createCommandPalette(document.body, buildPaletteActions);
+    commandPalette = createCommandPalette(document.body, commands.paletteActions);
     return commandPalette;
 }
 
@@ -1568,50 +1313,19 @@ function isAllowedExternalUrl(url) {
 
 // --- In-document anchors and relative links ---
 
-/** Prefix every document-supplied id with "md-" (idempotent). */
-function prefixPreviewIds(scope) {
-    for (const el of collectRenderTargets(scope, '[id]')) {
-        if (!el.id.startsWith('md-')) el.id = 'md-' + el.id;
-    }
-}
-
-/** GitHub-style heading slug: lowercase, punctuation stripped, spaces to
- *  dashes. Unicode letters/digits are kept (GitHub keeps them too), so
- *  non-ASCII headings get distinct, linkable slugs. */
-function slugifyHeading(text) {
-    return String(text).trim().toLowerCase()
-        .replace(/[^\p{L}\p{N}_\- ]+/gu, '')
-        .replace(/ /g, '-');
-}
-
-/**
- * Assign "md-<slug>" ids to every heading, recomputed document-wide so the
- * duplicate counters stay deterministic across patches. Heading slugs win
- * over raw-HTML ids on headings, matching GitHub's anchor behavior.
- */
-function assignHeadingSlugs(container) {
-    const used = new Map();
-    for (const h of container.querySelectorAll('h1, h2, h3, h4, h5, h6')) {
-        const base = slugifyHeading(h.textContent) || 'section';
-        const n = used.get(base) || 0;
-        used.set(base, n + 1);
-        h.id = 'md-' + (n === 0 ? base : `${base}-${n}`);
-    }
-}
-
-/** Scroll to a `#name` anchor: exact prefixed id first, heading slug second. */
+/** Scroll to a `#name` anchor. The Rust render already rewrote links to
+ *  heading-slug form, so the prefixed id is the only lookup. */
 function navigateToAnchor(rawName) {
     let name;
     try { name = decodeURIComponent(rawName); } catch (_) { name = rawName; }
-    const target = document.getElementById('md-' + name)
-        || document.getElementById('md-' + slugifyHeading(name));
+    const target = document.getElementById('md-' + name);
     if (target) scrollContentToHeading(target);
 }
 
 /** Resolve a relative link against the current document and open it in-window.
  *  Percent-decoding and fragment/query stripping happen in Rust (URL join). */
 async function openRelativeLink(href) {
-    if (!currentFilePath || currentKind === 'pdf') return;
+    if (!currentFilePath || currentKind === KIND_PDF) return;
     try {
         const resolved = await invoke('resolve_doc_link', { base: currentFilePath, href });
         if (resolved) await openFile(resolved);
@@ -1627,7 +1341,7 @@ async function openRelativeLink(href) {
  * mid-flight file switch can't paint stale images.
  */
 async function hydrateLocalImages(scope) {
-    if (!currentFilePath || currentKind === 'pdf') return;
+    if (!currentFilePath || currentKind === KIND_PDF) return;
     const docPath = currentFilePath;
     const imgs = collectRenderTargets(scope, 'img').filter(img => {
         const src = img.getAttribute('src') || '';
@@ -1754,7 +1468,9 @@ window.addEventListener('DOMContentLoaded', async () => {
         setupEventListeners();
         attachLinkInterceptor();
         attachRichCopyHandler();
-        await loadPreferences();
+        const prefs = await appearance.start();
+        tocVisible = prefs?.toc_visible !== false;
+        updateViewMenuState();
         await ensureCustomCss();
         await initWorkspace();
         // Initial button states
@@ -1803,7 +1519,7 @@ window.addEventListener('DOMContentLoaded', async () => {
             const p = event.payload || {};
             if (!currentFilePath || p.source === appWindow.label) return;
             if (p.file_path !== currentFilePath) return;
-            if (currentKind === 'pdf') return;
+            if (currentKind === KIND_PDF) return;
             renderBufferToPreview(p.kind, p.content);
         });
 
@@ -1821,132 +1537,14 @@ window.addEventListener('DOMContentLoaded', async () => {
             await refreshFile();
         });
 
-        // Listen for theme change events from other windows
-        await listen(EVENT_THEME_CHANGED, async (event) => {
-            // Skip if this window already applied this theme (avoids redundant
-            // DOM work from our own broadcast echo).
-            if (event.payload === currentTheme) return;
-            currentTheme = event.payload;
-            applyThemeToDocument(currentTheme);
-            await ensureSyntaxCss(currentTheme);
-            updateViewMenuState();
-            reRenderMermaidForTheme().catch(() => {});
-        });
-
-        await listen(EVENT_FONT_SIZE_CHANGED, async (event) => {
-            if (Number(event.payload) === currentFontSize) return;
-            applyFontSize(event.payload);
-        });
-
-        await listen(EVENT_TOOLBAR_DENSITY_CHANGED, (event) => {
-            if (event.payload === currentToolbarDensity) return;
-            applyToolbarDensity(event.payload, { save: false, broadcast: false });
-        });
-
-        await listen(EVENT_FONT_FAMILY_CHANGED, (event) => {
-            const p = event.payload || {};
-            let changed = false;
-            if (p.document && p.document !== currentDocFontId) {
-                currentDocFontId = p.document;
-                applyFontFamily({ documentId: currentDocFontId });
-                changed = true;
-            }
-            if (p.editor && p.editor !== currentEdFontId) {
-                currentEdFontId = p.editor;
-                // The viewer doesn't render an editor; still track id so the
-                // next broadcast echo is suppressed and the View popover stays
-                // in sync with the authoritative pref.
-                changed = true;
-            }
-            if (changed) updateViewMenuState();
-        });
-
-        await listen(EVENT_MENU_COMMAND_PALETTE, () => {
-            if (!document.hasFocus()) return;
-            openPalette();
-        });
-
-
-        // Listen for HTML export menu requests
-        await listen(EVENT_MENU_EXPORT_HTML, () => {
-            setTimeout(() => {
-                if (!document.hasFocus()) return;
-                exportHtml();
-            }, 50);
-        });
-
-        // Listen for menu find
-        await listen(EVENT_MENU_FIND, () => {
-            if (!document.hasFocus()) return;
-            if (currentKind !== 'pdf') openFindOverlay();
-        });
-
-        await listen(EVENT_MENU_FIND_NEXT, () => {
-            if (!document.hasFocus()) return;
-            if (currentKind !== 'pdf') findNext();
-        });
-
-        await listen(EVENT_MENU_FIND_PREV, () => {
-            if (!document.hasFocus()) return;
-            if (currentKind !== 'pdf') findPrevious();
-        });
-
-        await listen(EVENT_MENU_FIND_USE_SELECTION, () => {
-            if (!document.hasFocus()) return;
-            if (currentKind === 'pdf') return;
-            const sel = window.getSelection && window.getSelection().toString();
-            if (sel) useSelectionForFind(sel);
-        });
-
-        await listen(EVENT_MENU_FIND_REPLACE, () => {
-            if (!document.hasFocus()) return;
-            if (currentKind !== 'pdf') openFindAndReplace();
-        });
-
-        // Listen for File > Open menu action (fuzzy switcher with a workspace)
-        await listen(EVENT_MENU_OPEN, () => {
-            if (!document.hasFocus()) return;
-            openFileSmart();
-        });
-
-        await listen(EVENT_MENU_OPEN_FOLDER, () => {
-            if (!document.hasFocus()) return;
-            openFolder();
-        });
-
-        // Listen for File > Close Window menu action
-        await listen(EVENT_MENU_CLOSE, async () => {
-            if (!document.hasFocus()) return;
-            await appWindow.close();
-        });
+        // Menu events that run commands
+        await commands.listenMenu(listen);
 
         // Listen for scroll sync events from other windows
-        await listen(EVENT_SCROLL_SYNC, async (event) => {
-            const payload = event.payload || {};
-            if (!currentFilePath) return;
-            if (payload.source === appWindow.label) return; // ignore self
-            if (payload.file_path !== currentFilePath) return;
-            if ((payload.kind === KIND_JSON || payload.kind === KIND_YAML || payload.kind === KIND_TXT) && typeof payload.line === 'number') {
-                // Scroll preview to the requested line
-                scrollPreviewToLine(payload.line);
-                lastSyncedLine = payload.line;
-            } else if (typeof payload.percent === 'number') {
-                // Apply percentage scroll for markdown or others
-                const scrollableHeight = contentEl.scrollHeight - contentEl.clientHeight;
-                if (scrollableHeight <= 0) return;
-                isProgrammaticScroll = true;
-                contentEl.scrollTop = payload.percent * scrollableHeight;
-                lastSyncedPercent = payload.percent;
-                setTimeout(() => { isProgrammaticScroll = false; }, PROGRAMMATIC_SCROLL_TIMEOUT_MS);
-            }
-        });
+        await scrollSync.listening;
         
-        // Get file path from window label (single source of truth)
-        try {
-            filePath = await invoke('get_file_path_from_window_label');
-        } catch (err) {
-            console.error('Failed to get file path from window label:', err);
-        }
+        // Rust sets the initial file in the window's initialization script.
+        filePath = window.__INITIAL_FILE_PATH__ || null;
 
         if (filePath) {
             // Rust registered this window-creation open; don't double-track.
@@ -1992,112 +1590,25 @@ function attachPreviewScrollSync() {
         // Update active TOC link on scroll
         if (tocScrollDebounce) clearTimeout(tocScrollDebounce);
         tocScrollDebounce = setTimeout(updateActiveTOCLink, 50);
-        if (!currentFilePath || isProgrammaticScroll || currentKind === 'pdf') return;
-        if (scrollDebounce) clearTimeout(scrollDebounce);
-        scrollDebounce = setTimeout(async () => {
-            const info = getTopLineForPreview();
-            if (!info) return;
-
-            // Filter micro-scrolls
-            if (typeof info.line === 'number') {
-                if (lastSyncedLine !== null && Math.abs(info.line - lastSyncedLine) < MIN_SCROLL_DELTA_LINES) {
-                    return;
-                }
-                lastSyncedLine = info.line;
-            } else if (typeof info.percent === 'number') {
-                if (lastSyncedPercent !== null && Math.abs(info.percent - lastSyncedPercent) < MIN_SCROLL_DELTA_PERCENT) {
-                    return;
-                }
-                lastSyncedPercent = info.percent;
-            }
-
-            const payload = {
-                source: appWindow.label,
-                file_path: currentFilePath,
-                kind: info.kind,
-                line: typeof info.line === 'number' ? info.line : null,
-                percent: typeof info.percent === 'number' ? info.percent : null,
-            };
-            try {
-                await invoke('broadcast_scroll_sync', { payload });
-            } catch (e) {
-                console.warn('Failed to broadcast scroll sync:', e);
-            }
-        }, SCROLL_SYNC_DEBOUNCE_MS);
+        scrollSync.onScroll();
     });
 }
 
-// --- Find overlay (preview) ---
+// --- Find bar (preview): matches are wrapped in highlight spans ---
 let findSpans = [];
 let currentFindIndex = -1;
-let findMatchCase = false;
-let findWholeWord = false;
-let findTypeTimer = null;
-let findReturnFocusEl = null;
-let findCaseBtn = null;
-let findWordBtn = null;
 
-function ensureFindOverlay() {
-    if (findOverlay) return;
-    const slot = document.getElementById('find-bar-slot');
-    const els = createFindOverlay(slot);
-    findOverlay = els.overlay;
-    findInput = els.input;
-    findCaseBtn = els.caseBtn;
-    findWordBtn = els.wordBtn;
-
-    findInput.addEventListener('input', () => {
-        if (findTypeTimer) clearTimeout(findTypeTimer);
-        findTypeTimer = setTimeout(() => runFindFromInput(), FIND_TYPE_DEBOUNCE_MS);
-    });
-    findInput.addEventListener('keydown', (e) => {
-        if (e.key === 'Enter') {
-            e.preventDefault();
-            if (e.shiftKey) findPrevious(); else findNext();
-        } else if (e.key === 'Escape') {
-            e.preventDefault();
-            closeFindOverlay();
-        }
-    });
-
-    const toggle = (btn, setter, refresh = true) => {
-        const next = btn.getAttribute('aria-pressed') !== 'true';
-        btn.setAttribute('aria-pressed', next ? 'true' : 'false');
-        btn.classList.toggle('active', next);
-        setter(next);
-        if (refresh) runFindFromInput();
-        findInput.focus();
-    };
-    findCaseBtn.addEventListener('click', () => toggle(findCaseBtn, v => { findMatchCase = v; }));
-    findWordBtn.addEventListener('click', () => toggle(findWordBtn, v => { findWholeWord = v; }));
-
-    findOverlay.querySelector('#find-prev').addEventListener('click', findPrevious);
-    findOverlay.querySelector('#find-next').addEventListener('click', findNext);
-    findOverlay.querySelector('#find-close').addEventListener('click', closeFindOverlay);
-}
-
-function runFindFromInput() {
-    if (!findInput) return;
-    performFind(findInput.value);
-}
-
-function performFind(query) {
+function highlightFindMatches(query, { matchCase, wholeWord, keepPosition }) {
+    const keptIndex = currentFindIndex;
     clearFindHighlights();
-    findSpans = [];
     currentFindIndex = -1;
 
-    const regex = buildFindRegex(query, { matchCase: findMatchCase, wholeWord: findWholeWord });
-    if (!regex) {
-        updateFindCountDisplay();
-        return;
-    }
-
-    const container = document.getElementById('markdown-content');
-    if (!container) return;
+    const regex = buildFindRegex(query, { matchCase, wholeWord });
+    if (!regex) return 0;
 
     // Collect text nodes first so we can mutate without confusing the walker.
     const textNodes = [];
-    const walker = document.createTreeWalker(container, NodeFilter.SHOW_TEXT, {
+    const walker = document.createTreeWalker(previewContainer, NodeFilter.SHOW_TEXT, {
         acceptNode(node) {
             if (!node.nodeValue) return NodeFilter.FILTER_REJECT;
             const parent = node.parentNode;
@@ -2133,37 +1644,17 @@ function performFind(query) {
     }
 
     if (findSpans.length > 0) {
-        currentFindIndex = 0;
-        setActiveFindSpan();
+        currentFindIndex = keepPosition ? Math.min(Math.max(keptIndex, 0), findSpans.length - 1) : 0;
+        setActiveFindSpan(!keepPosition);
     }
-    updateFindCountDisplay();
+    return findSpans.length;
 }
 
-function setActiveFindSpan() {
+function setActiveFindSpan(scroll) {
     findSpans.forEach((s, i) => s.classList.toggle('active', i === currentFindIndex));
     const span = findSpans[currentFindIndex];
-    if (!span) return;
-    span.scrollIntoView({ behavior: 'smooth', block: 'center' });
-}
-
-function findNext() {
-    if (findSpans.length === 0) {
-        runFindFromInput();
-        return;
-    }
-    currentFindIndex = nextFindIndex(currentFindIndex, findSpans.length, 1);
-    setActiveFindSpan();
-    updateFindCountDisplay();
-}
-
-function findPrevious() {
-    if (findSpans.length === 0) {
-        runFindFromInput();
-        return;
-    }
-    currentFindIndex = nextFindIndex(currentFindIndex, findSpans.length, -1);
-    setActiveFindSpan();
-    updateFindCountDisplay();
+    if (!span || !scroll) return;
+    scrollSync.programmatic(() => span.scrollIntoView({ behavior: 'smooth', block: 'center' }));
 }
 
 function clearFindHighlights() {
@@ -2179,77 +1670,24 @@ function clearFindHighlights() {
     findSpans = [];
 }
 
-function clearFindResults() {
-    clearFindHighlights();
-    currentFindIndex = -1;
-    updateFindCountDisplay();
-}
-
-function updateFindCountDisplay() {
-    updateFindCount(findOverlay, findSpans, currentFindIndex);
-}
-
-function openFindOverlay() {
-    ensureFindOverlay();
-    if (!findVisible) {
-        findReturnFocusEl = (document.activeElement && document.activeElement !== document.body)
-            ? document.activeElement
-            : null;
-    }
-    findOverlay.classList.add('show');
-    findVisible = true;
-    const sel = window.getSelection && window.getSelection().toString();
-    if (sel) {
-        findInput.value = sel;
-        runFindFromInput();
-    }
-    findInput.focus();
-    findInput.select();
-}
-
-function openFindAndReplace() {
-    // Preview is read-only, so Find-and-Replace collapses to plain Find here.
-    openFindOverlay();
-}
-
-/** Open the find bar pre-filled (workspace search result click-through). */
-function openFindWithQuery(query) {
-    if (!query || currentKind === 'pdf') return;
-    ensureFindOverlay();
-    findOverlay.classList.add('show');
-    findVisible = true;
-    findInput.value = query;
-    runFindFromInput();
-    findInput.focus();
-    findInput.select();
-}
-
-function useSelectionForFind(selectionText) {
-    ensureFindOverlay();
-    findInput.value = selectionText;
-    runFindFromInput();
-    // Do not steal focus: if bar is hidden, keep it hidden so user can keep reading.
-    if (findVisible) {
-        findInput.focus();
-        findInput.select();
-    }
-}
-
-function toggleFindOverlay() {
-    if (findVisible) closeFindOverlay(); else openFindOverlay();
-}
-
-function closeFindOverlay() {
-    if (!findOverlay) return;
-    findOverlay.classList.remove('show');
-    findVisible = false;
-    if (findTypeTimer) { clearTimeout(findTypeTimer); findTypeTimer = null; }
-    clearFindResults();
-    const returnTo = findReturnFocusEl;
-    findReturnFocusEl = null;
-    if (returnTo && document.contains(returnTo) && typeof returnTo.focus === 'function') {
-        returnTo.focus();
-    } else if (document.activeElement === findInput) {
-        findInput.blur();
-    }
-}
+const findBar = createFindBar({
+    document,
+    parent: document.getElementById('find-bar-slot'),
+    adapter: {
+        available: () => !!currentFilePath && currentKind !== KIND_PDF,
+        search: highlightFindMatches,
+        step(direction) {
+            if (direction !== 0) {
+                currentFindIndex = nextFindIndex(currentFindIndex, findSpans.length, direction);
+                setActiveFindSpan(true);
+            }
+            return currentFindIndex;
+        },
+        clear() {
+            clearFindHighlights();
+            currentFindIndex = -1;
+        },
+        selectionText: () => window.getSelection().toString(),
+        jumpToSelection: true,
+    },
+});

@@ -1,16 +1,13 @@
 // Shared constants and utilities for preview (main.js) and editor (editor.js)
 
 import {
+    KIND_MARKDOWN,
     KIND_JSON,
     KIND_YAML,
     KIND_TXT,
+    KIND_PDF,
 } from './constants.js';
 
-// Scroll sync configuration
-export const SCROLL_SYNC_DEBOUNCE_MS = 50;
-export const PROGRAMMATIC_SCROLL_TIMEOUT_MS = 100;
-export const MIN_SCROLL_DELTA_LINES = 0.5;
-export const MIN_SCROLL_DELTA_PERCENT = 0.01;
 export const LINE_HEIGHT_FALLBACK_MULTIPLIER = 1.4;
 
 // Font size boundaries (shared between preview and editor windows)
@@ -20,9 +17,6 @@ export const MAX_FONT_SIZE = 24;
 
 // Editor textarea font is this many px smaller than the synced preview font size
 export const EDITOR_FONT_SIZE_OFFSET = 4;
-
-// Debounce window for find-as-you-type
-export const FIND_TYPE_DEBOUNCE_MS = 80;
 
 export function parsePx(v) {
     const n = parseFloat(v);
@@ -50,9 +44,26 @@ export function directoryFromPath(filePath) {
     return idx > 0 ? normalized.slice(0, idx) : normalized;
 }
 
+const KIND_BY_EXTENSION = {
+    md: KIND_MARKDOWN,
+    markdown: KIND_MARKDOWN,
+    json: KIND_JSON,
+    yaml: KIND_YAML,
+    yml: KIND_YAML,
+    txt: KIND_TXT,
+    pdf: KIND_PDF,
+};
+
+// The one extension-to-kind rule; null for an extension with no kind.
+// The Rust side holds the same rule for rendering (markrust_core::Kind).
+export function kindFromPath(filePath) {
+    const match = /\.([^./\\]+)$/.exec(String(filePath || ''));
+    return (match && KIND_BY_EXTENSION[match[1].toLowerCase()]) || null;
+}
+
 export function kindLabel(kind) {
     switch (kind) {
-        case 'pdf': return 'PDF';
+        case KIND_PDF: return 'PDF';
         case KIND_JSON: return 'JSON';
         case KIND_YAML: return 'YAML';
         case KIND_TXT: return 'Text';
@@ -127,42 +138,6 @@ export function collectFindMatches(text, regex) {
         if (end === start) regex.lastIndex = start + 1;
     }
     return results;
-}
-
-/**
- * Creates the find overlay DOM and appends it to the given parent.
- * Includes match-case and whole-word toggles.
- * Returns { overlay, input, caseBtn, wordBtn } so the caller can wire events.
- */
-export function createFindOverlay(parent = document.body) {
-    const overlay = document.createElement('div');
-    overlay.className = 'find-overlay';
-    overlay.innerHTML = `
-        <input id="find-input" class="find-input" type="text" placeholder="Find..." aria-label="Find" />
-        <span class="find-count" id="find-count"></span>
-        <button class="find-btn find-toggle" id="find-case" type="button" title="Match case" aria-label="Match case" aria-pressed="false">Aa</button>
-        <button class="find-btn find-toggle" id="find-word" type="button" title="Whole word" aria-label="Whole word" aria-pressed="false">\u201C\u201D</button>
-        <button class="find-btn" id="find-prev" type="button" title="Previous match (Shift+Enter)" aria-label="Previous match">&#8593;</button>
-        <button class="find-btn" id="find-next" type="button" title="Next match (Enter)" aria-label="Next match">&#8595;</button>
-        <button class="find-btn" id="find-close" type="button" title="Close (Esc)" aria-label="Close find">&#10005;</button>
-    `;
-    (parent || document.body).appendChild(overlay);
-    return {
-        overlay,
-        input: overlay.querySelector('#find-input'),
-        caseBtn: overlay.querySelector('#find-case'),
-        wordBtn: overlay.querySelector('#find-word'),
-    };
-}
-
-export function updateFindCount(overlay, results, currentIndex) {
-    const countEl = overlay?.querySelector('#find-count');
-    if (!countEl) return;
-    if (results.length === 0) {
-        countEl.textContent = overlay?.querySelector('#find-input')?.value ? '0/0' : '';
-    } else {
-        countEl.textContent = `${currentIndex + 1}/${results.length}`;
-    }
 }
 
 /**
@@ -261,8 +236,6 @@ function __matches(e, def) {
  * - shift: true if Shift required (default false)
  * - alt: true if Alt/Option required (default false)
  * - action: function to call (may be async)
- * Entries are matched in order; more-specific (shift/alt) variants must
- * precede less-specific variants for the same key.
  */
 export function setupKeyboardShortcuts(shortcuts) {
     // Register every shortcut in the shared registry so chord dispatcher

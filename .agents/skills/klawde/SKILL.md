@@ -1,68 +1,67 @@
 ---
 name: klawde
-description: "Run only when explicitly invoked. Klawde entry protocol: read or create BRIEFING.md and CHANGES.md and confirm readiness at session start."
+description: "Run only when explicitly invoked. Klawde entry protocol: read BRIEFING.md in full, guidelines.md if present, the last 5 changes.db log entries and the open tasks, creating the records if missing, then confirm readiness at session start."
 ---
 
-# /klawde: Entry Protocol
+# $klawde: Entry Protocol
 
-Run this at the start of every session. Do not proceed with any task until complete.
+Run at session start. Complete this protocol before any other task, then stop. The contract's Records, The log, Tasks, The brief and Writing SQL safely sections define the shared rules.
 
 ## Steps
 
-1. Check existence with `ls BRIEFING.md CHANGES.md 2>/dev/null`. Note which printed and which did not.
+1. Run `ls BRIEFING.md changes.db 2>/dev/null` and note which exist. Run `command -v sqlite3`; if it is missing, stop and request installation of the SQLite CLI. Run `git rev-parse --is-inside-work-tree >/dev/null 2>&1 && git status --porcelain`, noting a non-repository; dirty state never blocks entry.
 
-2. If `BRIEFING.md` is missing, create it with:
+2. If `BRIEFING.md` is missing, create the empty four-field form:
 
 ```markdown
 # Briefing
 
 - Purpose:
-- Current scope:
+- Scope:
 - Key decisions:
-- Non-goals:
-- Breaking-change context:
+- Areas:
 ```
 
-   When filling fields (step 5 or later), match this shape: short, factual, decision-oriented.
+3. If `changes.db` is missing, first confirm `.agents/changes-schema.sql` exists; if it is absent, stop and recommend `upgrade.sh` from the klawde checkout. Then create the database:
 
-```markdown
-# Briefing
-
-- Purpose: CLI tool that syncs Shopify orders into the local ERP.
-- Current scope: order import, retry queue, dry-run mode. No refunds yet.
-- Key decisions: Postgres SKIP LOCKED over Redis (2026-05-12); single binary, no daemon.
-- Non-goals: multi-tenant support, real-time sync.
-- Breaking-change context: v0.4 renamed config key `shop_url` to `store_url`.
+```sh
+sqlite3 -bail changes.db < .agents/changes-schema.sql
 ```
 
-3. If `CHANGES.md` is missing, create it. Substitute `{today}` with today's ISO date (e.g. 2026-05-21) before writing:
+   Commit it like any other project file; never add it to `.gitignore`.
 
-```markdown
-# Changes
+4. If `changes.db` is present, read the schema version before reading anything else from it:
 
-Format: `YYYY-MM-DD [type] description` (max 200 chars). Types: decision, plan, doc, scope, code, note.
-
-{today} [note] Initialized.
+```sh
+sqlite3 -readonly changes.db "PRAGMA user_version;"
 ```
 
-4. Read `BRIEFING.md` completely.
+   - 8: continue.
+   - 1 to 7: stop. "changes.db is schema v<N>; run `$upgrade_klawde` to migrate it."
+   - 0: the database was never initialized. Stop. "changes.db exists but holds no schema; remove it and run `$klawde` again."
+   - above 8: stop. "changes.db is newer than this harness; update the klawde checkout."
 
-5. If Purpose or Current scope in `BRIEFING.md` is empty, ask the user: "What is this project's purpose and current scope?" Write the answer into `BRIEFING.md` before continuing.
+5. Read `BRIEFING.md` completely.
 
-6. Read `CHANGES.md` (at least the last 30 lines).
+6. Read `guidelines.md` if it exists. If it does not, continue and say nothing about it.
 
-7. Compare BRIEFING.md's stated purpose and current scope against the last 30 lines of CHANGES.md. Treat it as drift when either:
-   - three or more recent entries concern work on something absent from Current scope, or
-   - a `[scope]` or `[decision]` entry is not reflected in the brief.
+7. If `Purpose` or `Scope` is empty, ask "What is this project's purpose and scope?", wait for the answer, and write it before continuing. An answer the user already gave this session needs no second ask.
 
-   If drift, output the contradiction, recommend the user reconcile BRIEFING.md or run `$close` first, and stop. Do not output the "OK. Ready." block.
+8. Read the tail and the open tasks into context; do not print them:
 
-8. If no drift, output exactly this format, then stop:
+```sh
+sqlite3 -readonly changes.db "SELECT line FROM log_lines ORDER BY serial DESC LIMIT 5;"
+sqlite3 -readonly changes.db "SELECT line FROM task_lines ORDER BY id;"
+sqlite3 -readonly changes.db "SELECT count(*) FROM tasks;"
+```
+
+9. Output this format, then stop:
 
 ```
 OK. Ready.
-BRIEFING.md: <one-sentence summary of current briefing>
-CHANGES.md: <one-sentence summary of recent changes>
+BRIEFING.md: <one sentence: what this project is and what it is for>
+Tasks: <the measured count> open
+Dirty: <uncommitted files | clean | not a git repo>
 ```
 
-Do not proceed with any other task until this output is complete.
+Print nothing else from the log or the tasks.

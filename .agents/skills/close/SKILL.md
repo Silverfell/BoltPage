@@ -1,36 +1,41 @@
 ---
 name: close
-description: "Run only when explicitly invoked. Klawde close protocol: record decisions and scope changes to CHANGES.md and update BRIEFING.md before ending work."
+description: "Run only when explicitly invoked. Klawde close protocol: append what was done to the changes.db log, clear completed tasks, and update BRIEFING.md where this session changed what it states."
 ---
 
-# /close: Session Close Protocol
+# $close: Session Close Protocol
 
-Run this at the end of a session to persist state for the next session.
+Persist state at session end or as a mid-session checkpoint. Cleanup and sweep only: no `git status`, `git diff` or `git log` reconstruction. The contract's The log, Tasks, The brief and Writing SQL safely sections define the shared rules.
 
 ## Steps
 
-1. Read the current `CHANGES.md` and `BRIEFING.md`. If either is missing, create it first using the formats in `.agents/skills/klawde/SKILL.md`, then continue.
+1. Read `BRIEFING.md` completely. Check the schema version exactly as step 4 of `.agents/skills/klawde/SKILL.md` does, and stop the same way; then read the last five entries:
 
-2. Review all work done in this session. For each unrecorded shift in decisions, plans, scope, documents, external context, or code needing project-level explanation:
-   - Append a line at the bottom of `CHANGES.md`: `{today} [type] description` (one line, max 200 chars). Substitute `{today}` with today's ISO date before writing.
-   - Types: `decision`, `plan`, `doc`, `scope`, `code`, `note`
+```sh
+sqlite3 -readonly changes.db "SELECT line FROM log_lines ORDER BY serial DESC LIMIT 5;"
+```
 
-3. Review whether any of the following changed during this session:
-   - Project purpose or scope
-   - Key architectural or design decisions
-   - Non-goals or explicit exclusions
-   - Breaking changes (note reason and impact)
+   If either record is missing, create it with the forms in `.agents/skills/klawde/SKILL.md`. If the schema file is missing, stop and recommend `upgrade.sh` from the klawde checkout.
 
-   If any of the above changed, update `BRIEFING.md` accordingly. An empty field in `BRIEFING.md` (e.g., Purpose) counts as changed: draft it from what this session revealed. Keep it concise but sufficient to brief a new contributor; match the example brief in `.agents/skills/klawde/SKILL.md`.
+2. **Sweep.** Anything finished and verified this session that is not in the log gets its entry now, under the contract's three types. Any approved task completed this session that still has a row gets its `done` entry and its row deleted. When nothing qualifies, write nothing.
 
-4. Write only the file(s) you changed. If neither changed, do not write. Do not stage or commit. Leave changes dirty so the user controls when they enter git history.
+   Record the last serial before the inserts and read the tail afterwards for the closing range.
 
-5. Output exactly this format, then stop:
+3. **Brief.** Update a field only where this session changed the fact it states, under the contract's write rules. Never complete a proposed edit while its answer is pending.
+
+4. Measure the open tasks; never tally them yourself:
+
+```sh
+sqlite3 -readonly changes.db "SELECT count(*) FROM tasks;"
+```
+
+5. Output this format, then stop:
 
 ```
 Session closed.
-CHANGES.md: [number] new entries appended.
-BRIEFING.md: [updated | unchanged].
+changes.db: <N new entries (serials X-Y) | none>
+Tasks: <N open | none>
+BRIEFING.md: <updated: <field>: "<the new line>" | unchanged>
 ```
 
-Do not skip this protocol. If nothing recordable changed, say so and confirm both files are unchanged.
+   Paste the measured numbers, never expected values. When nothing changed, print only the block: no questions, no follow-up ideas.
