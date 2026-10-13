@@ -14,19 +14,30 @@ Required on every release
 -------------------------
 
 After the GitHub Release for `v<version>` is published (pushing the `v*` tag
-runs `release.yml`, which builds, notarizes, and uploads the arm64/x64 DMGs),
+runs `release.yml`, which builds, notarizes, and uploads the arm64/x64 DMGs;
+the tag must equal `v` + the `package.json` version or the workflow fails),
 you **must** update the cask and push it to the tap. Otherwise existing users'
 `brew upgrade --cask boltpage` never sees the new version.
 
-Use the script from the repo root:
+The release flow is a `dev` -> `main` PR, then a lightweight tag on `main`.
+From the pushed tag, `./release-build.sh` (repo root) runs the rest in order:
+it checks that `v<version>` is on GitHub and its commit is on `main`, waits
+(an hour by default) for the Release to be published with both DMGs and the
+Windows installer, runs `update-cask.sh`, and reminds you to commit the cask on
+`dev`. It builds nothing locally. `DRY_RUN=1 ./release-build.sh` does the same
+checks and passes `DRY_RUN` on to `update-cask.sh`.
+
+To run only the cask step, use the script from the repo root:
 
 ```sh
 ./update-cask.sh
 ```
 
-It reads the version from `boltpage/package.json`, downloads the published
-DMGs, computes their SHA256, rewrites `Casks/boltpage.rb` (version + both
-checksums; the URLs interpolate `#{version}`), and pushes the cask to the tap.
+It reads the version, tag and DMG names from
+`boltpage/scripts/release-identity.sh` (version from `boltpage/package.json`),
+downloads the published DMGs, computes their SHA256, rewrites
+`Casks/boltpage.rb` (version + both checksums; the URLs interpolate
+`#{version}`), and pushes the cask to the tap.
 Then commit the updated `Casks/boltpage.rb` in this repo so the source stays in
 sync (the script prints the exact command). Use `DRY_RUN=1 ./update-cask.sh` to
 rewrite the cask locally without pushing.
@@ -41,8 +52,10 @@ Manual fallback (if not using the script)
    ```
 2. Edit `Casks/boltpage.rb`: bump `version`, and replace the per-arch `sha256`
    values. Verify the interpolated URLs match the released asset names
-   (`BoltPage-<version>-arm64.dmg` / `BoltPage-<version>-x64.dmg`, produced by
-   `release.yml`'s rename step).
+   (`BoltPage-<version>-arm64.dmg` / `BoltPage-<version>-x64.dmg`, as named by
+   `boltpage/scripts/release-identity.sh`; `release.yml`'s rename step applies
+   them). The cask spells these names itself, so update it by hand if the
+   script's names ever change.
 3. Copy the file into the tap repo's `Casks/boltpage.rb`, commit, and push.
 
 Install (for users)

@@ -28,19 +28,21 @@ require_cmd() {
     exit 1
   fi
 }
-for c in gh node shasum git awk; do require_cmd "$c"; done
+for c in gh shasum git awk; do require_cmd "$c"; done
 
-VERSION="${VERSION:-$(node -p "require('$ROOT_DIR/boltpage/package.json').version")}"
-ARM_DMG="BoltPage-${VERSION}-arm64.dmg"
-X64_DMG="BoltPage-${VERSION}-x64.dmg"
-echo "==> Updating cask for v$VERSION ($REPO -> $TAP_REPO)"
+# Version, tag and DMG names come from release-identity.sh; VERSION overrides
+# the package.json version. Captured before eval so a failure stops the script
+# (eval of a failed substitution would succeed on empty input).
+IDENTITY="$(RELEASE_VERSION="${VERSION:-}" sh "$ROOT_DIR/boltpage/scripts/release-identity.sh")"
+eval "$IDENTITY"
+echo "==> Updating cask for $TAG ($REPO -> $TAP_REPO)"
 
 # 1) Pull the published release DMGs and checksum them.
 TMP="$(mktemp -d)"
 trap 'rm -rf "$TMP"' EXIT
-if ! gh release download "v${VERSION}" -R "$REPO" -p "$ARM_DMG" -p "$X64_DMG" -D "$TMP"; then
-  echo "❌ Could not download $ARM_DMG / $X64_DMG from the v${VERSION} release." >&2
-  echo "   Publish the GitHub Release first (push the v${VERSION} tag), then re-run." >&2
+if ! gh release download "$TAG" -R "$REPO" -p "$ARM_DMG" -p "$X64_DMG" -D "$TMP"; then
+  echo "❌ Could not download $ARM_DMG / $X64_DMG from the $TAG release." >&2
+  echo "   Publish the GitHub Release first (push the $TAG tag), then re-run." >&2
   exit 1
 fi
 ARM_SHA="$(shasum -a 256 "$TMP/$ARM_DMG" | awk '{print $1}')"
@@ -74,14 +76,14 @@ gh repo clone "$TAP_REPO" "$TAP_TMP" >/dev/null 2>&1
 mkdir -p "$TAP_TMP/Casks"
 cp "$CASK" "$TAP_TMP/Casks/boltpage.rb"
 if git -C "$TAP_TMP" diff --quiet -- Casks/boltpage.rb; then
-  echo "==> Tap already current for v$VERSION; nothing to push."
+  echo "==> Tap already current for $TAG; nothing to push."
 else
   git -C "$TAP_TMP" add Casks/boltpage.rb
-  git -C "$TAP_TMP" commit -qm "Update BoltPage cask to v${VERSION}"
+  git -C "$TAP_TMP" commit -qm "Update BoltPage cask to $TAG"
   git -C "$TAP_TMP" push -q origin HEAD
-  echo "==> Pushed cask v$VERSION to $TAP_REPO"
+  echo "==> Pushed cask $TAG to $TAP_REPO"
 fi
 
 echo ""
 echo "Done. Commit the updated cask in this repo so the source stays in sync:"
-echo "  git add $CASK && git commit -m \"chore(cask): update to v${VERSION}\""
+echo "  git add $CASK && git commit -m \"chore(cask): update to $TAG\""

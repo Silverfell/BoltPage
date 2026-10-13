@@ -2,13 +2,14 @@ use serde::{Deserialize, Serialize};
 use std::fs;
 use std::path::Path;
 use std::time::UNIX_EPOCH;
-use tauri::{AppHandle, Manager};
+use tauri::AppHandle;
 use tauri_plugin_store::StoreExt;
+use tokio::sync::Mutex;
 
-use crate::AppState;
+use crate::constants::MAX_RECENT_FILES;
 
-// serde(default): the store is also written one key at a time by
-// save_preference_key, so the map can legally hold any subset of fields.
+// The typed read view get_preferences returns. serde(default): the store is
+// written one key at a time, so the map can legally hold any subset of fields.
 // Without this, a partial map fails deserialization and get_preferences
 // silently falls back to Default, discarding every saved preference.
 #[derive(Debug, Serialize, Deserialize)]
@@ -55,47 +56,38 @@ impl Default for AppPreferences {
     }
 }
 
-#[tauri::command]
-pub(crate) fn get_preferences(app: AppHandle) -> Result<AppPreferences, String> {
-    let store = app
-        .store(".boltpage.dat")
-        .map_err(|e| format!("Failed to access store: {e}"))?;
+type PrefMap = serde_json::Map<String, serde_json::Value>;
 
-    let prefs = store
-        .get("preferences")
-        .and_then(|v| serde_json::from_value::<AppPreferences>(v.clone()).ok())
-        .unwrap_or_default();
+/// Serializes read-modify-write cycles on the preference store so concurrent
+/// saves cannot overwrite each other. Private: update() is the only taker.
+static PREF_LOCK: Mutex<()> = Mutex::const_new(());
 
-    Ok(prefs)
+/// Keys the path grants trust: a known recent is granted on open, a session
+/// file on restore and the workspace folder on read. Only Rust code that saw
+/// the user's pick writes them, so the webview cannot grant itself a path.
+const RUST_ONLY_KEYS: &[&str] = &["recent_files", "session_files", "workspace_folder"];
+
+fn webview_may_set(key: &str) -> bool {
+    !RUST_ONLY_KEYS.contains(&key)
 }
 
-#[tauri::command]
-pub(crate) fn save_preferences(app: AppHandle, preferences: AppPreferences) -> Result<(), String> {
-    let store = app
-        .store(".boltpage.dat")
-        .map_err(|e| format!("Failed to access store: {e}"))?;
-
-    store.set(
-        "preferences",
-        serde_json::to_value(&preferences)
-            .map_err(|e| format!("Failed to serialize preferences: {e}"))?,
-    );
+/// The stored preferences map. None when the store is unreachable or holds
+/// no map yet (the store may legally hold a partial map).
+fn load_map(app: &AppHandle) -> Option<PrefMap> {
+    let store = app.store(".boltpage.dat").ok()?;
     store
-        .save()
-        .map_err(|e| format!("Failed to save preferences: {e}"))?;
-
-    Ok(())
+        .get("preferences")
+        .and_then(|v| serde_json::from_value::<PrefMap>(v).ok())
 }
 
-/// Atomically read-modify-write a single preference key while holding pref_lock.
-/// Used by both JS (via the command) and internal Rust code.
-pub(crate) async fn save_preference_key_inner(
+/// The one read-modify-write entry: holds PREF_LOCK while it loads the map,
+/// applies `change` and saves, so concurrent writers cannot lose each other's
+/// keys. Used by both JS (via save_preference_key) and internal Rust code.
+pub(crate) async fn update(
     app: &AppHandle,
-    key: &str,
-    value: serde_json::Value,
+    change: impl FnOnce(&mut PrefMap),
 ) -> Result<(), String> {
-    let state = app.state::<AppState>();
-    let _lock = state.pref_lock.lock().await;
+    let _lock = PREF_LOCK.lock().await;
 
     let store = app
         .store(".boltpage.dat")
@@ -103,12 +95,10 @@ pub(crate) async fn save_preference_key_inner(
 
     let mut map = store
         .get("preferences")
-        .and_then(|v| {
-            serde_json::from_value::<serde_json::Map<String, serde_json::Value>>(v.clone()).ok()
-        })
+        .and_then(|v| serde_json::from_value::<PrefMap>(v).ok())
         .unwrap_or_default();
 
-    map.insert(key.to_string(), value);
+    change(&mut map);
 
     store.set("preferences", serde_json::Value::Object(map));
     store
@@ -117,12 +107,80 @@ pub(crate) async fn save_preference_key_inner(
     Ok(())
 }
 
+// --- Changes applied through update() ---
+
+pub(crate) fn set_key(map: &mut PrefMap, key: &str, value: serde_json::Value) {
+    map.insert(key.to_string(), value);
+}
+
+fn string_list(map: &PrefMap, key: &str) -> Vec<String> {
+    map.get(key)
+        .and_then(|v| serde_json::from_value(v.clone()).ok())
+        .unwrap_or_default()
+}
+
+/// Record `path` at the head of the recent-files list (most-recent first),
+/// deduplicated and capped at MAX_RECENT_FILES.
+pub(crate) fn push_recent(map: &mut PrefMap, path: &str) {
+    let mut vec = string_list(map, "recent_files");
+    vec.retain(|p| p != path);
+    vec.insert(0, path.to_string());
+    vec.truncate(MAX_RECENT_FILES);
+    map.insert("recent_files".into(), vec.into());
+}
+
+/// Push `path` to the end of the ordered session list ("session_files"),
+/// removing an earlier occurrence first. Order is preserved for session restore.
+pub(crate) fn session_add(map: &mut PrefMap, path: &str) {
+    let mut vec = string_list(map, "session_files");
+    vec.retain(|p| p != path);
+    vec.push(path.to_string());
+    map.insert("session_files".into(), vec.into());
+}
+
+pub(crate) fn session_remove(map: &mut PrefMap, path: &str) {
+    let mut vec = string_list(map, "session_files");
+    vec.retain(|p| p != path);
+    map.insert("session_files".into(), vec.into());
+}
+
+/// Remember the last size of a preview window, or of an editor window.
+pub(crate) fn set_window_size(map: &mut PrefMap, editor: bool, width: u32, height: u32) {
+    let (width_key, height_key) = if editor {
+        ("editor_window_width", "editor_window_height")
+    } else {
+        ("window_width", "window_height")
+    };
+    map.insert(width_key.into(), width.into());
+    map.insert(height_key.into(), height.into());
+}
+
+#[tauri::command]
+pub(crate) fn get_preferences(app: AppHandle) -> Result<AppPreferences, String> {
+    let prefs = load_map(&app)
+        .and_then(|map| serde_json::from_value(serde_json::Value::Object(map)).ok())
+        .unwrap_or_default();
+
+    Ok(prefs)
+}
+
+pub(crate) async fn save_preference_key_inner(
+    app: &AppHandle,
+    key: &str,
+    value: serde_json::Value,
+) -> Result<(), String> {
+    update(app, |map| set_key(map, key, value)).await
+}
+
 #[tauri::command]
 pub(crate) async fn save_preference_key(
     app: AppHandle,
     key: String,
     value: serde_json::Value,
 ) -> Result<(), String> {
+    if !webview_may_set(&key) {
+        return Err(format!("Preference key is not writable: {key}"));
+    }
     save_preference_key_inner(&app, &key, value).await
 }
 
@@ -131,45 +189,25 @@ pub(crate) async fn mark_cli_setup_declined(app: AppHandle) -> Result<(), String
     save_preference_key_inner(&app, "cli_setup_prompted", serde_json::Value::Bool(true)).await
 }
 
-/// Read a Vec<String> entry from the preferences map. Returns empty on any
-/// missing/parse failure (the store may legally hold a partial map).
-fn read_string_list(app: &AppHandle, key: &str) -> Vec<String> {
-    let Ok(store) = app.store(".boltpage.dat") else {
-        return Vec::new();
-    };
-    store
-        .get("preferences")
-        .and_then(|v| {
-            serde_json::from_value::<serde_json::Map<String, serde_json::Value>>(v.clone()).ok()
-        })
-        .and_then(|map| {
-            map.get(key)
-                .and_then(|v| serde_json::from_value::<Vec<String>>(v.clone()).ok())
-        })
-        .unwrap_or_default()
-}
-
 /// Raw recent-files list, most-recent first. Dead paths are NOT filtered here;
 /// call sites decide (menu and get_recent_files filter, validation does not).
 pub(crate) fn read_recent_paths(app: &AppHandle) -> Vec<String> {
-    read_string_list(app, "recent_files")
+    load_map(app)
+        .map(|map| string_list(&map, "recent_files"))
+        .unwrap_or_default()
 }
 
 /// Ordered list of files that were open in preview windows (session restore).
 pub(crate) fn read_session_paths(app: &AppHandle) -> Vec<String> {
-    read_string_list(app, "session_files")
+    load_map(app)
+        .map(|map| string_list(&map, "session_files"))
+        .unwrap_or_default()
 }
 
 /// Read a single string entry from the preferences map (None when missing,
 /// null, or unparseable).
 pub(crate) fn read_string_pref(app: &AppHandle, key: &str) -> Option<String> {
-    let store = app.store(".boltpage.dat").ok()?;
-    store
-        .get("preferences")
-        .and_then(|v| {
-            serde_json::from_value::<serde_json::Map<String, serde_json::Value>>(v.clone()).ok()
-        })
-        .and_then(|map| map.get(key).and_then(|v| v.as_str().map(|s| s.to_string())))
+    load_map(app)?.get(key)?.as_str().map(|s| s.to_string())
 }
 
 #[derive(Debug, Serialize)]
@@ -213,4 +251,97 @@ pub(crate) async fn get_recent_files(app: AppHandle) -> Result<Vec<RecentFile>, 
     }
 
     Ok(out)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+
+    fn map(value: serde_json::Value) -> PrefMap {
+        serde_json::from_value(value).unwrap()
+    }
+
+    #[test]
+    fn window_resize_keeps_session_files_and_workspace_folder() {
+        let mut m = map(json!({
+            "theme": "light",
+            "session_files": ["/a.md", "/b.md"],
+            "workspace_folder": "/notes"
+        }));
+
+        set_window_size(&mut m, false, 1000, 700);
+        set_window_size(&mut m, true, 1200, 900);
+
+        assert_eq!(m["session_files"], json!(["/a.md", "/b.md"]));
+        assert_eq!(m["workspace_folder"], json!("/notes"));
+        assert_eq!(m["theme"], json!("light"));
+        assert_eq!(m["window_width"], json!(1000));
+        assert_eq!(m["window_height"], json!(700));
+        assert_eq!(m["editor_window_width"], json!(1200));
+        assert_eq!(m["editor_window_height"], json!(900));
+    }
+
+    #[test]
+    fn set_key_keeps_other_keys() {
+        let mut m = map(json!({ "theme": "light", "font_size": 20 }));
+
+        set_key(&mut m, "theme", json!("drac"));
+        set_key(&mut m, "workspace_folder", serde_json::Value::Null);
+
+        assert_eq!(
+            serde_json::Value::Object(m),
+            json!({ "theme": "drac", "font_size": 20, "workspace_folder": null })
+        );
+    }
+
+    #[test]
+    fn webview_cannot_set_keys_the_grants_trust() {
+        for key in ["recent_files", "session_files", "workspace_folder"] {
+            assert!(!webview_may_set(key));
+        }
+        for key in ["theme", "font_size", "toc_visible", "window_width"] {
+            assert!(webview_may_set(key));
+        }
+    }
+
+    #[test]
+    fn push_recent_moves_to_head_dedupes_and_caps() {
+        let mut m = PrefMap::new();
+        for i in 0..MAX_RECENT_FILES + 2 {
+            push_recent(&mut m, &format!("/{i}.md"));
+        }
+        push_recent(&mut m, "/5.md");
+
+        let recents = string_list(&m, "recent_files");
+        assert_eq!(recents.len(), MAX_RECENT_FILES);
+        assert_eq!(recents[0], "/5.md");
+        assert_eq!(recents.iter().filter(|p| *p == "/5.md").count(), 1);
+        assert_eq!(recents[1], format!("/{}.md", MAX_RECENT_FILES + 1));
+    }
+
+    #[test]
+    fn session_add_and_remove_keep_order() {
+        let mut m = map(json!({ "session_files": ["/a.md", "/b.md", "/c.md"] }));
+
+        session_add(&mut m, "/a.md");
+        assert_eq!(m["session_files"], json!(["/b.md", "/c.md", "/a.md"]));
+
+        session_remove(&mut m, "/c.md");
+        assert_eq!(m["session_files"], json!(["/b.md", "/a.md"]));
+
+        session_remove(&mut m, "/missing.md");
+        assert_eq!(m["session_files"], json!(["/b.md", "/a.md"]));
+    }
+
+    #[test]
+    fn list_changes_start_from_empty_on_missing_or_malformed_key() {
+        let mut m = map(json!({ "recent_files": "not a list" }));
+
+        push_recent(&mut m, "/a.md");
+        session_add(&mut m, "/a.md");
+
+        assert_eq!(m["recent_files"], json!(["/a.md"]));
+        assert_eq!(m["session_files"], json!(["/a.md"]));
+    }
 }

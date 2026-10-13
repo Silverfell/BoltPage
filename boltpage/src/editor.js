@@ -1,33 +1,18 @@
 import {
-    SCROLL_SYNC_DEBOUNCE_MS,
-    PROGRAMMATIC_SCROLL_TIMEOUT_MS,
-    MIN_SCROLL_DELTA_LINES,
-    MIN_SCROLL_DELTA_PERCENT,
-    DEFAULT_FONT_SIZE,
     MIN_FONT_SIZE,
     MAX_FONT_SIZE,
     EDITOR_FONT_SIZE_OFFSET,
-    FIND_TYPE_DEBOUNCE_MS,
-    clampFontSize,
     setBadgeState,
-    createFindOverlay,
-    updateFindCount,
     applyThemeToDocument,
     applyFontFamily,
-    DEFAULT_DOCUMENT_FONT_ID,
-    DEFAULT_EDITOR_FONT_ID,
     setupKeyboardShortcuts,
     setupChordShortcuts,
     createCommandPalette,
     isUrlLike,
+    kindFromPath,
 } from './shared.js';
 import {
     EVENT_FILE_CHANGED,
-    EVENT_THEME_CHANGED,
-    EVENT_FONT_SIZE_CHANGED,
-    EVENT_FONT_FAMILY_CHANGED,
-    EVENT_TOOLBAR_DENSITY_CHANGED,
-    EVENT_SCROLL_SYNC,
     EVENT_MENU_CLOSE,
     EVENT_MENU_FIND,
     EVENT_MENU_FIND_NEXT,
@@ -41,10 +26,13 @@ import {
     EVENT_MENU_COMMAND_PALETTE,
     EVENT_MENU_PRINT,
     KIND_MARKDOWN,
-    KIND_JSON,
-    KIND_YAML,
     KIND_TXT,
 } from './constants.js';
+import { createScrollSync } from './scroll-sync.js';
+import { createDocumentSession } from './document-session.js';
+import { createAppearance } from './appearance.js';
+import { createFindBar } from './find-bar.js';
+import { createCommands } from './commands.js';
 // Vendored CodeMirror 6 (pinned build, see scripts/vendor-codemirror.sh).
 // Assembled from explicit extensions; basicSetup is deliberately not used
 // because its searchKeymap (Mod-F) would conflict with the docked find bar.
@@ -95,29 +83,14 @@ const appWindow = getCurrentWindow();
 let currentFilePath = null;
 let currentFileKind = KIND_MARKDOWN;
 let editorView = null;
-let isDirty = false;
-let saveTimeout = null;
-// Serialize saves: a save in flight defers the next request via pendingSave so
-// two write_file calls never overlap (which could land out of order).
-let isSaving = false;
-let pendingSave = false;
+// Owns load, dirty state, saves and external reloads; null without a file.
+let session = null;
 let previewWindow = null;
-let isProgrammaticScroll = false;
-let scrollDebounce = null;
 let wordWrapEnabled = false;
 let showLineNumbers = true;
-let currentFontSize = 18;
-let currentToolbarDensity = 'icon-label';
 let closeEventSent = false;
 let inspectorRafId = null;
-let inspectorEol = 'LF';
 let commandPalette = null;
-// Last known on-disk content, LF-normalized. Used to tell our own save echo
-// (and no-op rewrites) apart from genuine external modifications.
-let lastKnownDiskText = '';
-// True while a programmatic dispatch loads/normalizes content, so the update
-// listener doesn't mark the buffer dirty or schedule saves for it.
-let programmaticChange = false;
 // On-type preview: debounce + size guard for buffer broadcasts.
 const BUFFER_BROADCAST_DEBOUNCE_MS = 150;
 const BUFFER_BROADCAST_MAX_CHARS = 2_000_000;
@@ -129,18 +102,6 @@ const gutterCompartment = new Compartment();
 const wrapCompartment = new Compartment();
 const vimCompartment = new Compartment();
 let vimModeEnabled = false;
-
-// Track last synced position to filter micro-scrolls
-let lastSyncedLine = null;
-let lastSyncedPercent = null;
-
-function detectFileKind(filePath) {
-    const lower = String(filePath || '').toLowerCase();
-    if (lower.endsWith('.json')) return KIND_JSON;
-    if (lower.endsWith('.yaml') || lower.endsWith('.yml')) return KIND_YAML;
-    if (lower.endsWith('.txt')) return KIND_TXT;
-    return KIND_MARKDOWN;
-}
 
 // === Editor view =================================================
 
@@ -183,11 +144,8 @@ function buildEditorExtensions() {
 
 function onEditorUpdate(update) {
     if (update.docChanged) {
-        if (!programmaticChange) {
-            markDirty();
-            scheduleAutoSave();
-            scheduleBufferBroadcast();
-        }
+        if (session && session.edited()) scheduleBufferBroadcast();
+        findBar.contentChanged();
         scheduleInspectorUpdate();
     } else if (update.selectionSet) {
         scheduleInspectorUpdate();
@@ -200,38 +158,36 @@ function createEditorView(doc) {
         state: EditorState.create({ doc, extensions: buildEditorExtensions() }),
         parent: host,
     });
-    editorView.scrollDOM.addEventListener('scroll', onEditorScroll);
+    editorView.scrollDOM.addEventListener('scroll', scrollSync.onScroll);
 }
 
 /**
- * Normalize raw file content for the buffer. The buffer is kept LF-normalized
- * (matching what the old textarea enforced); the on-disk EOL mode is
- * remembered in `inspectorEol` and re-applied by saveFile.
+ * Buffer writes the document session asks for. 'format' is the JSON rewrite
+ * on save: a full-document change, so CM maps the selection through it and
+ * the caret stays put. 'reload' is fresh disk content: it replaces the editor
+ * state, which intentionally drops undo history (undoing across an external
+ * reload would resurrect a stale file), preserving caret and scroll
+ * best-effort. The new state has no search query, so the find bar's is put
+ * back and counted again.
  */
-async function prepareContent(raw) {
-    inspectorEol = raw.includes('\r\n') ? 'CRLF' : 'LF';
-    const normalized = raw.replace(/\r\n/g, '\n');
-    lastKnownDiskText = normalized;
-    let content = normalized;
-    if (currentFilePath && currentFilePath.toLowerCase().endsWith('.json')) {
-        try {
-            content = await invoke('format_json_pretty', { content });
-        } catch (e) {
-            console.warn('JSON pretty formatting failed; showing raw:', e);
-        }
+function setBufferText(text, why) {
+    if (why === 'format') {
+        editorView.dispatch({
+            changes: { from: 0, to: editorView.state.doc.length, insert: text },
+        });
+        return;
     }
-    return content;
-}
-
-/**
- * Replace the whole buffer with fresh disk content (external reload).
- * Replaces the editor state, which intentionally drops undo history: undoing
- * across an external reload would resurrect a stale file.
- */
-async function applyFileContent(raw, statusLabel) {
-    const content = await prepareContent(raw);
-    editorView.setState(EditorState.create({ doc: content, extensions: buildEditorExtensions() }));
-    updateStatus(statusLabel);
+    const prevHead = editorView.state.selection.main.head;
+    const prevScroll = editorView.scrollDOM.scrollTop;
+    scrollSync.programmatic(() => {
+        editorView.setState(EditorState.create({ doc: text, extensions: buildEditorExtensions() }));
+        const pos = Math.min(prevHead, editorView.state.doc.length);
+        editorView.dispatch({ selection: { anchor: pos } });
+        editorView.scrollDOM.scrollTop = prevScroll;
+    });
+    if (currentQuery) editorView.dispatch({ effects: setSearchQuery.of(currentQuery) });
+    findBar.contentChanged();
+    scheduleInspectorUpdate();
 }
 
 // === Chrome: font size, density, inspector ======================
@@ -240,52 +196,48 @@ function updateFontSizeControls() {
     const indicator = document.getElementById('editor-font-size-indicator');
     const decreaseBtn = document.getElementById('editor-font-size-decrease-btn');
     const increaseBtn = document.getElementById('editor-font-size-increase-btn');
-    if (indicator) indicator.textContent = `${currentFontSize}px`;
-    if (decreaseBtn) decreaseBtn.disabled = currentFontSize <= MIN_FONT_SIZE;
-    if (increaseBtn) increaseBtn.disabled = currentFontSize >= MAX_FONT_SIZE;
+    const fontSize = appearance.get('fontSize');
+    if (indicator) indicator.textContent = `${fontSize}px`;
+    if (decreaseBtn) decreaseBtn.disabled = fontSize <= MIN_FONT_SIZE;
+    if (increaseBtn) increaseBtn.disabled = fontSize >= MAX_FONT_SIZE;
 }
 
-function editorFontSizePx(fontSize = currentFontSize) {
-    return Math.max(12, clampFontSize(fontSize) - EDITOR_FONT_SIZE_OFFSET);
+function editorFontSizePx(fontSize) {
+    return Math.max(12, fontSize - EDITOR_FONT_SIZE_OFFSET);
 }
 
-function applyFontSize(fontSize, options = {}) {
-    const { save = false, broadcast = false } = options;
-    const nextFontSize = clampFontSize(fontSize);
-    const anchorLine = editorView && currentFilePath ? getTopLineForEditor() : null;
-    currentFontSize = nextFontSize;
+// Theme, font size, fonts and toolbar density, synced across windows (see
+// appearance.js). Each effect is what this window does to show a value.
+const appearance = createAppearance({ invoke, listen, effects: {
+    theme: applyThemeToDocument,
+    fontSize: (fontSize) => {
+        const anchorLine = editorView && currentFilePath ? getTopLineForEditor() : null;
 
-    document.documentElement.style.setProperty('--editor-font-size', `${editorFontSizePx(currentFontSize)}px`);
-    document.documentElement.style.setProperty('--editor-gutter-font-size', `${Math.max(11, editorFontSizePx(currentFontSize) - 1)}px`);
-    if (editorView) editorView.requestMeasure();
+        document.documentElement.style.setProperty('--editor-font-size', `${editorFontSizePx(fontSize)}px`);
+        document.documentElement.style.setProperty('--editor-gutter-font-size', `${Math.max(11, editorFontSizePx(fontSize) - 1)}px`);
+        if (editorView) editorView.requestMeasure();
 
-    updateFontSizeControls();
+        updateFontSizeControls();
 
-    if (typeof anchorLine === 'number') {
-        requestAnimationFrame(() => scrollEditorToLine(anchorLine));
-    }
-
-    if (save) {
-        invoke('save_preference_key', { key: 'font_size', value: currentFontSize })
-            .catch(err => console.error('Failed to save font_size preference:', err));
-    }
-    if (broadcast) {
-        invoke('broadcast_font_size_change', { fontSize: currentFontSize })
-            .catch(err => console.error('Failed to broadcast font size change:', err));
-    }
-}
+        if (typeof anchorLine === 'number') {
+            requestAnimationFrame(() => scrollSync.programmatic(() => scrollEditorToLine(anchorLine)));
+        }
+    },
+    toolbarDensity: (density) => {
+        document.documentElement.dataset.toolbarDensity = density;
+    },
+    documentFont: (id) => {
+        applyFontFamily({ documentId: id });
+        if (editorView) editorView.requestMeasure();
+    },
+    editorFont: (id) => {
+        applyFontFamily({ editorId: id });
+        if (editorView) editorView.requestMeasure();
+    },
+} });
 
 function changeFontSize(delta) {
-    applyFontSize(currentFontSize + delta, { save: true, broadcast: true });
-}
-
-function normalizeDensity(v) {
-    return v === 'icon' || v === 'label' ? v : 'icon-label';
-}
-
-function applyToolbarDensity(density) {
-    currentToolbarDensity = normalizeDensity(density);
-    document.documentElement.dataset.toolbarDensity = currentToolbarDensity;
+    appearance.set('fontSize', appearance.get('fontSize') + delta);
 }
 
 function applyInspectorVisibility(visible) {
@@ -379,7 +331,7 @@ function updateInspector() {
     if (elCursor) elCursor.textContent = `${cursorLine}:${cursorCol}`;
     if (elSel) elSel.textContent = String(selLen);
     if (elEncoding) elEncoding.textContent = 'UTF-8';
-    if (elEol) elEol.textContent = inspectorEol;
+    if (elEol) elEol.textContent = session ? session.eol : 'LF';
 
     // Reading time and Flesch-Kincaid grade only make sense for prose.
     const isProse = currentFileKind === KIND_MARKDOWN || currentFileKind === KIND_TXT;
@@ -472,7 +424,7 @@ function toggleVimMode() {
         .catch(err => console.error('Failed to save editor_vim_mode preference:', err));
 }
 
-// === Status, save, external changes ==============================
+// === Status, buffer broadcast ====================================
 
 function updateStatus(status) {
     const statusBadge = document.getElementById('editor-status-badge');
@@ -484,111 +436,10 @@ function updateStatus(status) {
     setBadgeState(statusBadge, status, tone, false);
 }
 
-function markDirty() {
-    if (!isDirty) {
-        isDirty = true;
-        updateStatus('Modified');
-    }
-}
-
-// Returns true when the buffer is persisted (or there was nothing to save),
-// false when the write failed. Callers that close the window must honor false.
-async function saveFile() {
-    if (!currentFilePath || !isDirty || !editorView) return true;
-    // A save is already running: let it finish, then flush the newer buffer.
-    if (isSaving) {
-        pendingSave = true;
-        return true;
-    }
-    isSaving = true;
-    try {
-        let content = editorView.state.doc.toString();
-
-        // For JSON files, normalize to the same pretty-sorted format as preview
-        const lower = currentFilePath.toLowerCase();
-        if (lower.endsWith('.json')) {
-            try {
-                const formatted = await invoke('format_json_pretty', { content });
-                // Rewrite the buffer only when formatting changed it; CM maps the
-                // selection through the change, so the caret stays put.
-                if (formatted !== content) {
-                    programmaticChange = true;
-                    try {
-                        editorView.dispatch({
-                            changes: { from: 0, to: editorView.state.doc.length, insert: formatted },
-                        });
-                    } finally {
-                        programmaticChange = false;
-                    }
-                    content = formatted;
-                }
-            } catch (e) {
-                console.warn('JSON pretty formatting failed on save; saving raw content:', e);
-            }
-        }
-
-        try {
-            // Buffer text is LF-normalized; re-apply the file's on-disk EOL mode.
-            const onDisk = inspectorEol === 'CRLF' ? content.replace(/\n/g, '\r\n') : content;
-            await invoke('write_file', { path: currentFilePath, content: onDisk });
-            lastKnownDiskText = content;
-            // Only clear the dirty flag when the buffer still matches what we
-            // wrote; edits that landed during the write keep it set so the next
-            // save persists them instead of seeing a falsely-clean buffer.
-            isDirty = editorView.state.doc.toString() !== content;
-            updateStatus(isDirty ? 'Modified' : 'Saved');
-
-            // Notify preview window to refresh (fire-and-forget; don't steal focus)
-            if (previewWindow) {
-                invoke('refresh_preview', { window: previewWindow }).catch(() => {});
-            }
-            return true;
-        } catch (err) {
-            console.error('Failed to save file:', err);
-            updateStatus('Error saving');
-            return false;
-        }
-    } finally {
-        isSaving = false;
-        // Edits arrived while this save was in flight: schedule a flush.
-        if (pendingSave) {
-            pendingSave = false;
-            scheduleAutoSave();
-        }
-    }
-}
-
-/**
- * The watched file changed on disk. Distinguish three cases:
- * - our own save echo / no-op rewrite (disk matches lastKnownDiskText): ignore;
- * - clean buffer: reload from disk, preserving caret and scroll best-effort;
- * - dirty buffer: keep the user's edits, surface a persistent warning badge.
- *   Autosave still wins on the next write (deliberate last-writer-wins, but
- *   now visible instead of a silent clobber).
- */
-async function handleExternalFileChange() {
-    if (!currentFilePath || !editorView) return;
-    let raw;
-    try {
-        raw = await invoke('read_file', { path: currentFilePath });
-    } catch (err) {
-        console.error('Failed to re-read externally changed file:', err);
-        return;
-    }
-    const normalized = raw.replace(/\r\n/g, '\n');
-    if (normalized === lastKnownDiskText) return;
-    if (isDirty) {
-        lastKnownDiskText = normalized;
-        updateStatus('File changed on disk');
-        return;
-    }
-    const prevHead = editorView.state.selection.main.head;
-    const prevScroll = editorView.scrollDOM.scrollTop;
-    await applyFileContent(raw, 'Reloaded');
-    const pos = Math.min(prevHead, editorView.state.doc.length);
-    editorView.dispatch({ selection: { anchor: pos } });
-    editorView.scrollDOM.scrollTop = prevScroll;
-    scheduleInspectorUpdate();
+// Resolves to 'persisted' when the buffer is on disk (or there is no file),
+// 'failed' when the write failed. Callers that close the window must honor it.
+function saveEditor() {
+    return session ? session.save() : Promise.resolve('persisted');
 }
 
 /**
@@ -617,16 +468,6 @@ function scheduleBufferBroadcast() {
             },
         }).catch(err => console.error('Failed to broadcast buffer:', err));
     }, BUFFER_BROADCAST_DEBOUNCE_MS);
-}
-
-function scheduleAutoSave() {
-    if (saveTimeout) {
-        clearTimeout(saveTimeout);
-    }
-
-    saveTimeout = setTimeout(() => {
-        saveFile();
-    }, 700); // Slightly longer debounce for smoother typing
 }
 
 // === Markdown format commands ====================================
@@ -778,56 +619,38 @@ function editorScrollableHeight() {
 }
 
 function scrollEditorToLine(line) {
-    if (!editorView) return;
+    if (!editorView) return false;
     const doc = editorView.state.doc;
     const n = Math.max(1, Math.min(doc.lines, Math.round(line)));
-    isProgrammaticScroll = true;
     editorView.dispatch({
         effects: EditorView.scrollIntoView(doc.line(n).from, { y: 'start' }),
     });
-    setTimeout(() => { isProgrammaticScroll = false; }, PROGRAMMATIC_SCROLL_TIMEOUT_MS);
 }
 
-function onEditorScroll() {
-    if (!currentFilePath || isProgrammaticScroll || !editorView) return;
-    if (scrollDebounce) clearTimeout(scrollDebounce);
-    scrollDebounce = setTimeout(async () => {
-        const lower = currentFilePath.toLowerCase();
-        const isJson = lower.endsWith('.json');
-        const isYaml = lower.endsWith('.yaml') || lower.endsWith('.yml');
-        const isTxt = lower.endsWith('.txt');
-        let payload;
-        if (isJson || isYaml || isTxt) {
-            const line = getTopLineForEditor();
-            if (line === null) return;
-            // Filter micro-scrolls: only broadcast if line changed significantly
-            if (lastSyncedLine !== null && Math.abs(line - lastSyncedLine) < MIN_SCROLL_DELTA_LINES) {
-                return;
-            }
-            lastSyncedLine = line;
-            const kind = isJson ? KIND_JSON : (isYaml ? KIND_YAML : KIND_TXT);
-            payload = { source: appWindow.label, file_path: currentFilePath, kind, line, percent: null };
-        } else {
+const scrollSync = createScrollSync({
+    adapter: {
+        label: appWindow.label,
+        filePath: () => currentFilePath,
+        kind: () => currentFileKind,
+        topLine: getTopLineForEditor,
+        topPercent() {
             const scrollableHeight = editorScrollableHeight();
-            if (scrollableHeight <= 0) {
-                // Content fits in viewport, no scroll sync needed
-                return;
-            }
-            const percent = Math.max(0, Math.min(1, editorView.scrollDOM.scrollTop / scrollableHeight));
-            // Filter micro-scrolls: only broadcast if percent changed significantly
-            if (lastSyncedPercent !== null && Math.abs(percent - lastSyncedPercent) < MIN_SCROLL_DELTA_PERCENT) {
-                return;
-            }
-            lastSyncedPercent = percent;
-            payload = { source: appWindow.label, file_path: currentFilePath, kind: KIND_MARKDOWN, line: null, percent };
-        }
-        try {
-            await invoke('broadcast_scroll_sync', { payload });
-        } catch (e) {
-            // ignore
-        }
-    }, SCROLL_SYNC_DEBOUNCE_MS);
-}
+            // Content fits in viewport, no scroll sync needed
+            if (scrollableHeight <= 0) return null;
+            return Math.max(0, Math.min(1, editorView.scrollDOM.scrollTop / scrollableHeight));
+        },
+        scrollToLine: scrollEditorToLine,
+        scrollToPercent(percent) {
+            if (!editorView) return false;
+            const scrollableHeight = editorScrollableHeight();
+            if (scrollableHeight <= 0) return false;
+            editorView.scrollDOM.scrollTop = Math.max(0, percent * scrollableHeight);
+        },
+    },
+    emit: (payload) => invoke('broadcast_scroll_sync', { payload }).catch(() => {}),
+    listen,
+    clock: window,
+});
 
 // === Init ========================================================
 
@@ -835,37 +658,40 @@ async function initialize() {
     // Get file path from initialization script
     currentFilePath = window.__INITIAL_FILE_PATH__;
     previewWindow = window.__PREVIEW_WINDOW__;
-    currentFileKind = detectFileKind(currentFilePath);
+    currentFileKind = kindFromPath(currentFilePath) || KIND_MARKDOWN;
 
     // Load preferences before the view exists so the first paint uses the
     // right gutter/wrap/typography configuration.
-    try {
-        const prefs = await invoke('get_preferences');
-        applyThemeToDocument(prefs.theme);
-        applyFontSize(prefs.font_size);
+    const prefs = await appearance.start();
+    if (prefs) {
         wordWrapEnabled = prefs.word_wrap === true;
         showLineNumbers = prefs.show_line_numbers !== false;
         vimModeEnabled = prefs.editor_vim_mode === true;
-        applyToolbarDensity(prefs.toolbar_density);
         applyInspectorVisibility(prefs.editor_inspector_visible === true);
-        applyFontFamily({
-            documentId: prefs.document_font_family || DEFAULT_DOCUMENT_FONT_ID,
-            editorId: prefs.editor_font_family || DEFAULT_EDITOR_FONT_ID,
-        });
-    } catch (err) {
-        console.error('Failed to load preferences:', err);
-        applyFontSize(DEFAULT_FONT_SIZE);
-        applyToolbarDensity('icon-label');
-        applyFontFamily({ documentId: DEFAULT_DOCUMENT_FONT_ID, editorId: DEFAULT_EDITOR_FONT_ID });
     }
 
     // Load file content into a fresh editor state.
     let initialDoc = '';
     let loadStatus = 'Ready';
     if (currentFilePath) {
+        session = createDocumentSession({
+            kind: currentFileKind,
+            read: () => invoke('read_file', { path: currentFilePath }),
+            write: (content) => invoke('write_file', { path: currentFilePath, content }),
+            formatJson: (content) => invoke('format_json_pretty', { content }),
+            buffer: {
+                getText: () => editorView.state.doc.toString(),
+                setText: setBufferText,
+            },
+            clock: window,
+            onStatus: updateStatus,
+            // Notify preview window to refresh (fire-and-forget; don't steal focus)
+            onWrite: () => {
+                if (previewWindow) invoke('refresh_preview', { window: previewWindow }).catch(() => {});
+            },
+        });
         try {
-            const raw = await invoke('read_file', { path: currentFilePath });
-            initialDoc = await prepareContent(raw);
+            initialDoc = await session.load();
             loadStatus = 'Loaded';
 
             const filename = currentFilePath.split(/[/\\]/).pop();
@@ -899,7 +725,7 @@ document.addEventListener('DOMContentLoaded', async () => {
             console.error('Failed to start editor file watcher:', err);
         }
         await listen(EVENT_FILE_CHANGED, () => {
-            handleExternalFileChange();
+            session.externalChange();
         });
     }
 
@@ -913,138 +739,17 @@ document.addEventListener('DOMContentLoaded', async () => {
     document.getElementById('line-numbers-btn').addEventListener('click', toggleLineNumbers);
     document.getElementById('wrap-btn').addEventListener('click', toggleWordWrap);
 
-    // Keyboard shortcuts (table-driven; more-specific variants must precede less-specific)
-    setupKeyboardShortcuts([
-        { key: 'i', ctrl: true, shift: true, action: () => toggleInspector() },
-        { key: 'f', ctrl: true, alt: true, action: () => openFindAndReplace() },
-        { key: 'f', ctrl: true, action: () => openFindOverlay() },
-        { key: 'g', ctrl: true, shift: true, action: () => findPrevious() },
-        { key: 'g', ctrl: true, action: () => findNext() },
-        { key: 'e', ctrl: true, action: () => useSelectionForFindFromEditor() },
-        { key: 's', ctrl: true, action: () => saveFile() },
-        { key: 'w', ctrl: true, action: () => appWindow.close() },
-        // Format shortcuts. Cmd+K is reserved as the chord prefix (Cmd+K Cmd+P);
-        // Insert Link binds to Cmd+Shift+U to avoid the 400ms chord-timeout latency.
-        { key: 'b', ctrl: true, action: () => cmToggleWrap(editorView, '**', '**') },
-        { key: 'i', ctrl: true, action: () => cmToggleWrap(editorView, '*', '*') },
-        { key: 'k', ctrl: true, shift: true, action: () => cmToggleWrap(editorView, '~~', '~~') },
-        { key: 'u', ctrl: true, shift: true, action: () => cmInsertLink(editorView) },
-    ]);
-
-    // Chord shortcut: Cmd+K Cmd+P opens the command palette.
-    setupChordShortcuts([{
-        key1: 'k', ctrl1: true,
-        secondKeys: [
-            { key2: 'p', ctrl2: true, action: () => openPalette() },
-        ],
-    }]);
+    setupKeyboardShortcuts(commands.shortcuts);
+    setupChordShortcuts(commands.chords);
 
     // Listen for scroll sync events
-    await listen(EVENT_SCROLL_SYNC, (event) => {
-        const p = event.payload || {};
-        if (!currentFilePath || !editorView) return;
-        if (p.source === appWindow.label) return;
-        if (p.file_path !== currentFilePath) return;
-        if (typeof p.line === 'number') {
-            scrollEditorToLine(p.line);
-            lastSyncedLine = p.line;
-        } else if (typeof p.percent === 'number') {
-            const scrollableHeight = editorScrollableHeight();
-            if (scrollableHeight <= 0) return;
-            isProgrammaticScroll = true;
-            editorView.scrollDOM.scrollTop = Math.max(0, p.percent * scrollableHeight);
-            lastSyncedPercent = p.percent;
-            setTimeout(() => { isProgrammaticScroll = false; }, PROGRAMMATIC_SCROLL_TIMEOUT_MS);
-        }
-    });
+    await scrollSync.listening;
 
-    // Listen for menu find requests
-    await listen(EVENT_MENU_FIND, () => {
-        if (!document.hasFocus()) return;
-        openFindOverlay();
-    });
-
-    await listen(EVENT_MENU_FIND_NEXT, () => {
-        if (!document.hasFocus()) return;
-        findNext();
-    });
-
-    await listen(EVENT_MENU_FIND_PREV, () => {
-        if (!document.hasFocus()) return;
-        findPrevious();
-    });
-
-    await listen(EVENT_MENU_FIND_USE_SELECTION, () => {
-        if (!document.hasFocus()) return;
-        useSelectionForFindFromEditor();
-    });
-
-    await listen(EVENT_MENU_FIND_REPLACE, () => {
-        if (!document.hasFocus()) return;
-        openFindAndReplace();
-    });
-
-    // Format menu listeners (fire only when this editor window has focus)
-    await listen(EVENT_MENU_FORMAT_BOLD, () => {
-        if (!document.hasFocus()) return;
-        cmToggleWrap(editorView, '**', '**');
-    });
-    await listen(EVENT_MENU_FORMAT_ITALIC, () => {
-        if (!document.hasFocus()) return;
-        cmToggleWrap(editorView, '*', '*');
-    });
-    await listen(EVENT_MENU_FORMAT_LINK, () => {
-        if (!document.hasFocus()) return;
-        cmInsertLink(editorView);
-    });
-    await listen(EVENT_MENU_FORMAT_STRIKE, () => {
-        if (!document.hasFocus()) return;
-        cmToggleWrap(editorView, '~~', '~~');
-    });
-
-    await listen(EVENT_MENU_COMMAND_PALETTE, () => {
-        if (!document.hasFocus()) return;
-        openPalette();
-    });
-
-    await listen(EVENT_FONT_FAMILY_CHANGED, (event) => {
-        const p = event.payload || {};
-        applyFontFamily({
-            documentId: p.document || undefined,
-            editorId: p.editor || undefined,
-        });
-        if (editorView) editorView.requestMeasure();
-    });
-
-    // Listen for theme changes
-    await listen(EVENT_THEME_CHANGED, (event) => {
-        applyThemeToDocument(event.payload);
-    });
-
-    await listen(EVENT_FONT_SIZE_CHANGED, (event) => {
-        if (Number(event.payload) === currentFontSize) return;
-        applyFontSize(event.payload);
-    });
-
-    await listen(EVENT_TOOLBAR_DENSITY_CHANGED, (event) => {
-        if (event.payload === currentToolbarDensity) return;
-        applyToolbarDensity(event.payload);
-    });
-
-    // Listen for close menu action -- onCloseRequested handles the save
-    await listen(EVENT_MENU_CLOSE, async () => {
-        if (!document.hasFocus()) return;
-        appWindow.close();
-    });
-
-    // Listen for print menu action
-    await listen(EVENT_MENU_PRINT, () => {
-        if (!document.hasFocus()) return;
-        window.print();
-    });
+    // Menu events that run commands (only while this editor window has focus)
+    await commands.listenMenu(listen);
 
     const findBtn = document.getElementById('find-btn');
-    if (findBtn) findBtn.addEventListener('click', toggleFindOverlay);
+    if (findBtn) findBtn.addEventListener('click', findBar.toggle);
 
     const inspectorToggle = document.getElementById('editor-inspector-toggle');
     if (inspectorToggle) {
@@ -1055,20 +760,15 @@ document.addEventListener('DOMContentLoaded', async () => {
     // before allowing the window to close (beforeunload cannot await).
     await appWindow.onCloseRequested(async (event) => {
         event.preventDefault();
-        if (saveTimeout) {
-            clearTimeout(saveTimeout);
-            saveTimeout = null;
-        }
-        if (isDirty) {
-            const ok = await saveFile();
-            if (!ok) {
-                // Save failed (disk full, permission, file replaced): keep the
-                // window and the unsaved buffer rather than discarding edits.
-                // saveFile already set the "Error saving" badge.
-                return;
-            }
-        }
-        await notifyPreviewEditorClosed();
+        // Save failed (disk full, permission, file replaced): keep the window
+        // and the unsaved buffer rather than discarding edits. The session
+        // already set the "Error saving" badge.
+        // An edit typed while the preview is being notified makes the
+        // session dirty again, so save until nothing is left to write.
+        do {
+            if ((await saveEditor()) !== 'persisted') return;
+            await notifyPreviewEditorClosed();
+        } while (session && session.dirty);
         appWindow.destroy();
     });
 
@@ -1077,202 +777,43 @@ document.addEventListener('DOMContentLoaded', async () => {
   }
 });
 
-// --- Find overlay (CM-driven) ---
-let findOverlay = null;
-let findInput = null;
-let replaceInput = null;
-let findVisible = false;
-let findMatchCase = false;
-let findWholeWord = false;
-let findReplaceVisible = false;
-let findTypeTimer = null;
+// --- Find bar (CM-driven) ---
 let currentQuery = null;
-let findMatchCount = 0;
-let findMatchIndex = -1;
-let findCaseBtn = null;
-let findWordBtn = null;
 
-function ensureFindOverlay() {
-    if (findOverlay) return;
-    const slot = document.getElementById('find-bar-slot');
-    const els = createFindOverlay(slot);
-    findOverlay = els.overlay;
-    findInput = els.input;
-    findCaseBtn = els.caseBtn;
-    findWordBtn = els.wordBtn;
-
-    // Add replace row (hidden until the user requests Find-and-Replace)
-    const replaceRow = document.createElement('div');
-    replaceRow.className = 'replace-row';
-    replaceRow.hidden = true;
-    replaceRow.innerHTML = `
-        <input id="replace-input" class="find-input replace-input" type="text" placeholder="Replace..." aria-label="Replace with" />
-        <button class="find-btn replace-btn-text" id="replace-one" type="button" title="Replace current match">Replace</button>
-        <button class="find-btn replace-btn-text" id="replace-all" type="button" title="Replace all matches">All</button>
-    `;
-    findOverlay.appendChild(replaceRow);
-    replaceInput = replaceRow.querySelector('#replace-input');
-
-    findInput.addEventListener('input', () => {
-        if (findTypeTimer) clearTimeout(findTypeTimer);
-        findTypeTimer = setTimeout(() => runFindFromInput(), FIND_TYPE_DEBOUNCE_MS);
-    });
-    findInput.addEventListener('keydown', (e) => {
-        if (e.key === 'Enter') {
-            e.preventDefault();
-            if (e.shiftKey) findPrevious(); else findNext();
-        } else if (e.key === 'Escape') {
-            e.preventDefault();
-            closeFindOverlay();
-        } else if (e.key === 'Tab' && !e.shiftKey && findReplaceVisible) {
-            e.preventDefault();
-            replaceInput.focus();
-        }
-    });
-
-    // Keep the query's replace text current so replaceNext/replaceAll use it.
-    replaceInput.addEventListener('input', () => applySearchQuery());
-    replaceInput.addEventListener('keydown', (e) => {
-        if (e.key === 'Enter') {
-            e.preventDefault();
-            replaceCurrent();
-        } else if (e.key === 'Escape') {
-            e.preventDefault();
-            closeFindOverlay();
-        } else if (e.key === 'Tab' && e.shiftKey) {
-            e.preventDefault();
-            findInput.focus();
-        }
-    });
-
-    const toggle = (btn, setter) => {
-        const next = btn.getAttribute('aria-pressed') !== 'true';
-        btn.setAttribute('aria-pressed', next ? 'true' : 'false');
-        btn.classList.toggle('active', next);
-        setter(next);
-        runFindFromInput();
-        findInput.focus();
-    };
-    findCaseBtn.addEventListener('click', () => toggle(findCaseBtn, v => { findMatchCase = v; }));
-    findWordBtn.addEventListener('click', () => toggle(findWordBtn, v => { findWholeWord = v; }));
-
-    findOverlay.querySelector('#find-prev').addEventListener('click', findPrevious);
-    findOverlay.querySelector('#find-next').addEventListener('click', findNext);
-    findOverlay.querySelector('#find-close').addEventListener('click', closeFindOverlay);
-    findOverlay.querySelector('#replace-one').addEventListener('click', replaceCurrent);
-    findOverlay.querySelector('#replace-all').addEventListener('click', replaceAllMatches);
-}
-
-function setReplaceRowVisible(visible) {
-    findReplaceVisible = visible;
-    const row = findOverlay && findOverlay.querySelector('.replace-row');
-    if (row) row.hidden = !visible;
-}
-
-/** Push the find/replace inputs into CM's search state (highlights all matches). */
-function applySearchQuery() {
-    if (!editorView) return;
-    currentQuery = new SearchQuery({
-        search: findInput ? findInput.value : '',
-        caseSensitive: findMatchCase,
-        wholeWord: findWholeWord,
-        replace: replaceInput ? replaceInput.value : '',
-    });
-    editorView.dispatch({ effects: setSearchQuery.of(currentQuery) });
-    recountMatches();
-}
-
+/** Count the matches and locate the one equal to the main selection (-1 when none). */
 function recountMatches() {
-    findMatchCount = 0;
-    findMatchIndex = -1;
-    if (!editorView || !currentQuery || !currentQuery.search) {
-        updateFindCountDisplay();
-        return;
-    }
+    let index = -1;
+    if (!currentQuery) return { count: 0, index };
     const sel = editorView.state.selection.main;
     const cursor = currentQuery.getCursor(editorView.state);
     let i = 0;
     let item;
     while (!(item = cursor.next()).done) {
-        if (item.value.from === sel.from && item.value.to === sel.to) findMatchIndex = i;
+        if (item.value.from === sel.from && item.value.to === sel.to) index = i;
         i++;
         if (i >= 10000) break; // cap pathological documents
     }
-    findMatchCount = i;
-    updateFindCountDisplay();
-}
-
-function updateFindCountDisplay() {
-    updateFindCount(findOverlay, { length: findMatchCount }, findMatchIndex);
+    return { count: i, index };
 }
 
 function selectFirstMatch() {
-    if (!editorView || !currentQuery || !currentQuery.search) return;
     const first = currentQuery.getCursor(editorView.state).next();
     if (first.done) return;
-    isProgrammaticScroll = true;
-    editorView.dispatch({
+    scrollSync.programmatic(() => editorView.dispatch({
         selection: EditorSelection.range(first.value.from, first.value.to),
         effects: EditorView.scrollIntoView(first.value.from, { y: 'center' }),
+    }));
+}
+
+/** Put the replace text into CM's search state, where replaceNext/replaceAll read it. */
+function setReplaceText(text) {
+    currentQuery = new SearchQuery({
+        search: currentQuery.search,
+        caseSensitive: currentQuery.caseSensitive,
+        wholeWord: currentQuery.wholeWord,
+        replace: text,
     });
-    setTimeout(() => { isProgrammaticScroll = false; }, PROGRAMMATIC_SCROLL_TIMEOUT_MS);
-}
-
-function runFindFromInput() {
-    if (!findInput) return;
-    applySearchQuery();
-    if (findMatchCount > 0) {
-        selectFirstMatch();
-        recountMatches();
-    }
-}
-
-// Guard: cmFindNext/cmFindPrevious open CM's own search panel when no valid
-// query is set; never call them without one.
-function findNext() {
-    if (!editorView) return;
-    if (!currentQuery || !currentQuery.search) {
-        runFindFromInput();
-        return;
-    }
-    isProgrammaticScroll = true;
-    cmFindNext(editorView);
-    setTimeout(() => { isProgrammaticScroll = false; }, PROGRAMMATIC_SCROLL_TIMEOUT_MS);
-    recountMatches();
-}
-
-function findPrevious() {
-    if (!editorView) return;
-    if (!currentQuery || !currentQuery.search) {
-        runFindFromInput();
-        return;
-    }
-    isProgrammaticScroll = true;
-    cmFindPrevious(editorView);
-    setTimeout(() => { isProgrammaticScroll = false; }, PROGRAMMATIC_SCROLL_TIMEOUT_MS);
-    recountMatches();
-}
-
-function replaceCurrent() {
-    if (!editorView || !currentQuery || !currentQuery.search) return;
-    cmReplaceNext(editorView);
-    recountMatches();
-}
-
-function replaceAllMatches() {
-    if (!editorView || !currentQuery || !currentQuery.search) return;
-    cmReplaceAll(editorView);
-    recountMatches();
-}
-
-function clearFindState() {
-    currentQuery = null;
-    findMatchCount = 0;
-    findMatchIndex = -1;
-    if (editorView) {
-        editorView.dispatch({ effects: setSearchQuery.of(new SearchQuery({ search: '' })) });
-    }
-    updateFindCountDisplay();
+    editorView.dispatch({ effects: setSearchQuery.of(currentQuery) });
 }
 
 function selectionText() {
@@ -1281,107 +822,95 @@ function selectionText() {
     return editorView.state.sliceDoc(sel.from, sel.to);
 }
 
-function openFindOverlay() {
-    ensureFindOverlay();
-    setReplaceRowVisible(false);
-    findOverlay.classList.add('show');
-    findVisible = true;
-    const sel = selectionText();
-    if (sel) {
-        findInput.value = sel;
-        runFindFromInput();
-    }
-    findInput.focus();
-    findInput.select();
-}
+const findBar = createFindBar({
+    document,
+    parent: document.getElementById('find-bar-slot'),
+    adapter: {
+        available: () => !!editorView,
+        search(query, { matchCase, wholeWord, keepPosition }) {
+            const next = new SearchQuery({
+                search: query,
+                caseSensitive: matchCase,
+                wholeWord,
+                replace: currentQuery ? currentQuery.replace : '',
+            });
+            // The re-run after an edit arrives inside CM's update, where a
+            // dispatch is rejected; the query is unchanged then, so skip it.
+            if (!(keepPosition && currentQuery && next.eq(currentQuery))) {
+                currentQuery = next;
+                editorView.dispatch({ effects: setSearchQuery.of(currentQuery) });
+            }
+            if (!keepPosition) selectFirstMatch();
+            return recountMatches().count;
+        },
+        // cmFindNext/cmFindPrevious open CM's own search panel when no valid
+        // query is set; the bar only steps while a query has matches.
+        step(direction) {
+            if (direction === 1) scrollSync.programmatic(() => cmFindNext(editorView));
+            else if (direction === -1) scrollSync.programmatic(() => cmFindPrevious(editorView));
+            return recountMatches().index;
+        },
+        clear() {
+            currentQuery = null;
+            editorView.dispatch({ effects: setSearchQuery.of(new SearchQuery({ search: '' })) });
+        },
+        replace(text) {
+            setReplaceText(text);
+            scrollSync.programmatic(() => cmReplaceNext(editorView));
+            return recountMatches().count;
+        },
+        replaceAll(text) {
+            setReplaceText(text);
+            scrollSync.programmatic(() => cmReplaceAll(editorView));
+            return recountMatches().count;
+        },
+        selectionText,
+        focus: () => editorView.focus(),
+    },
+});
 
-function openFindAndReplace() {
-    ensureFindOverlay();
-    setReplaceRowVisible(true);
-    findOverlay.classList.add('show');
-    findVisible = true;
-    const sel = selectionText();
-    if (sel && !findInput.value) {
-        findInput.value = sel;
-        runFindFromInput();
-    }
-    findInput.focus();
-    findInput.select();
-}
-
-function useSelectionForFindFromEditor() {
-    const sel = selectionText();
-    if (!sel) return;
-    ensureFindOverlay();
-    findInput.value = sel;
-    applySearchQuery();
-    // Stay in the document unless the bar is already visible.
-    if (findVisible) {
-        findInput.focus();
-        findInput.select();
-    }
-}
-
-function toggleFindOverlay() {
-    if (findVisible) closeFindOverlay(); else openFindOverlay();
-}
-
-function closeFindOverlay() {
-    if (!findOverlay) return;
-    findOverlay.classList.remove('show');
-    findVisible = false;
-    if (findTypeTimer) { clearTimeout(findTypeTimer); findTypeTimer = null; }
-    clearFindState();
-    setReplaceRowVisible(false);
-    if (replaceInput) replaceInput.value = '';
-    if (editorView) editorView.focus();
-}
-
-// --- Command palette (editor) ---
-function buildPaletteActions() {
-    const actions = [
-        { id: 'save',          label: 'Save',                      hint: '⌘S',     run: () => saveFile() },
-        { id: 'close',         label: 'Close Window',              hint: '⌘W',     run: () => appWindow.close() },
-        { id: 'find',          label: 'Find…',                     hint: '⌘F',     run: () => openFindOverlay() },
-        { id: 'find-next',     label: 'Find Next',                 hint: '⌘G',     run: () => findNext() },
-        { id: 'find-prev',     label: 'Find Previous',             hint: '⇧⌘G',    run: () => findPrevious() },
-        { id: 'replace',       label: 'Find and Replace…',         hint: '⌘⌥F',    run: () => openFindAndReplace() },
-        { id: 'use-sel',       label: 'Use Selection for Find',    hint: '⌘E',     run: () => useSelectionForFindFromEditor() },
-        { id: 'bold',          label: 'Bold',                      hint: '⌘B',     run: () => cmToggleWrap(editorView, '**', '**') },
-        { id: 'italic',        label: 'Italic',                    hint: '⌘I',     run: () => cmToggleWrap(editorView, '*', '*') },
-        { id: 'link',          label: 'Insert Link…',              hint: '⌘⇧U',    run: () => cmInsertLink(editorView) },
-        { id: 'strike',        label: 'Strikethrough',             hint: '⌘⇧K',    run: () => cmToggleWrap(editorView, '~~', '~~') },
-        { id: 'inspector',     label: 'Toggle Inspector',          hint: '⌘⇧I',    run: () => toggleInspector() },
-        { id: 'line-nums',     label: 'Toggle Line Numbers',                       run: () => toggleLineNumbers() },
-        { id: 'word-wrap',     label: 'Toggle Word Wrap',                          run: () => toggleWordWrap() },
-        { id: 'vim-mode',      label: `Vim Mode: ${vimModeEnabled ? 'Off' : 'On'}`, run: () => toggleVimMode() },
-        { id: 'fold-all',      label: 'Fold All Headings',                         run: () => { if (editorView) foldAll(editorView); } },
-        { id: 'unfold-all',    label: 'Unfold All',                                run: () => { if (editorView) unfoldAll(editorView); } },
-        { id: 'new-window',    label: 'New Window',                hint: '⌘⇧N',    run: () => invoke('create_new_window_command').catch(console.error) },
-        { id: 'new-file',      label: 'New File…',                 hint: '⌘N',     run: () => invoke('create_new_markdown_file').catch(console.error) },
-        { id: 'theme-light',   label: 'Theme: Light',                              run: () => applyThemeBroadcast('light') },
-        { id: 'theme-dark',    label: 'Theme: Dark',                               run: () => applyThemeBroadcast('dark') },
-        { id: 'theme-drac',    label: 'Theme: Drac',                               run: () => applyThemeBroadcast('drac') },
-        { id: 'font-size-inc', label: 'Text Size: Increase',                       run: () => changeFontSize(1) },
-        { id: 'font-size-dec', label: 'Text Size: Decrease',                       run: () => changeFontSize(-1) },
-    ];
-    return actions;
-}
+// --- Commands (editor): keys, menu events and palette entries ---
+// Palette order is table order. Cmd+K is reserved as the chord prefix
+// (Cmd+K Cmd+P); Insert Link binds to Cmd+Shift+U to avoid the 400ms
+// chord-timeout latency.
+const commands = createCommands([
+    { id: 'save',      keys: 'Mod+S',                                           label: 'Save',                   action: () => saveEditor() },
+    // onCloseRequested handles the save
+    { id: 'close',     keys: 'Mod+W',       menu: EVENT_MENU_CLOSE,              label: 'Close Window',           action: () => appWindow.close() },
+    { id: 'find',      keys: 'Mod+F',       menu: EVENT_MENU_FIND,               label: 'Find…',                  action: () => findBar.open() },
+    { id: 'find-next', keys: 'Mod+G',       menu: EVENT_MENU_FIND_NEXT,          label: 'Find Next',              action: () => findBar.next() },
+    { id: 'find-prev', keys: 'Mod+Shift+G', menu: EVENT_MENU_FIND_PREV,          label: 'Find Previous',          action: () => findBar.previous() },
+    { id: 'replace',   keys: 'Mod+Alt+F',   menu: EVENT_MENU_FIND_REPLACE,       label: 'Find and Replace…',      action: () => findBar.openReplace() },
+    { id: 'use-sel',   keys: 'Mod+E',       menu: EVENT_MENU_FIND_USE_SELECTION, label: 'Use Selection for Find', action: () => findBar.useSelection() },
+    { id: 'bold',      keys: 'Mod+B',       menu: EVENT_MENU_FORMAT_BOLD,        label: 'Bold',                   action: () => cmToggleWrap(editorView, '**', '**') },
+    { id: 'italic',    keys: 'Mod+I',       menu: EVENT_MENU_FORMAT_ITALIC,      label: 'Italic',                 action: () => cmToggleWrap(editorView, '*', '*') },
+    { id: 'link',      keys: 'Mod+Shift+U', menu: EVENT_MENU_FORMAT_LINK,        label: 'Insert Link…',           action: () => cmInsertLink(editorView) },
+    { id: 'strike',    keys: 'Mod+Shift+K', menu: EVENT_MENU_FORMAT_STRIKE,      label: 'Strikethrough',          action: () => cmToggleWrap(editorView, '~~', '~~') },
+    { id: 'inspector', keys: 'Mod+Shift+I',                                      label: 'Toggle Inspector',       action: () => toggleInspector() },
+    { id: 'line-nums',     label: 'Toggle Line Numbers', action: () => toggleLineNumbers() },
+    { id: 'word-wrap',     label: 'Toggle Word Wrap',    action: () => toggleWordWrap() },
+    { id: 'vim-mode',      label: () => `Vim Mode: ${vimModeEnabled ? 'Off' : 'On'}`, action: () => toggleVimMode() },
+    { id: 'fold-all',      label: 'Fold All Headings',   action: () => { if (editorView) foldAll(editorView); } },
+    { id: 'unfold-all',    label: 'Unfold All',          action: () => { if (editorView) unfoldAll(editorView); } },
+    // The native menu accelerators serve these two bindings.
+    { id: 'new-window', keys: 'Mod+Shift+N', native: true, label: 'New Window', action: () => invoke('create_new_window_command').catch(console.error) },
+    { id: 'new-file',   keys: 'Mod+N',       native: true, label: 'New File…',  action: () => invoke('create_new_markdown_file').catch(console.error) },
+    { id: 'theme-light',   label: 'Theme: Light',        action: () => appearance.set('theme', 'light') },
+    { id: 'theme-dark',    label: 'Theme: Dark',         action: () => appearance.set('theme', 'dark') },
+    { id: 'theme-drac',    label: 'Theme: Drac',         action: () => appearance.set('theme', 'drac') },
+    { id: 'font-size-inc', label: 'Text Size: Increase', action: () => changeFontSize(1) },
+    { id: 'font-size-dec', label: 'Text Size: Decrease', action: () => changeFontSize(-1) },
+    // Not in the palette.
+    { id: 'print',   menu: EVENT_MENU_PRINT, action: () => window.print() },
+    { id: 'palette', keys: 'Mod+K Mod+P', menu: EVENT_MENU_COMMAND_PALETTE, action: () => openPalette() },
+], { mac: true, hasFocus: () => document.hasFocus() });
 
 function ensureCommandPalette() {
     if (commandPalette) return commandPalette;
-    commandPalette = createCommandPalette(document.body, buildPaletteActions);
+    commandPalette = createCommandPalette(document.body, commands.paletteActions);
     return commandPalette;
 }
 
 function openPalette() {
     ensureCommandPalette().open();
-}
-
-function applyThemeBroadcast(theme) {
-    applyThemeToDocument(theme);
-    invoke('broadcast_theme_change', { theme })
-        .catch(err => console.error('Failed to broadcast theme change:', err));
-    invoke('save_preference_key', { key: 'theme', value: theme })
-        .catch(err => console.error('Failed to save theme preference:', err));
 }

@@ -1,14 +1,11 @@
 use base64::Engine;
 use lru::LruCache;
-use std::collections::HashSet;
 use std::fs;
 use std::io::Write;
 use std::path::{Path, PathBuf};
 use tauri::{AppHandle, Manager};
-use tauri_plugin_store::StoreExt;
 use url::Url;
 
-use crate::constants::MAX_RECENT_FILES;
 use crate::AppState;
 
 // --- Path helpers ---
@@ -20,14 +17,6 @@ fn file_url_to_path(s: &str) -> Option<PathBuf> {
     } else {
         None
     }
-}
-
-/// Canonicalize a path for use in the allowed-paths set.
-/// Falls back to the raw string if the file does not yet exist.
-fn normalize_path(path: &str) -> String {
-    fs::canonicalize(path)
-        .map(|p| p.to_string_lossy().to_string())
-        .unwrap_or_else(|_| path.to_string())
 }
 
 pub(crate) fn resolve_file_path(input: &str) -> Option<PathBuf> {
@@ -46,308 +35,53 @@ pub(crate) fn pathbuf_to_string(path: &Path) -> String {
     path.to_string_lossy().to_string()
 }
 
-// --- Path security ---
-
-/// Pure allow-check: `normalized` against explicit path grants, and (only for
-/// canonicalizable paths) `canonical` against workspace-folder grants. Raw,
-/// non-canonicalizable paths never dir-match, so `..` segments and dangling
-/// symlinks cannot ride the prefix comparison.
-pub(crate) fn path_allowed_by(
-    normalized: &str,
-    canonical: Option<&Path>,
-    allowed_paths: &HashSet<String>,
-    allowed_dirs: &HashSet<PathBuf>,
-) -> bool {
-    if allowed_paths.contains(normalized) {
-        return true;
-    }
-    match canonical {
-        Some(c) => allowed_dirs.iter().any(|dir| c.starts_with(dir)),
-        None => false,
-    }
-}
-
-/// Verify that `path` was explicitly opened by the user (file dialog, CLI,
-/// macOS Launch Services, recents/menu) or sits inside a user-picked
-/// workspace folder. Prevents a compromised webview from reading / writing
-/// arbitrary files.
-pub(crate) fn check_path_allowed(app: &AppHandle, path: &str) -> Result<(), String> {
-    let canonical = fs::canonicalize(path).ok();
-    let normalized = canonical
-        .as_ref()
-        .map(|p| p.to_string_lossy().to_string())
-        .unwrap_or_else(|| path.to_string());
-    let state = app.state::<AppState>();
-    let allowed = state
-        .allowed_paths
-        .read()
-        .expect("allowed_paths lock poisoned");
-    let allowed_dirs = state
-        .allowed_dirs
-        .read()
-        .expect("allowed_dirs lock poisoned");
-    if path_allowed_by(&normalized, canonical.as_deref(), &allowed, &allowed_dirs) {
-        Ok(())
-    } else {
-        Err("Access denied: path not authorized".to_string())
-    }
-}
-
-/// Register a user-picked folder: any canonicalizable path under it passes
-/// check_path_allowed.
-pub(crate) fn allow_dir(app: &AppHandle, dir: &str) -> Result<(), String> {
-    let canonical = fs::canonicalize(dir).map_err(|e| format!("Failed to resolve folder: {e}"))?;
-    if !canonical.is_dir() {
-        return Err("Not a directory".to_string());
-    }
-    let state = app.state::<AppState>();
-    state
-        .allowed_dirs
-        .write()
-        .expect("allowed_dirs lock poisoned")
-        .insert(canonical);
-    Ok(())
-}
-
-/// Revoke a previously granted folder (e.g. when the user closes the
-/// workspace), so backend commands stop passing its prefix check. Best-effort:
-/// a non-canonicalizable path matches nothing in the set and is a no-op.
-pub(crate) fn revoke_dir(app: &AppHandle, dir: &str) {
-    let Ok(canonical) = fs::canonicalize(dir) else {
-        return;
-    };
-    let state = app.state::<AppState>();
-    state
-        .allowed_dirs
-        .write()
-        .expect("allowed_dirs lock poisoned")
-        .remove(&canonical);
-}
-
-/// Register a path as allowed for file I/O commands.
-pub(crate) fn allow_path(app: &AppHandle, path: &str) {
-    let normalized = normalize_path(path);
-    let state = app.state::<AppState>();
-    state
-        .allowed_paths
-        .write()
-        .expect("allowed_paths lock poisoned")
-        .insert(normalized);
-}
-
 /// Record `path` at the head of the recent-files list (most-recent first),
-/// deduplicated and capped at MAX_RECENT_FILES. Holds pref_lock for the full
-/// read-modify-write so concurrent file-open events cannot lose entries.
+/// deduplicated and capped at MAX_RECENT_FILES. One locked prefs update, so
+/// concurrent file-open events cannot lose entries.
 pub(crate) async fn push_to_recents(app: &AppHandle, path: &str) -> Result<(), String> {
     let canonical = fs::canonicalize(path)
         .map(|p| p.to_string_lossy().to_string())
         .unwrap_or_else(|_| path.to_string());
 
-    let state = app.state::<AppState>();
-    let _lock = state.pref_lock.lock().await;
+    crate::prefs::update(app, |map| crate::prefs::push_recent(map, &canonical)).await?;
 
-    let store = app
-        .store(".boltpage.dat")
-        .map_err(|e| format!("Failed to access store: {e}"))?;
-
-    let mut map = store
-        .get("preferences")
-        .and_then(|v| {
-            serde_json::from_value::<serde_json::Map<String, serde_json::Value>>(v.clone()).ok()
-        })
-        .unwrap_or_default();
-
-    let mut vec: Vec<String> = map
-        .get("recent_files")
-        .and_then(|v| serde_json::from_value(v.clone()).ok())
-        .unwrap_or_default();
-
-    vec.retain(|p| p != &canonical);
-    vec.insert(0, canonical);
-    vec.truncate(MAX_RECENT_FILES);
-
-    map.insert(
-        "recent_files".into(),
-        serde_json::to_value(vec).map_err(|e| format!("serialize recents: {e}"))?,
-    );
-
-    store.set("preferences", serde_json::Value::Object(map));
-    store
-        .save()
-        .map_err(|e| format!("Failed to save preferences: {e}"))?;
-
-    drop(_lock);
     // Keep the File > Open Recent submenu current with every recents mutation.
     let _ = crate::menu::rebuild_app_menu(app);
 
     Ok(())
 }
 
-/// Mutate the ordered session list ("session_files" pref) under pref_lock.
-/// `add` pushes the path to the end (removing an earlier occurrence first);
-/// `!add` removes it. Order is preserved for session restore.
-async fn session_update(app: &AppHandle, path: &str, add: bool) -> Result<(), String> {
-    let state = app.state::<AppState>();
-    let _lock = state.pref_lock.lock().await;
-
-    let store = app
-        .store(".boltpage.dat")
-        .map_err(|e| format!("Failed to access store: {e}"))?;
-
-    let mut map = store
-        .get("preferences")
-        .and_then(|v| {
-            serde_json::from_value::<serde_json::Map<String, serde_json::Value>>(v.clone()).ok()
-        })
-        .unwrap_or_default();
-
-    let mut vec: Vec<String> = map
-        .get("session_files")
-        .and_then(|v| serde_json::from_value(v.clone()).ok())
-        .unwrap_or_default();
-
-    vec.retain(|p| p != path);
-    if add {
-        vec.push(path.to_string());
-    }
-
-    map.insert(
-        "session_files".into(),
-        serde_json::to_value(vec).map_err(|e| format!("serialize session: {e}"))?,
-    );
-
-    store.set("preferences", serde_json::Value::Object(map));
-    store
-        .save()
-        .map_err(|e| format!("Failed to save preferences: {e}"))?;
-
-    Ok(())
-}
-
-pub(crate) async fn session_add(app: &AppHandle, path: &str) -> Result<(), String> {
-    session_update(app, path, true).await
-}
-
-pub(crate) async fn session_remove(app: &AppHandle, path: &str) -> Result<(), String> {
-    session_update(app, path, false).await
-}
-
 /// Register a file opened *inside an existing window* (welcome-card recents,
-/// the open dialog, the workspace tree). Grants access only when the path is a
-/// known recent; otherwise it must already be allowed (dialog/CLI/dir grants).
-/// Updates open_windows (dropping this window's previous file), the session
-/// list, and recents, so in-window switches stay tracked like window creation.
+/// the open dialog, the workspace tree), so in-window switches stay tracked
+/// like window creation.
 #[tauri::command]
 pub(crate) async fn open_tracked_file(
     app: AppHandle,
     window: tauri::Window,
     path: String,
 ) -> Result<(), String> {
-    if check_path_allowed(&app, &path).is_err() {
-        let canonical = normalize_path(&path);
-        let known_recent = crate::prefs::read_recent_paths(&app)
-            .iter()
-            .any(|r| normalize_path(r) == canonical);
-        if known_recent {
-            allow_path(&app, &path);
-        } else {
-            return Err("Access denied: path not authorized".to_string());
-        }
-    }
-
-    let label = window.label().to_string();
-    let state = app.state::<AppState>();
-    let mut old_paths: Vec<String> = Vec::new();
-    {
-        let mut open = state.open_windows.write().await;
-        open.retain(|p, l| {
-            if l == &label && p != &path {
-                old_paths.push(p.clone());
-                false
-            } else {
-                true
-            }
-        });
-        open.insert(path.clone(), label);
-    }
-
-    // Sequential awaits: each call is a read-modify-write under pref_lock.
-    for old in old_paths {
-        session_remove(&app, &old).await?;
-    }
-    session_add(&app, &path).await?;
-    push_to_recents(&app, &path).await?;
-
-    Ok(())
-}
-
-/// Resolve `href` (a link or image source inside the document at `base`) to a
-/// canonical target, and report whether it stays under the document's own
-/// directory. Resolution goes through a file URL join so percent-encoded
-/// paths (`my%20img.png`) decode exactly once, here. Escaping targets
-/// (`../…`, absolute paths) are only usable when an existing grant already
-/// covers them; staying under the doc's directory is treated as user intent,
-/// like a recents click.
-fn resolve_relative_candidate(
-    base: &str,
-    href: &str,
-    allowed_exts: &[&str],
-) -> Result<(PathBuf, bool), String> {
-    if href.trim().is_empty() {
-        return Err("Empty link".to_string());
-    }
-    let base_dir = Path::new(base)
-        .parent()
-        .ok_or_else(|| "Document has no parent directory".to_string())?;
-    let base_url = Url::from_directory_path(base_dir)
-        .map_err(|_| "Document directory is not resolvable".to_string())?;
-    let joined = base_url
-        .join(href)
-        .map_err(|_| "Malformed link".to_string())?;
-    if joined.scheme() != "file" {
-        return Err("Only local file links can be opened".to_string());
-    }
-    let target = joined
-        .to_file_path()
-        .map_err(|_| "Only local file links can be opened".to_string())?;
-    let canonical = fs::canonicalize(&target).map_err(|_| "Linked file not found".to_string())?;
-    if !canonical.is_file() {
-        return Err("Link target is not a file".to_string());
-    }
-    let ext = canonical
-        .extension()
-        .and_then(|e| e.to_str())
-        .map(|e| e.to_lowercase())
-        .unwrap_or_default();
-    if !allowed_exts.contains(&ext.as_str()) {
-        return Err(format!("Unsupported link target: .{ext}"));
-    }
-    let in_base = fs::canonicalize(base_dir)
-        .map(|cb| canonical.starts_with(cb))
-        .unwrap_or(false);
-    Ok((canonical, in_base))
-}
-
-pub(crate) fn resolve_link_candidate(base: &str, href: &str) -> Result<(PathBuf, bool), String> {
-    resolve_relative_candidate(base, href, crate::workspace::WORKSPACE_EXTENSIONS)
+    crate::window::apply_transition(
+        &app,
+        window.label(),
+        crate::window::Transition::Switch(&path),
+    )
+    .await
 }
 
 /// Resolve a relative link clicked in the preview and grant access to the
-/// target so the subsequent open passes check_path_allowed. Returns the
-/// canonical absolute path to open.
+/// target so the subsequent open passes authorization. Returns the canonical
+/// absolute path to open.
 #[tauri::command]
 pub(crate) fn resolve_doc_link(
     app: AppHandle,
     base: String,
     href: String,
 ) -> Result<String, String> {
-    check_path_allowed(&app, &base)?;
-    let (canonical, in_base) = resolve_link_candidate(&base, &href)?;
+    let grants = &app.state::<AppState>().grants;
+    let canonical =
+        grants.authorize_relative(&base, &href, crate::workspace::WORKSPACE_EXTENSIONS)?;
     let canonical_str = pathbuf_to_string(&canonical);
-    if !in_base {
-        check_path_allowed(&app, &canonical_str)?;
-    }
-    allow_path(&app, &canonical_str);
+    grants.grant_path(&canonical_str);
     Ok(canonical_str)
 }
 
@@ -389,11 +123,10 @@ pub(crate) fn doc_asset_payload(
     base: &str,
     src: &str,
 ) -> Result<(String, String), String> {
-    check_path_allowed(app, base)?;
-    let (canonical, in_base) = resolve_relative_candidate(base, src, IMAGE_EXTENSIONS)?;
-    if !in_base {
-        check_path_allowed(app, &pathbuf_to_string(&canonical))?;
-    }
+    let canonical =
+        app.state::<AppState>()
+            .grants
+            .authorize_relative(base, src, IMAGE_EXTENSIONS)?;
     let meta = fs::metadata(&canonical).map_err(|e| format!("Failed to stat image: {e}"))?;
     if meta.len() > MAX_ASSET_BYTES {
         return Err("Image exceeds the 20 MB embed limit".to_string());
@@ -612,80 +345,41 @@ fn atomic_write_file(path: &Path, content: &str) -> Result<(), String> {
     result
 }
 
-// --- Rendering helpers ---
-
-fn escape_html(input: &str) -> String {
-    let mut out = String::with_capacity(input.len());
-    for ch in input.chars() {
-        match ch {
-            '&' => out.push_str("&amp;"),
-            '<' => out.push_str("&lt;"),
-            '>' => out.push_str("&gt;"),
-            '"' => out.push_str("&quot;"),
-            '\'' => out.push_str("&#039;"),
-            _ => out.push(ch),
-        }
-    }
-    out
-}
-
 // --- Tauri commands: file I/O ---
 
 #[tauri::command]
 pub(crate) fn read_file(app: AppHandle, path: String) -> Result<String, String> {
-    check_path_allowed(&app, &path)?;
-    fs::read_to_string(&path).map_err(|e| format!("Failed to read file: {e}"))
+    let canonical = app.state::<AppState>().grants.authorize(&path)?;
+    fs::read_to_string(&canonical).map_err(|e| format!("Failed to read file: {e}"))
 }
 
 #[tauri::command]
 pub(crate) fn read_file_bytes_b64(app: AppHandle, path: String) -> Result<String, String> {
-    check_path_allowed(&app, &path)?;
-    fs::read(&path)
+    let canonical = app.state::<AppState>().grants.authorize(&path)?;
+    fs::read(&canonical)
         .map(|bytes| base64::engine::general_purpose::STANDARD.encode(bytes))
         .map_err(|e| format!("Failed to read file bytes: {e}"))
 }
 
 #[tauri::command]
 pub(crate) fn write_file(app: AppHandle, path: String, content: String) -> Result<(), String> {
-    check_path_allowed(&app, &path)?;
-    if !Path::new(&path).exists() {
+    let canonical = app.state::<AppState>().grants.authorize(&path)?;
+    if !canonical.exists() {
         return Err("File does not exist. Use create to make new files.".to_string());
     }
-    atomic_write_file(Path::new(&path), &content)?;
+    atomic_write_file(&canonical, &content)?;
     invalidate_cache_for_path_sync(&app, &path);
     Ok(())
 }
 
 #[tauri::command]
 pub(crate) fn is_writable(app: AppHandle, path: String) -> Result<bool, String> {
-    check_path_allowed(&app, &path)?;
-    match fs::OpenOptions::new().write(true).open(&path) {
+    let canonical = app.state::<AppState>().grants.authorize(&path)?;
+    match fs::OpenOptions::new().write(true).open(&canonical) {
         Ok(_) => Ok(true),
         Err(e) if e.kind() == std::io::ErrorKind::PermissionDenied => Ok(false),
         Err(e) => Err(format!("Failed to check writability: {e}")),
     }
-}
-
-// --- Tauri commands: markrust_core wrappers ---
-
-#[tauri::command]
-pub(crate) fn parse_markdown(content: String) -> String {
-    markrust_core::parse_markdown(&content)
-}
-
-#[tauri::command]
-pub(crate) fn parse_markdown_with_theme(content: String, theme: String) -> String {
-    markrust_core::parse_markdown_with_theme(&content, &theme)
-}
-
-#[tauri::command]
-pub(crate) fn parse_json_with_theme(content: String, theme: String) -> Result<String, String> {
-    markrust_core::parse_json_with_theme(&content, &theme)
-}
-
-#[tauri::command]
-pub(crate) fn parse_yaml_with_theme(content: String, theme: String) -> Result<String, String> {
-    markrust_core::parse_yaml_with_theme(&content, &theme)
 }
 
 #[tauri::command]
@@ -697,27 +391,28 @@ pub(crate) fn format_json_pretty(content: String) -> Result<String, String> {
 
 // --- Tauri commands: rendering ---
 
+/// Render an unsaved editor buffer. `kind` is one of the frontend's KIND_*
+/// names, each of which is also a file extension of that kind.
 #[tauri::command]
-pub(crate) async fn render_file_to_html(
-    app: AppHandle,
-    path: String,
-    theme: String,
-) -> Result<String, String> {
+pub(crate) fn render_buffer_to_html(kind: String, content: String) -> Result<String, String> {
+    let kind = markrust_core::Kind::from_extension(&kind)
+        .ok_or_else(|| format!("Unsupported document kind: {kind}"))?;
+    markrust_core::render(kind, &content)
+}
+
+#[tauri::command]
+pub(crate) async fn render_file_to_html(app: AppHandle, path: String) -> Result<String, String> {
     use std::time::UNIX_EPOCH;
 
-    check_path_allowed(&app, &path)?;
+    let read_path = app.state::<AppState>().grants.authorize(&path)?;
 
-    let allowed = ["md", "markdown", "json", "yaml", "yml", "txt"];
     let ext = Path::new(&path)
         .extension()
         .and_then(|s| s.to_str())
-        .map(|s| s.to_lowercase())
         .unwrap_or_default();
-    if !allowed.contains(&ext.as_str()) {
-        return Err(format!("Unsupported file extension: .{ext}"));
-    }
+    let kind = markrust_core::Kind::from_extension(ext)
+        .ok_or_else(|| format!("Unsupported file extension: .{}", ext.to_lowercase()))?;
 
-    let read_path = path.clone();
     let (size, mtime_secs, raw_content) =
         tauri::async_runtime::spawn_blocking(move || -> Result<(u64, u64, String), String> {
             let meta = fs::metadata(&read_path).map_err(|e| format!("Failed to stat file: {e}"))?;
@@ -748,25 +443,10 @@ pub(crate) async fn render_file_to_html(
         }
     }
 
-    let html = tauri::async_runtime::spawn_blocking(move || -> Result<String, String> {
-        if ext == "txt" {
-            let escaped = escape_html(&raw_content);
-            Ok(format!(
-                "<div class=\"markdown-body\"><pre class=\"plain-text\">{escaped}</pre></div>"
-            ))
-        } else if ext == "json" {
-            markrust_core::parse_json_with_theme(&raw_content, &theme)
-        } else if ext == "yaml" || ext == "yml" {
-            markrust_core::parse_yaml_with_theme(&raw_content, &theme)
-        } else {
-            Ok(markrust_core::parse_markdown_with_theme(
-                &raw_content,
-                &theme,
-            ))
-        }
-    })
-    .await
-    .map_err(|e| format!("Join error: {e}"))??;
+    let html =
+        tauri::async_runtime::spawn_blocking(move || markrust_core::render(kind, &raw_content))
+            .await
+            .map_err(|e| format!("Join error: {e}"))??;
 
     if let Some(state) = app.try_state::<AppState>() {
         let mut cache = state.html_cache.write().await;
@@ -806,7 +486,7 @@ pub(crate) async fn save_clipboard_image(
     doc_path: String,
     data_b64: String,
 ) -> Result<String, String> {
-    check_path_allowed(&app, &doc_path)?;
+    app.state::<AppState>().grants.authorize(&doc_path)?;
     let doc = PathBuf::from(&doc_path);
     let ext_ok = doc
         .extension()
@@ -919,7 +599,7 @@ async fn export_html_inner(
     theme: &str,
     document_font_stack: Option<&str>,
 ) -> Result<String, String> {
-    let fragment = render_file_to_html(app.clone(), path.to_string(), theme.to_string()).await?;
+    let fragment = render_file_to_html(app.clone(), path.to_string()).await?;
     // Inline relative images so the exported file stands alone.
     let fragment = {
         let app = app.clone();
@@ -990,7 +670,7 @@ pub(crate) async fn save_html_export(
 ) -> Result<Option<String>, String> {
     use tauri_plugin_dialog::DialogExt;
 
-    check_path_allowed(&app, &path)?;
+    app.state::<AppState>().grants.authorize(&path)?;
 
     let html = export_html_inner(&app, &path, &theme, document_font_stack.as_deref()).await?;
 
@@ -1053,7 +733,7 @@ pub(crate) async fn open_file_dialog(app: AppHandle) -> Result<Option<String>, S
 
     if let Some(ref p) = file_path {
         let path_str = p.to_string();
-        allow_path(&app, &path_str);
+        app.state::<AppState>().grants.grant_path(&path_str);
         if let Err(e) = push_to_recents(&app, &path_str).await {
             eprintln!("Failed to push recents (open_file_dialog): {e}");
         }
@@ -1100,10 +780,6 @@ pub(crate) async fn create_new_markdown_file(app: AppHandle) -> Result<Option<St
         .truncate(true)
         .open(&path)
         .map_err(|e| format!("Failed to create file: {e}"))?;
-
-    if let Err(e) = push_to_recents(&app, &path.to_string_lossy()).await {
-        eprintln!("Failed to push recents (create_new_markdown_file): {e}");
-    }
 
     let window_label = crate::window::create_window_with_file(&app, Some(path), false)
         .await
@@ -1154,79 +830,6 @@ mod tests {
         assert!(cache.get(&key_a1).is_none());
         assert!(cache.get(&key_a2).is_none());
         assert_eq!(cache.get(&key_b).cloned(), Some("other".to_string()));
-    }
-
-    #[test]
-    fn dir_grant_allows_inside_denies_escapes() {
-        let root = unique_temp_dir();
-        let inside = root.join("doc.md");
-        fs::write(&inside, "x").unwrap();
-        let outside_dir = unique_temp_dir();
-        let outside = outside_dir.join("secret.md");
-        fs::write(&outside, "x").unwrap();
-
-        let mut dirs: HashSet<PathBuf> = HashSet::new();
-        dirs.insert(fs::canonicalize(&root).unwrap());
-        let paths: HashSet<String> = HashSet::new();
-
-        // Inside the granted dir: allowed.
-        let c_inside = fs::canonicalize(&inside).unwrap();
-        assert!(path_allowed_by(
-            &c_inside.to_string_lossy(),
-            Some(&c_inside),
-            &paths,
-            &dirs
-        ));
-
-        // `..` escape canonicalizes to a path outside the grant: denied.
-        let escape = root
-            .join("..")
-            .join(outside_dir.file_name().unwrap())
-            .join("secret.md");
-        let c_escape = fs::canonicalize(&escape).unwrap();
-        assert!(!path_allowed_by(
-            &c_escape.to_string_lossy(),
-            Some(&c_escape),
-            &paths,
-            &dirs
-        ));
-
-        // Symlink inside the root pointing outside resolves outside: denied.
-        #[cfg(unix)]
-        {
-            let link = root.join("link.md");
-            std::os::unix::fs::symlink(&outside, &link).unwrap();
-            let c_link = fs::canonicalize(&link).unwrap();
-            assert!(!path_allowed_by(
-                &c_link.to_string_lossy(),
-                Some(&c_link),
-                &paths,
-                &dirs
-            ));
-        }
-
-        // Non-canonicalizable paths never dir-match.
-        let phantom = root.join("does-not-exist.md");
-        assert!(!path_allowed_by(
-            &phantom.to_string_lossy(),
-            None,
-            &paths,
-            &dirs
-        ));
-
-        // Explicit path grants still work independently of dirs.
-        let mut granted: HashSet<String> = HashSet::new();
-        granted.insert(c_inside.to_string_lossy().to_string());
-        let no_dirs: HashSet<PathBuf> = HashSet::new();
-        assert!(path_allowed_by(
-            &c_inside.to_string_lossy(),
-            Some(&c_inside),
-            &granted,
-            &no_dirs
-        ));
-
-        fs::remove_dir_all(root).unwrap();
-        fs::remove_dir_all(outside_dir).unwrap();
     }
 
     #[test]
@@ -1293,61 +896,6 @@ mod tests {
         assert_eq!(sniff_image_ext(b""), None);
         // Truncated RIFF header must not panic.
         assert_eq!(sniff_image_ext(b"RIFF\x00\x00"), None);
-    }
-
-    #[test]
-    fn resolve_link_candidate_rules() {
-        let root = unique_temp_dir();
-        let base = root.join("doc.md");
-        fs::write(&base, "x").unwrap();
-        fs::create_dir(root.join("sub")).unwrap();
-        fs::write(root.join("sub").join("child.md"), "x").unwrap();
-        fs::write(root.join("image.exe"), "x").unwrap();
-        let outside = unique_temp_dir();
-        fs::write(outside.join("esc.md"), "x").unwrap();
-
-        let base_str = base.to_string_lossy().to_string();
-
-        // Same-dir and subdir targets resolve and stay in base.
-        fs::write(root.join("sibling.md"), "x").unwrap();
-        let (p, in_base) = resolve_link_candidate(&base_str, "sibling.md").unwrap();
-        assert!(in_base);
-        assert!(p.ends_with("sibling.md"));
-        let (_, in_base) = resolve_link_candidate(&base_str, "sub/child.md").unwrap();
-        assert!(in_base);
-
-        // `..` escape resolves but is flagged as leaving the base dir.
-        let esc_href = format!(
-            "../{}/esc.md",
-            outside.file_name().unwrap().to_string_lossy()
-        );
-        let (_, in_base) = resolve_link_candidate(&base_str, &esc_href).unwrap();
-        assert!(!in_base);
-
-        // Percent-encoded names decode exactly once during resolution.
-        fs::write(root.join("my img.md"), "x").unwrap();
-        let (p, in_base) = resolve_link_candidate(&base_str, "my%20img.md").unwrap();
-        assert!(in_base);
-        assert!(p.ends_with("my img.md"));
-
-        // Missing target and unsupported extension: refused.
-        assert!(resolve_link_candidate(&base_str, "nope.md").is_err());
-        assert!(resolve_link_candidate(&base_str, "image.exe").is_err());
-
-        // An absolute POSIX href resolves; containment reporting still
-        // applies. (On Windows `C:\…` parses as a `c:` URL scheme and is
-        // refused outright, which is also safe.)
-        #[cfg(unix)]
-        {
-            let (_, in_base) = resolve_link_candidate(&base_str, base_str.as_str()).unwrap();
-            assert!(in_base);
-            let esc_abs = outside.join("esc.md").to_string_lossy().to_string();
-            let (_, in_base) = resolve_link_candidate(&base_str, esc_abs.as_str()).unwrap();
-            assert!(!in_base);
-        }
-
-        fs::remove_dir_all(root).unwrap();
-        fs::remove_dir_all(outside).unwrap();
     }
 
     #[test]

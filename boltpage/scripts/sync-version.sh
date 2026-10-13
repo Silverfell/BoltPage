@@ -7,13 +7,9 @@ set -e
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 PROJECT_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
 
-# Extract version from package.json (no jq dependency — pure sed)
-VERSION=$(sed -n 's/.*"version"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' "$PROJECT_DIR/package.json" | head -1)
-
-if [ -z "$VERSION" ]; then
-  echo "ERROR: Could not read version from package.json" >&2
-  exit 1
-fi
+# release-identity.sh reads package.json and exits non-zero (set -e) without a version.
+# RELEASE_VERSION is cleared so only package.json decides what gets written.
+VERSION=$(RELEASE_VERSION= sh "$SCRIPT_DIR/release-identity.sh" VERSION)
 
 echo "Syncing version $VERSION from package.json"
 

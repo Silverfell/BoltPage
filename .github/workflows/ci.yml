@@ -73,6 +73,15 @@ jobs:
         working-directory: boltpage
         run: cargo test --all --all-features --verbose
 
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: Run frontend tests
+        working-directory: boltpage
+        run: node --test tests/
+
   build-verify:
     name: Build Verification (${{ matrix.os }})
     runs-on: ${{ matrix.os }}

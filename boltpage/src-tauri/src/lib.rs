@@ -1,9 +1,9 @@
 use lru::LruCache;
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
 use std::fs;
 #[cfg(any(target_os = "macos", target_os = "windows"))]
 use std::path::PathBuf;
-use std::sync::{Arc, RwLock as StdRwLock};
+use std::sync::Arc;
 use tauri::{Emitter, Manager};
 use tokio::sync::{Mutex, RwLock};
 use tokio::time::{sleep, Duration};
@@ -23,9 +23,12 @@ macro_rules! debug_log {
 }
 
 mod constants;
+mod grants;
 mod io;
+mod launch_gate;
 mod menu;
 mod prefs;
+mod registry;
 mod watchers;
 mod window;
 mod workspace;
@@ -41,12 +44,11 @@ type ResizeTaskMap = HashMap<String, (tauri::async_runtime::JoinHandle<()>, u32,
 
 /// Application state with optimized concurrency patterns
 ///
-/// Uses RwLock for read-heavy operations (open_windows, html_cache)
+/// Uses RwLock for read-heavy operations (html_cache)
 /// Uses Mutex only where writes are frequent or exclusive access needed
 struct AppState {
-    /// Maps file_path -> window_label for tracking open windows
-    /// Read-heavy workload (many lookups, few inserts/removes)
-    open_windows: Arc<RwLock<HashMap<String, String>>>,
+    /// Which file each viewer and editor window shows.
+    windows: registry::Registry,
 
     /// Debounced resize tasks per window label
     /// Writes on every resize event, so Mutex is appropriate
@@ -56,71 +58,23 @@ struct AppState {
     /// Read-heavy workload with LRU eviction
     html_cache: Arc<RwLock<LruCache<io::CacheKey, String>>>,
 
-    /// Set of canonicalized paths the user has explicitly opened.
-    /// Uses std::sync::RwLock (not tokio) so sync commands can read it.
-    allowed_paths: Arc<StdRwLock<HashSet<String>>>,
+    /// Files and workspace folders that file I/O commands may touch.
+    grants: grants::Grants,
 
-    /// Canonicalized workspace folders; any canonicalizable path under one of
-    /// these is allowed for file I/O (folder picks are user intent).
-    allowed_dirs: Arc<StdRwLock<HashSet<std::path::PathBuf>>>,
-
-    /// Serializes read-modify-write cycles on the preference store
-    /// to prevent concurrent saves from overwriting each other.
-    pref_lock: Arc<Mutex<()>>,
-
-    /// True when argv carried files. resolve_startup_windows then skips session
-    /// restore, matching the prior CLI-launch behavior. Inert after startup.
-    had_cli_args: std::sync::atomic::AtomicBool,
-
-    /// True once a document open was explicitly requested (argv files at setup,
-    /// or any RunEvent::Opened). Stored synchronously at event delivery — never
-    /// from a spawned task — so the show-time gate observes it without timing
-    /// assumptions.
-    doc_open_requested: std::sync::atomic::AtomicBool,
-
-    /// Resolved path strings of every explicitly requested document (argv,
-    /// RunEvent::Opened), inserted synchronously at event delivery. The gate
-    /// shows (never destroys) a gated window whose path is in here: that window
-    /// IS the requested document, so the Opened dedupe can claim it and no
-    /// same-label rebuild can collide with a destroy in flight.
-    doc_open_paths: std::sync::Mutex<HashSet<String>>,
-
-    /// True once any explicitly requested document window was actually created.
-    /// Guards the zero-windows reset: if every requested open failed and none
-    /// ever succeeded, doc_open_requested is cleared so hidden startup windows
-    /// can still surface.
-    doc_open_succeeded: std::sync::atomic::AtomicBool,
-
-    /// Labels of hidden startup windows (session restore + welcome) that have
-    /// not reached their show moment yet. show_window pops the label and, when
-    /// doc_open_requested is set, destroys the window unseen instead of showing
-    /// it — the show-time gate that keeps a file launch from surfacing the
-    /// restored session.
-    startup_gated: std::sync::Mutex<HashSet<String>>,
-
-    /// Label of the welcome window the startup resolver may have created. A
-    /// later Opened destroys it only while still pristine (no file in
-    /// open_windows), so it never touches a document-bearing window.
-    startup_welcome_label: std::sync::Mutex<Option<String>>,
+    /// Decides which windows a launch may show.
+    launch_gate: launch_gate::LaunchGate,
 }
 
 impl Default for AppState {
     fn default() -> Self {
         Self {
-            open_windows: Arc::new(RwLock::new(HashMap::new())),
+            windows: registry::Registry::default(),
             resize_tasks: Arc::new(Mutex::new(HashMap::new())),
             html_cache: Arc::new(RwLock::new(LruCache::new(
                 std::num::NonZeroUsize::new(50).unwrap(),
             ))),
-            allowed_paths: Arc::new(StdRwLock::new(HashSet::new())),
-            allowed_dirs: Arc::new(StdRwLock::new(HashSet::new())),
-            pref_lock: Arc::new(Mutex::new(())),
-            had_cli_args: std::sync::atomic::AtomicBool::new(false),
-            doc_open_requested: std::sync::atomic::AtomicBool::new(false),
-            doc_open_paths: std::sync::Mutex::new(HashSet::new()),
-            doc_open_succeeded: std::sync::atomic::AtomicBool::new(false),
-            startup_gated: std::sync::Mutex::new(HashSet::new()),
-            startup_welcome_label: std::sync::Mutex::new(None),
+            grants: grants::Grants::default(),
+            launch_gate: launch_gate::LaunchGate::default(),
         }
     }
 }
@@ -277,24 +231,15 @@ async fn setup_cli_access() -> Result<String, String> {
 
 /// One-time startup window resolution, run on RunEvent::Ready.
 ///
-/// - CLI launch (had_cli_args): windows already created in setup; nothing to do.
-/// - Document launch already observed (doc_open_requested, stored synchronously
-///   at RunEvent::Opened delivery): nothing to do — the Opened handler opens the
+/// - CLI launch: windows already created in setup; nothing to do.
+/// - Document launch already observed (recorded synchronously at
+///   RunEvent::Opened delivery): nothing to do — the Opened handler opens the
 ///   clicked files. This check is a fast path only, not a correctness deadline:
 ///   session/welcome windows created below stay hidden and startup-gated, and
 ///   show_window destroys any still-gated window if a document launch is
 ///   observed by its show moment (see window::show_window).
 async fn resolve_startup_windows(app: tauri::AppHandle) {
-    use std::sync::atomic::Ordering;
-
-    if app.state::<AppState>().had_cli_args.load(Ordering::SeqCst) {
-        return;
-    }
-    if app
-        .state::<AppState>()
-        .doc_open_requested
-        .load(Ordering::SeqCst)
-    {
+    if app.state::<AppState>().launch_gate.skip_startup() {
         return;
     }
 
@@ -305,9 +250,6 @@ async fn resolve_startup_windows(app: tauri::AppHandle) {
         .filter(|p| std::path::Path::new(p).exists())
         .filter_map(|p| io::resolve_file_path(p))
         .collect();
-    for p in &session {
-        io::allow_path(&app, &p.to_string_lossy());
-    }
     // Sequential awaits: restore windows in saved order; each open re-appends to
     // the session list, preserving it.
     for path in session {
@@ -319,18 +261,9 @@ async fn resolve_startup_windows(app: tauri::AppHandle) {
     // Welcome fallback: only when nothing is open and no Launch Services file
     // opened a document. create_window_with_file(None) is the welcome card.
     let nothing_open = app.webview_windows().is_empty();
-    let file_opened = app
-        .state::<AppState>()
-        .doc_open_requested
-        .load(Ordering::SeqCst);
-    if nothing_open && !file_opened {
+    if nothing_open && app.state::<AppState>().launch_gate.welcome_allowed() {
         match window::create_window_with_file(&app, None, true).await {
-            Ok(label) => {
-                *app.state::<AppState>()
-                    .startup_welcome_label
-                    .lock()
-                    .unwrap() = Some(label);
-            }
+            Ok(label) => app.state::<AppState>().launch_gate.set_welcome(label),
             Err(e) => eprintln!("Failed to create welcome window: {e}"),
         }
     }
@@ -376,11 +309,8 @@ pub fn run() {
             io::read_file_bytes_b64,
             io::write_file,
             io::is_writable,
-            io::parse_markdown,
-            io::parse_markdown_with_theme,
-            io::parse_json_with_theme,
-            io::parse_yaml_with_theme,
             io::format_json_pretty,
+            io::render_buffer_to_html,
             io::render_file_to_html,
             io::save_html_export,
             io::open_file_dialog,
@@ -393,7 +323,6 @@ pub fn run() {
             io::create_new_markdown_file,
             prefs::save_preference_key,
             prefs::get_preferences,
-            prefs::save_preferences,
             prefs::mark_cli_setup_declined,
             prefs::get_recent_files,
             menu::broadcast_scroll_sync,
@@ -417,8 +346,6 @@ pub fn run() {
             window::refresh_preview,
             window::open_editor_window,
             window::create_new_window_command,
-            window::remove_window_from_tracking,
-            window::get_file_path_from_window_label,
             window::get_all_windows,
             window::focus_window,
             is_cli_installed,
@@ -479,13 +406,10 @@ pub fn run() {
                     });
                 } else if let Some(path) = menu::decode_recent_menu_id(id) {
                     // The id was built from our own recents store, so clicking
-                    // it is user intent: grant access like a dialog pick.
-                    io::allow_path(app, &path);
+                    // it is user intent: the open grants access like a dialog
+                    // pick.
                     let app_clone = app.clone();
                     tauri::async_runtime::spawn(async move {
-                        if let Err(e) = io::push_to_recents(&app_clone, &path).await {
-                            eprintln!("Failed to push recents (menu): {e}");
-                        }
                         if let Some(resolved) = io::resolve_file_path(&path) {
                             if let Err(e) =
                                 window::create_window_with_file(&app_clone, Some(resolved), false)
@@ -564,23 +488,6 @@ pub fn run() {
                 }
             });
 
-            if !file_paths.is_empty() {
-                for p in &file_paths {
-                    io::allow_path(app.handle(), p);
-                }
-                let handle = app.handle().clone();
-                let paths = file_paths.clone();
-                tauri::async_runtime::spawn(async move {
-                    // Sequential awaits: recents order must match argument order
-                    // (each push is a read-modify-write under pref_lock).
-                    for path_str in paths {
-                        if let Err(e) = io::push_to_recents(&handle, &path_str).await {
-                            eprintln!("Failed to push recents (CLI arg): {e}");
-                        }
-                    }
-                });
-            }
-
             let mut resolved: Vec<std::path::PathBuf> = file_paths
                 .iter()
                 .filter_map(|p| io::resolve_file_path(p))
@@ -590,34 +497,30 @@ pub fn run() {
                 // CLI files: open them now, before the event loop starts. Flag
                 // the launch so resolve_startup_windows (RunEvent::Ready) skips
                 // session restore, matching the prior CLI-launch behavior.
-                {
-                    let state = app.handle().state::<AppState>();
-                    state
-                        .had_cli_args
-                        .store(true, std::sync::atomic::Ordering::SeqCst);
-                    state
-                        .doc_open_requested
-                        .store(true, std::sync::atomic::Ordering::SeqCst);
-                    let mut doc_paths = state.doc_open_paths.lock().unwrap();
-                    for path in &resolved {
-                        doc_paths.insert(path.to_string_lossy().to_string());
-                    }
-                }
+                app.handle()
+                    .state::<AppState>()
+                    .launch_gate
+                    .request_documents(
+                        resolved.iter().map(|p| p.to_string_lossy().to_string()),
+                        true,
+                    );
                 let first = resolved.remove(0);
                 tauri::async_runtime::block_on(window::create_window_with_file(
                     app.handle(),
                     Some(first),
                     false,
                 ))?;
+                // No welcome window exists on a CLI launch; this only records
+                // that a requested document opened.
                 app.handle()
                     .state::<AppState>()
-                    .doc_open_succeeded
-                    .store(true, std::sync::atomic::Ordering::SeqCst);
+                    .launch_gate
+                    .opens_finished(true, |_| false);
                 if !resolved.is_empty() {
                     let handle = app.handle().clone();
                     tauri::async_runtime::spawn(async move {
                         // Sequential awaits: windows open in argument order and each
-                        // open mutates shared open_windows tracking.
+                        // open appends to the session list and recents.
                         for path in resolved {
                             if let Err(e) =
                                 window::create_window_with_file(&handle, Some(path.clone()), false)
@@ -648,14 +551,11 @@ pub fn run() {
                 }
                 let (lw, lh) = window::convert_to_logical(win, size.width, size.height);
 
-                let arcs = app.try_state::<AppState>().map(|state| {
-                    (
-                        state.inner().resize_tasks.clone(),
-                        state.inner().pref_lock.clone(),
-                    )
-                });
+                let resize_tasks = app
+                    .try_state::<AppState>()
+                    .map(|state| state.inner().resize_tasks.clone());
 
-                if let Some((resize_tasks, pref_lock)) = arcs {
+                if let Some(resize_tasks) = resize_tasks {
                     let app_clone = app.clone();
                     tauri::async_runtime::spawn(async move {
                         let mut tasks = resize_tasks.lock().await;
@@ -669,44 +569,59 @@ pub fn run() {
                         let handle = tauri::async_runtime::spawn(async move {
                             sleep(Duration::from_millis(450)).await;
 
-                            let _lock = pref_lock.lock().await;
-                            let mut p =
-                                prefs::get_preferences(app_clone2.clone()).unwrap_or_default();
-                            if window::is_editor_window_label(&label_for_prefs) {
-                                p.editor_window_width = Some(lw);
-                                p.editor_window_height = Some(lh);
-                            } else {
-                                p.window_width = lw;
-                                p.window_height = lh;
-                            }
-                            let _ = prefs::save_preferences(app_clone2, p);
+                            let editor = window::is_editor_window_label(&label_for_prefs);
+                            let _ = prefs::update(&app_clone2, |map| {
+                                prefs::set_window_size(map, editor, lw, lh)
+                            })
+                            .await;
                         });
 
                         tasks.insert(label, (handle, lw, lh));
                     });
                 }
             }
-            tauri::WindowEvent::CloseRequested { .. } => {
+            tauri::WindowEvent::CloseRequested { .. } | tauri::WindowEvent::Destroyed => {
                 let app = win.app_handle().clone();
                 let window_label = win.label().to_string();
+                let destroyed = matches!(event, tauri::WindowEvent::Destroyed);
 
-                tauri::async_runtime::spawn(async move {
-                    if window::is_editor_window_label(&window_label) {
-                        if let Ok(Some(file_path)) =
-                            window::decode_editor_file_path_from_window_label_str(&window_label)
-                        {
+                if window::is_editor_window_label(&window_label) {
+                    // The editor can refuse a close request (a failed save
+                    // keeps the window), so it leaves the registry only once
+                    // destroyed; a file must never get a second editor.
+                    if !destroyed {
+                        let windows = &app.state::<AppState>().windows;
+                        if let Some(file_path) = windows.file_of(&window_label) {
                             let _ = menu::broadcast_editor_window_closed(
                                 app.clone(),
                                 menu::EditorWindowClosedPayload {
-                                    preview_window: String::new(),
+                                    preview_window: windows
+                                        .preview_of(&window_label)
+                                        .unwrap_or_default(),
                                     file_path,
                                 },
                             );
                         }
+                        return;
                     }
-                    let _ = watchers::stop_file_watcher(app.clone(), window_label.clone()).await;
-                    let _ = window::remove_window_from_tracking(app.clone(), window_label).await;
-                    let _ = menu::rebuild_app_menu(&app);
+                } else if destroyed {
+                    return;
+                }
+
+                tauri::async_runtime::spawn(async move {
+                    // During quit, windows close as a side effect: keep the
+                    // session so the next launch restores it. Only
+                    // user-initiated closes drop entries.
+                    let keep_session = QUITTING.load(std::sync::atomic::Ordering::SeqCst);
+                    if let Err(e) = window::apply_transition(
+                        &app,
+                        &window_label,
+                        window::Transition::Closed { keep_session },
+                    )
+                    .await
+                    {
+                        eprintln!("Failed to update session list: {e}");
+                    }
                 });
             }
             _ => {}
@@ -730,36 +645,21 @@ pub fn run() {
                 // the show-time gate and the startup resolver read these. A
                 // store deferred to the spawned task races window creation
                 // (the original cold-start session-restore bug).
-                let mut any_files = false;
                 {
                     let state = _app.state::<AppState>();
-                    let mut doc_paths = state.doc_open_paths.lock().unwrap();
-                    for url in urls.iter() {
-                        if let Some(path) = io::resolve_file_path(url.as_ref()) {
-                            let path_str = path.to_string_lossy().to_string();
-                            io::allow_path(_app, &path_str);
-                            doc_paths.insert(path_str);
-                            any_files = true;
-                        }
-                    }
-                }
-                if any_files {
-                    _app.state::<AppState>()
-                        .doc_open_requested
-                        .store(true, std::sync::atomic::Ordering::SeqCst);
+                    let doc_paths: Vec<String> = urls
+                        .iter()
+                        .filter_map(|url| io::resolve_file_path(url.as_ref()))
+                        .map(|path| path.to_string_lossy().to_string())
+                        .collect();
+                    state.launch_gate.request_documents(doc_paths, false);
                 }
                 let app_clone = _app.clone();
                 let urls = urls.clone();
                 tauri::async_runtime::spawn(async move {
-                    use std::sync::atomic::Ordering;
                     let mut opened_any = false;
                     for url in urls {
                         if let Some(path) = io::resolve_file_path(url.as_ref()) {
-                            if let Err(e) =
-                                io::push_to_recents(&app_clone, &path.to_string_lossy()).await
-                            {
-                                eprintln!("Failed to push recents (Launch Services): {e}");
-                            }
                             let mut result = window::create_window_with_file(
                                 &app_clone,
                                 Some(path.clone()),
@@ -767,10 +667,8 @@ pub fn run() {
                             )
                             .await;
                             if result.is_err() {
-                                // REASON: single retry after a short delay — the
-                                // gate's teardown of a same-label startup window
-                                // may still be in flight, and webview creation
-                                // can fail transiently.
+                                // REASON: single retry after a short delay —
+                                // webview creation can fail transiently.
                                 sleep(Duration::from_millis(150)).await;
                                 result = window::create_window_with_file(
                                     &app_clone,
@@ -785,51 +683,17 @@ pub fn run() {
                             }
                         }
                     }
-                    if opened_any {
-                        app_clone
-                            .state::<AppState>()
-                            .doc_open_succeeded
-                            .store(true, Ordering::SeqCst);
-                        // Reclaim the welcome window the startup resolver may
-                        // have created, so a Finder file-launch never leaves a
-                        // stray empty window beside the document. An unshown
-                        // welcome is covered by the show-time gate; this sweep
-                        // also removes one already shown, but only while
-                        // pristine (no file in open_windows).
-                        let taken = app_clone
-                            .state::<AppState>()
-                            .startup_welcome_label
-                            .lock()
-                            .unwrap()
-                            .take();
-                        if let Some(label) = taken {
-                            app_clone
-                                .state::<AppState>()
-                                .startup_gated
-                                .lock()
-                                .unwrap()
-                                .remove(&label);
-                            let open_windows = app_clone.state::<AppState>().open_windows.clone();
-                            let pristine = !open_windows.read().await.values().any(|l| l == &label);
-                            if pristine {
-                                if let Some(w) = app_clone.get_webview_window(&label) {
-                                    let _ = w.destroy();
-                                }
-                            }
-                        }
-                    } else if !app_clone
-                        .state::<AppState>()
-                        .doc_open_succeeded
-                        .load(Ordering::SeqCst)
+                    // A success reclaims the startup welcome window while
+                    // it is still pristine (no file in the registry); a batch
+                    // that failed entirely, with no success before it, clears
+                    // the launch intent (see LaunchGate::opens_finished).
+                    let state = app_clone.state::<AppState>();
+                    let reclaim = state
+                        .launch_gate
+                        .opens_finished(opened_any, |label| state.windows.file_of(label).is_some());
+                    if let Some(w) = reclaim.and_then(|label| app_clone.get_webview_window(&label))
                     {
-                        // Every requested open failed and none ever succeeded:
-                        // clear the launch intent so hidden startup windows
-                        // (session restore / welcome) still surface instead of
-                        // leaving the app windowless.
-                        app_clone
-                            .state::<AppState>()
-                            .doc_open_requested
-                            .store(false, Ordering::SeqCst);
+                        let _ = w.destroy();
                     }
                     let _ = menu::rebuild_app_menu(&app_clone);
                 });
@@ -854,9 +718,8 @@ mod tests {
         assert_eq!(prefs.toc_visible, Some(false));
     }
 
-    /// The store is written one key at a time by save_preference_key, so a
-    /// fresh install that never triggered a full save_preferences holds a
-    /// partial map. serde(default) must fill the missing fields instead of
+    /// The store is written one key at a time, so it holds a partial map.
+    /// serde(default) must fill the missing fields instead of
     /// failing deserialization (which silently reset every preference).
     #[test]
     fn app_preferences_deserialize_partial_map_keeps_known_keys() {

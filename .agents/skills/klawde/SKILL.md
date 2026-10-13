@@ -47,11 +47,12 @@ sqlite3 -readonly changes.db "PRAGMA user_version;"
 
 7. If `Purpose` or `Scope` is empty, ask "What is this project's purpose and scope?", wait for the answer, and write it before continuing. An answer the user already gave this session needs no second ask.
 
-8. Read the tail and the open tasks:
+8. Read the tail and the open tasks into context; do not print them:
 
 ```sh
 sqlite3 -readonly changes.db "SELECT line FROM log_lines ORDER BY serial DESC LIMIT 5;"
 sqlite3 -readonly changes.db "SELECT line FROM task_lines ORDER BY id;"
+sqlite3 -readonly changes.db "SELECT count(*) FROM tasks;"
 ```
 
 9. Output this format, then stop:
@@ -59,11 +60,8 @@ sqlite3 -readonly changes.db "SELECT line FROM task_lines ORDER BY id;"
 ```
 OK. Ready.
 BRIEFING.md: <one sentence: what this project is and what it is for>
-Log:
-<the five lines, newest first, verbatim | none>
-Tasks:
-<the open task lines, verbatim | none>
+Tasks: <the measured count> open
 Dirty: <uncommitted files | clean | not a git repo>
 ```
 
-No summary of the log: print the lines.
+Print nothing else from the log or the tasks.

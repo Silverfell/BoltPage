@@ -23,8 +23,9 @@ export const EVENT_MENU_FORMAT_LINK = 'menu-format-link';
 export const EVENT_MENU_FORMAT_STRIKE = 'menu-format-strike';
 export const EVENT_MENU_COMMAND_PALETTE = 'menu-command-palette';
 
-// Scroll sync kinds
+// Document kinds
 export const KIND_MARKDOWN = 'markdown';
 export const KIND_JSON = 'json';
 export const KIND_YAML = 'yaml';
 export const KIND_TXT = 'txt';
+export const KIND_PDF = 'pdf';

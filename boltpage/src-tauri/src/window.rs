@@ -1,12 +1,15 @@
-use base64::Engine;
 use serde::{Deserialize, Serialize};
+use std::fs;
 use std::path::{Path, PathBuf};
 use tauri::{AppHandle, Manager, WebviewUrl, WebviewWindowBuilder};
 
 use crate::constants::{WINDOW_PREFIX_EDITOR, WINDOW_PREFIX_FILE, WINDOW_PREFIX_MARKDOWN};
 use crate::io;
+use crate::launch_gate::ShowDecision;
 use crate::menu;
 use crate::prefs::{self, AppPreferences};
+use crate::registry::{self, Change};
+use crate::watchers;
 use crate::AppState;
 
 // --- Label helpers ---
@@ -19,36 +22,95 @@ pub(crate) fn is_editor_window_label(label: &str) -> bool {
     label.starts_with(WINDOW_PREFIX_EDITOR)
 }
 
-pub(crate) fn decode_file_path_from_window_label_str(
-    window_label: &str,
-) -> Result<Option<String>, String> {
-    if let Some(encoded_path) = window_label.strip_prefix(WINDOW_PREFIX_FILE) {
-        match base64::engine::general_purpose::URL_SAFE_NO_PAD.decode(encoded_path) {
-            Ok(decoded_bytes) => match String::from_utf8(decoded_bytes) {
-                Ok(file_path) => Ok(Some(file_path)),
-                Err(e) => Err(format!("Failed to decode UTF-8: {e}")),
-            },
-            Err(e) => Err(format!("Failed to decode base64: {e}")),
-        }
-    } else {
-        Ok(None)
-    }
+// --- Registry transitions ---
+
+/// A change to which file a window shows.
+pub(crate) enum Transition<'a> {
+    /// The window was built for the entry `Registry::open_viewer` reserved
+    /// (an empty change for a blank window). `recent` is false for session
+    /// restore, which reopens files without the user asking for them.
+    Opened { change: Change, recent: bool },
+    /// The window's frontend opens another file in place.
+    Switch(&'a str),
+    /// The window is going away. `keep_session` leaves its file in the saved
+    /// session: quit and the startup gate close windows the next launch
+    /// should still restore.
+    Closed { keep_session: bool },
 }
 
-pub(crate) fn decode_editor_file_path_from_window_label_str(
-    window_label: &str,
-) -> Result<Option<String>, String> {
-    if let Some(encoded_path) = window_label.strip_prefix(WINDOW_PREFIX_EDITOR) {
-        match base64::engine::general_purpose::URL_SAFE_NO_PAD.decode(encoded_path) {
-            Ok(decoded_bytes) => match String::from_utf8(decoded_bytes) {
-                Ok(file_path) => Ok(Some(file_path)),
-                Err(e) => Err(format!("Failed to decode UTF-8: {e}")),
-            },
-            Err(e) => Err(format!("Failed to decode base64: {e}")),
+/// Canonicalize a path for the recents list. Falls back to the raw string if
+/// the file does not yet exist.
+fn normalize_path(path: &str) -> String {
+    fs::canonicalize(path)
+        .map(|p| p.to_string_lossy().to_string())
+        .unwrap_or_else(|_| path.to_string())
+}
+
+/// Every change to which file a window shows goes through here: the registry
+/// records it, and the path grant, saved session, recents, file watcher and
+/// menu follow from what it reports.
+pub(crate) async fn apply_transition(
+    app: &AppHandle,
+    label: &str,
+    transition: Transition<'_>,
+) -> Result<(), String> {
+    let state = app.state::<AppState>();
+    let (change, recent, keep_session) = match transition {
+        // Window creation is reached only from trusted entry points (CLI,
+        // Launch Services, recents menu, save dialog), so the file is granted.
+        Transition::Opened { change, recent } => {
+            if let Some(path) = &change.shown {
+                state.grants.grant_path(path);
+            }
+            (change, recent, false)
         }
+        // An in-window open (welcome-card recents, the open dialog, the
+        // workspace tree) comes from the webview: the path must already be
+        // allowed, or be a known recent.
+        Transition::Switch(path) => {
+            if state.grants.authorize(path).is_err() {
+                let canonical = normalize_path(path);
+                let known_recent = prefs::read_recent_paths(app)
+                    .iter()
+                    .any(|r| normalize_path(r) == canonical);
+                if !known_recent {
+                    return Err("Access denied: path not authorized".to_string());
+                }
+                state.grants.grant_path(path);
+            }
+            (state.windows.switch_file(label, path), true, false)
+        }
+        Transition::Closed { keep_session } => {
+            let _ = watchers::stop_file_watcher(app.clone(), label.to_string()).await;
+            (state.windows.close(label), false, keep_session)
+        }
+    };
+
+    let dropped = if keep_session {
+        Vec::new()
     } else {
-        Ok(None)
-    }
+        change.dropped
+    };
+    let saved = if change.shown.is_none() && dropped.is_empty() {
+        Ok(())
+    } else {
+        prefs::update(app, |map| {
+            for path in &dropped {
+                prefs::session_remove(map, path);
+            }
+            if let Some(path) = &change.shown {
+                prefs::session_add(map, path);
+                if recent {
+                    prefs::push_recent(map, &normalize_path(path));
+                }
+            }
+        })
+        .await
+    };
+
+    // The Window and Open Recent submenus both follow from the above.
+    let _ = menu::rebuild_app_menu(app);
+    saved
 }
 
 // --- Size helpers ---
@@ -134,7 +196,7 @@ pub(crate) fn convert_to_logical(window: &tauri::Window, width: u32, height: u32
 // --- Window creation ---
 
 /// `startup_gated`: true only for windows the startup resolver creates (session
-/// restore, welcome). Their labels enter startup_gated so show_window can veto
+/// restore, welcome). Their labels enter the launch gate so show_window can veto
 /// them if a document launch is observed by their show moment.
 pub(crate) async fn create_window_with_file(
     app: &AppHandle,
@@ -142,82 +204,77 @@ pub(crate) async fn create_window_with_file(
     startup_gated: bool,
 ) -> tauri::Result<String> {
     let prefs = prefs::get_preferences(app.clone()).unwrap_or_default();
+    let (width, height) = calculate_window_size(app, &prefs)?;
+    let state = app.state::<AppState>();
 
-    let (window_label, url, title) = if let Some(ref path) = file_path {
-        let encoded_path = base64::engine::general_purpose::URL_SAFE_NO_PAD
-            .encode(path.to_string_lossy().as_bytes());
-        let label = format!("{WINDOW_PREFIX_FILE}{encoded_path}");
-        let url = WebviewUrl::App("index.html".into());
+    let mut init_script = format!(
+        "document.documentElement.setAttribute('data-theme', {});",
+        serde_json::to_string(&prefs.theme).unwrap()
+    );
+    let (window_label, title, change) = if let Some(ref path) = file_path {
+        let path_str = io::pathbuf_to_string(path);
+        let label = registry::new_label(WINDOW_PREFIX_FILE);
+        // Registering before the window is built makes concurrent opens of
+        // one file settle on a single window.
+        let change = match state.windows.open_viewer(&label, &path_str) {
+            Ok(change) => change,
+            Err(existing_label) => {
+                if !startup_gated {
+                    // An explicit open landing on a window the startup resolver
+                    // created un-gates it: the user asked for this file, so its
+                    // show moment must show it.
+                    state.launch_gate.ungate(&existing_label);
+                    // No transition happens, but the open still counts as
+                    // recent.
+                    if let Err(e) = io::push_to_recents(app, &path_str).await {
+                        eprintln!("Failed to push recents: {e}");
+                    }
+                }
+                // No window yet means a concurrent open is still building it.
+                if let Some(window) = app.get_webview_window(&existing_label) {
+                    let _ = window.set_focus();
+                }
+                return Ok(existing_label);
+            }
+        };
+        init_script.push_str(&format!(
+            " window.__INITIAL_FILE_PATH__ = {};",
+            serde_json::to_string(&path_str).unwrap()
+        ));
         let title = path
             .file_name()
             .and_then(|n| n.to_str())
             .map(|n| format!("BoltPage - {n}"))
             .unwrap_or_else(|| "BoltPage".to_string());
-        (label, url, title)
+        (label, title, change)
     } else {
-        let label = format!("{WINDOW_PREFIX_MARKDOWN}{}", uuid::Uuid::new_v4());
-        let url = WebviewUrl::App("index.html".into());
-        let title = "BoltPage".to_string();
-        (label, url, title)
+        let label = registry::new_label(WINDOW_PREFIX_MARKDOWN);
+        (label, "BoltPage".to_string(), Change::default())
     };
-
-    if let Some(ref path) = file_path {
-        let app_state = app.state::<AppState>();
-        let open_windows = app_state.open_windows.read().await;
-        if let Some(existing_label) = open_windows.get(&path.to_string_lossy().to_string()) {
-            if let Some(window) = app.get_webview_window(existing_label) {
-                if !startup_gated {
-                    // An explicit open landing on a window the startup resolver
-                    // created un-gates it: the user asked for this file, so its
-                    // show moment must show it.
-                    app_state
-                        .startup_gated
-                        .lock()
-                        .unwrap()
-                        .remove(existing_label);
-                }
-                let _ = window.set_focus();
-                return Ok(existing_label.to_string());
-            }
-        }
-        drop(open_windows);
-    }
-
-    let (width, height) = calculate_window_size(app, &prefs)?;
 
     // All windows start hidden; the frontend invokes show_window after its
     // first render (the show-time gate lives there).
-    let _window = WebviewWindowBuilder::new(app, &window_label, url)
+    let built = WebviewWindowBuilder::new(app, &window_label, WebviewUrl::App("index.html".into()))
         .title(&title)
         .inner_size(width, height)
         .visible(false)
-        .initialization_script(format!(
-            "document.documentElement.setAttribute('data-theme', {});",
-            serde_json::to_string(&prefs.theme).unwrap()
-        ))
-        .build()?;
-
-    if startup_gated {
-        app.state::<AppState>()
-            .startup_gated
-            .lock()
-            .unwrap()
-            .insert(window_label.clone());
+        .initialization_script(init_script)
+        .build();
+    if let Err(e) = built {
+        state.windows.close(&window_label);
+        return Err(e);
     }
 
-    let _ = menu::rebuild_app_menu(app);
+    if startup_gated {
+        state.launch_gate.gate(&window_label);
+    }
 
-    if let Some(path) = file_path {
-        let path_str = io::pathbuf_to_string(&path);
-        io::allow_path(app, &path_str);
-        {
-            let app_state = app.state::<AppState>();
-            let mut open_windows = app_state.open_windows.write().await;
-            open_windows.insert(path_str.clone(), window_label.clone());
-        }
-        if let Err(e) = io::session_add(app, &path_str).await {
-            eprintln!("Failed to update session list: {e}");
-        }
+    let opened = Transition::Opened {
+        change,
+        recent: !startup_gated,
+    };
+    if let Err(e) = apply_transition(app, &window_label, opened).await {
+        eprintln!("Failed to update session list: {e}");
     }
 
     Ok(window_label)
@@ -248,30 +305,23 @@ pub(crate) async fn show_window(app: AppHandle, window_label: String) -> Result<
     // its show moment after a document launch was observed is destroyed unseen —
     // unless it is itself a requested document, in which case it IS the doc
     // window and must show (also keeps the Opened dedupe from ever racing a
-    // destroy of a same-label window).
-    let was_gated = state.startup_gated.lock().unwrap().remove(&window_label);
-    if was_gated
-        && state
-            .doc_open_requested
-            .load(std::sync::atomic::Ordering::SeqCst)
-    {
-        let requested = match decode_file_path_from_window_label_str(&window_label) {
-            Ok(Some(path)) => state.doc_open_paths.lock().unwrap().contains(&path),
-            _ => false,
-        };
-        if !requested {
-            // Deliberately no session_remove: the saved session must survive a
-            // file launch so the next plain launch still restores it.
-            {
-                let mut open_windows = state.open_windows.write().await;
-                open_windows.retain(|_, label| label != &window_label);
-            }
-            if let Some(window) = app.get_webview_window(&window_label) {
-                let _ = window.destroy();
-            }
-            let _ = menu::rebuild_app_menu(&app);
-            return Ok(());
+    // destroy of the window it lands on).
+    let file = state.windows.file_of(&window_label);
+    if state.launch_gate.on_show(&window_label, file.as_deref()) == ShowDecision::Destroy {
+        // Deliberately keep_session: the saved session must survive a
+        // file launch so the next plain launch still restores it.
+        let _ = apply_transition(
+            &app,
+            &window_label,
+            Transition::Closed { keep_session: true },
+        )
+        .await;
+        if let Some(window) = app.get_webview_window(&window_label) {
+            let _ = window.destroy();
         }
+        // Again, now that the window is gone from the Window submenu.
+        let _ = menu::rebuild_app_menu(&app);
+        return Ok(());
     }
     if let Some(window) = app.get_webview_window(&window_label) {
         window
@@ -283,7 +333,7 @@ pub(crate) async fn show_window(app: AppHandle, window_label: String) -> Result<
 
 #[tauri::command]
 pub(crate) fn refresh_preview(app: AppHandle, window: String) -> Result<(), String> {
-    if let Some(path) = decode_file_path_from_window_label_str(&window)? {
+    if let Some(path) = app.state::<AppState>().windows.file_of(&window) {
         io::invalidate_cache_for_path_sync(&app, &path);
     }
     if let Some(preview_window) = app.get_webview_window(&window) {
@@ -300,14 +350,18 @@ pub(crate) async fn open_editor_window(
     file_path: String,
     preview_window: String,
 ) -> Result<(), String> {
-    io::check_path_allowed(&app, &file_path)?;
+    let state = app.state::<AppState>();
+    state.grants.authorize(&file_path)?;
 
-    let encoded_path =
-        base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(file_path.as_bytes());
-    let editor_label = format!("{WINDOW_PREFIX_EDITOR}{encoded_path}");
-
-    if let Some(existing) = app.get_webview_window(&editor_label) {
-        let _ = existing.set_focus();
+    let editor_label = registry::new_label(WINDOW_PREFIX_EDITOR);
+    if let Err(existing_label) =
+        state
+            .windows
+            .open_editor(&editor_label, &file_path, &preview_window)
+    {
+        if let Some(existing) = app.get_webview_window(&existing_label) {
+            let _ = existing.set_focus();
+        }
         return Ok(());
     }
 
@@ -323,7 +377,7 @@ pub(crate) async fn open_editor_window(
         600,
     )
     .unwrap_or((800.0, 600.0));
-    let _editor_window =
+    let built =
         WebviewWindowBuilder::new(&app, &editor_label, WebviewUrl::App("editor.html".into()))
             .title(format!("BoltPage Editor - {file_name}"))
             .inner_size(editor_width, editor_height)
@@ -333,8 +387,11 @@ pub(crate) async fn open_editor_window(
                 serde_json::to_string(&preview_window).unwrap(),
                 serde_json::to_string(&prefs.theme).unwrap()
             ))
-            .build()
-            .map_err(|e| format!("Failed to create editor window: {e}"))?;
+            .build();
+    if let Err(e) = built {
+        state.windows.close(&editor_label);
+        return Err(format!("Failed to create editor window: {e}"));
+    }
 
     Ok(())
 }
@@ -342,50 +399,12 @@ pub(crate) async fn open_editor_window(
 #[tauri::command]
 pub(crate) async fn create_new_window_command(app: AppHandle) -> Result<String, String> {
     // Always a blank window: the webview must not be able to pass an arbitrary
-    // path here, because create_window_with_file grants it via io::allow_path.
+    // path here, because create_window_with_file grants it via Grants::grant_path.
     // File-bearing opens go through trusted Rust entry points (CLI, Launch
     // Services, recents/menu) that call create_window_with_file directly.
     create_window_with_file(&app, None, false)
         .await
         .map_err(|e| format!("Failed to create window: {e}"))
-}
-
-#[tauri::command]
-pub(crate) async fn remove_window_from_tracking(
-    app: AppHandle,
-    window_label: String,
-) -> Result<(), String> {
-    let mut removed_paths: Vec<String> = Vec::new();
-    {
-        let state = app.state::<AppState>();
-        let mut open_windows = state.open_windows.write().await;
-        open_windows.retain(|path, label| {
-            if label == &window_label {
-                removed_paths.push(path.clone());
-                false
-            } else {
-                true
-            }
-        });
-    }
-    // During quit, windows close as a side effect: keep the session so the
-    // next launch restores it. Only user-initiated closes drop entries.
-    if !crate::QUITTING.load(std::sync::atomic::Ordering::SeqCst) {
-        // Sequential awaits: read-modify-writes serialized under pref_lock.
-        for path in removed_paths {
-            if let Err(e) = io::session_remove(&app, &path).await {
-                eprintln!("Failed to update session list: {e}");
-            }
-        }
-    }
-    Ok(())
-}
-
-#[tauri::command]
-pub(crate) fn get_file_path_from_window_label(
-    window: tauri::Window,
-) -> Result<Option<String>, String> {
-    decode_file_path_from_window_label_str(window.label())
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
@@ -397,19 +416,12 @@ pub(crate) struct WindowInfo {
 
 #[tauri::command]
 pub(crate) fn get_all_windows(app: AppHandle) -> Result<Vec<WindowInfo>, String> {
+    let state = app.state::<AppState>();
     let mut windows = Vec::new();
 
     for (label, window) in app.webview_windows() {
         let title = window.title().unwrap_or_else(|_| "Untitled".to_string());
-        let file_path = if let Some(encoded) = label.strip_prefix(WINDOW_PREFIX_FILE) {
-            base64::engine::general_purpose::URL_SAFE_NO_PAD
-                .decode(encoded)
-                .ok()
-                .and_then(|b| String::from_utf8(b).ok())
-                .unwrap_or_default()
-        } else {
-            String::new()
-        };
+        let file_path = state.windows.file_of(&label).unwrap_or_default();
 
         windows.push(WindowInfo {
             label: label.to_string(),
@@ -443,22 +455,6 @@ mod tests {
     use super::*;
 
     #[test]
-    fn decode_file_path_from_window_label_round_trips() {
-        let path = "/tmp/example.md";
-        let encoded = base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(path.as_bytes());
-        let label = format!("markdown-file-{encoded}");
-
-        assert_eq!(
-            decode_file_path_from_window_label_str(&label).unwrap(),
-            Some(path.to_string())
-        );
-        assert_eq!(
-            decode_file_path_from_window_label_str("markdown-plain").unwrap(),
-            None
-        );
-    }
-
-    #[test]
     fn stored_window_size_ignores_defaults_and_invalid_values() {
         assert_eq!(stored_window_size(Some(900), Some(800), 900, 800), None);
         assert_eq!(stored_window_size(Some(100), Some(800), 900, 800), None);
@@ -470,10 +466,13 @@ mod tests {
 
     #[test]
     fn window_label_helpers() {
-        assert!(is_preview_window_label("markdown-file-abc"));
-        assert!(is_preview_window_label("markdown-123"));
-        assert!(is_editor_window_label("editor-123"));
-        assert!(!is_preview_window_label("editor-123"));
-        assert!(!is_editor_window_label("markdown-file-abc"));
+        let viewer = registry::new_label(WINDOW_PREFIX_FILE);
+        let blank = registry::new_label(WINDOW_PREFIX_MARKDOWN);
+        let editor = registry::new_label(WINDOW_PREFIX_EDITOR);
+        assert!(is_preview_window_label(&viewer));
+        assert!(is_preview_window_label(&blank));
+        assert!(is_editor_window_label(&editor));
+        assert!(!is_preview_window_label(&editor));
+        assert!(!is_editor_window_label(&viewer));
     }
 }

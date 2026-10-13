@@ -1,10 +1,11 @@
 {
   "name": "BoltPage",
   "private": true,
-  "version": "3.0.0",
+  "version": "3.1.0",
   "type": "module",
   "scripts": {
-    "tauri": "tauri"
+    "tauri": "tauri",
+    "test": "node --test tests/"
   },
   "devDependencies": {
     "@tauri-apps/cli": "^2"
