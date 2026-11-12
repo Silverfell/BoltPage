@@ -1,0 +1,5 @@
+interface:
+  display_name: "Kleanup"
+  short_description: "Cut history and scrapbooking from docs and comments"
+policy:
+  allow_implicit_invocation: false

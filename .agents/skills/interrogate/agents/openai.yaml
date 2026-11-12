@@ -1,0 +1,5 @@
+interface:
+  display_name: "Interrogate"
+  short_description: "Interview a plan until nothing is assumed"
+policy:
+  allow_implicit_invocation: false

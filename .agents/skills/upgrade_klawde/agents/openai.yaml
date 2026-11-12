@@ -1,0 +1,5 @@
+interface:
+  display_name: "Upgrade Klawde"
+  short_description: "Migrate the records after an upgrade"
+policy:
+  allow_implicit_invocation: false

@@ -1,0 +1,5 @@
+interface:
+  display_name: "Klawde"
+  short_description: "Start a session"
+policy:
+  allow_implicit_invocation: false

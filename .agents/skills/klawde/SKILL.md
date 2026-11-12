@@ -1,17 +1,28 @@
 ---
 name: klawde
-description: "Run only when explicitly invoked. Klawde entry protocol: read BRIEFING.md in full, guidelines.md if present, the last 5 changes.db log entries and the open tasks, creating the records if missing, then confirm readiness at session start."
+description: Start a klawde session. Reads the brief, the last five log entries and the open tasks, creating the records on first run.
+disable-model-invocation: true
 ---
 
-# $klawde: Entry Protocol
+# klawde: Entry Protocol
 
-Run at session start. Complete this protocol before any other task, then stop. The contract's Records, The log, Tasks, The brief and Writing SQL safely sections define the shared rules.
+Run at session start. Complete this protocol before any other task, then stop. The contract's Records, The log, Tasks, The brief and Writing to the records sections define the shared rules.
+
+Commands run at the project root, where the project files are (BRIEFING.md, changes.db, guidelines.md, klawde-sql.md). `<skill>` is the full path of the folder holding this file; replace it in every command.
 
 ## Steps
 
-1. Run `ls BRIEFING.md changes.db 2>/dev/null` and note which exist. Run `command -v sqlite3`; if it is missing, stop and request installation of the SQLite CLI. Run `git rev-parse --is-inside-work-tree >/dev/null 2>&1 && git status --porcelain`, noting a non-repository; dirty state never blocks entry.
+1. Check the contract version:
 
-2. If `BRIEFING.md` is missing, create the empty four-field form:
+```sh
+cat CLAUDE.md AGENTS.md 2>/dev/null | grep -q '^<!-- klawde:begin v2 '
+```
+
+   If it matches, continue. Otherwise stop: when the same command with `v[3-9]` in place of `v2` matches, say "The contract is newer than this harness; run upgrade.sh."; else say "This project's klawde contract is missing or older than this harness (needs v2). Run upgrade.sh from the klawde checkout, then retry."
+
+2. Run `ls BRIEFING.md changes.db 2>/dev/null` and note which exist. Run `command -v sqlite3`; if it is missing, stop and request installation of the SQLite CLI. Run `git rev-parse --is-inside-work-tree >/dev/null 2>&1 && git status --porcelain`, noting a non-repository; dirty state is reported and entry continues.
+
+3. If `BRIEFING.md` is missing, create the empty four-field form:
 
 ```markdown
 # Briefing
@@ -22,32 +33,33 @@ Run at session start. Complete this protocol before any other task, then stop. T
 - Areas:
 ```
 
-3. If `changes.db` is missing, first confirm `.agents/changes-schema.sql` exists; if it is absent, stop and recommend `upgrade.sh` from the klawde checkout. Then create the database:
+4. If `changes.db` is missing, first confirm `<skill>/changes-schema.sql` exists; if it is absent, stop and say the klawde install is incomplete: run upgrade.sh. Then create the database:
 
 ```sh
-sqlite3 -bail changes.db < .agents/changes-schema.sql
+sqlite3 -bail changes.db < <skill>/changes-schema.sql
 ```
 
    Commit it like any other project file; never add it to `.gitignore`.
 
-4. If `changes.db` is present, read the schema version before reading anything else from it:
+5. Read the schema version of `changes.db` before reading anything else from it, and the version this harness ships:
 
 ```sh
 sqlite3 -readonly changes.db "PRAGMA user_version;"
+grep -o 'user_version = [0-9]*' <skill>/changes-schema.sql
 ```
 
-   - 8: continue.
-   - 1 to 7: stop. "changes.db is schema v<N>; run `$upgrade_klawde` to migrate it."
-   - 0: the database was never initialized. Stop. "changes.db exists but holds no schema; remove it and run `$klawde` again."
-   - above 8: stop. "changes.db is newer than this harness; update the klawde checkout."
+   - Equal: continue.
+   - 0: the database was never initialized. Stop. "changes.db exists but holds no schema; remove it and run the `klawde` command again."
+   - Below the shipped version: stop. "changes.db is schema v<N>; run the `upgrade_klawde` command to migrate it."
+   - Above the shipped version: stop. "changes.db is newer than this harness; run upgrade.sh."
 
-5. Read `BRIEFING.md` completely.
+6. Read `BRIEFING.md` completely.
 
-6. Read `guidelines.md` if it exists. If it does not, continue and say nothing about it.
+7. Read `guidelines.md` if it exists. If it does not, continue and say nothing about it.
 
-7. If `Purpose` or `Scope` is empty, ask "What is this project's purpose and scope?", wait for the answer, and write it before continuing. An answer the user already gave this session needs no second ask.
+8. If `Purpose` or `Scope` is empty, ask "What is this project's purpose and scope?", wait for the answer, and write it before continuing. An answer the user already gave this session is used as given. Done when both fields hold a line the user gave.
 
-8. Read the tail and the open tasks into context; do not print them:
+9. Read the tail and the open tasks into context:
 
 ```sh
 sqlite3 -readonly changes.db "SELECT line FROM log_lines ORDER BY serial DESC LIMIT 5;"
@@ -55,7 +67,7 @@ sqlite3 -readonly changes.db "SELECT line FROM task_lines ORDER BY id;"
 sqlite3 -readonly changes.db "SELECT count(*) FROM tasks;"
 ```
 
-9. Output this format, then stop:
+10. Output this format, then stop:
 
 ```
 OK. Ready.
