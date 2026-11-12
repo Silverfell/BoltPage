@@ -3,6 +3,13 @@ members = ["src-tauri", "markrust-core"]
 resolver = "2"
 
 # Profiles are only honored at the workspace root.
+# Any [profile.*] edit, rustup update or dependency change rebuilds everything under
+# new file names and keeps the old copy in target/; run `cargo clean` alongside it.
 [profile.release]
 strip = true        # drop the symbol table (~3MB); release backtraces become address-only
 panic = "abort"     # omit unwind tables (~2MB); a panic aborts immediately instead of unwinding
+
+# Dependencies keep only file/line tables in dev and test builds; full debug info for
+# every dependency is what grows target/debug. Workspace crates keep full debug info.
+[profile.dev.package."*"]
+debug = "line-tables-only"
